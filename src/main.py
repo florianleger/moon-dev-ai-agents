@@ -29,7 +29,7 @@ load_dotenv()
 ACTIVE_AGENTS = {
     'risk': False,      # Risk management agent
     'trading': False,   # LLM trading agent
-    'strategy': False,  # Strategy-based trading agent
+    'strategy': True,   # Strategy-based trading agent (MultifactorStrategy)
     'copybot': False,   # CopyBot agent
     'sentiment': False, # Run sentiment_agent.py directly instead
     # whale_agent is run from whale_agent.py
@@ -62,7 +62,8 @@ def run_agents():
                 # Run Strategy Analysis
                 if strategy_agent:
                     cprint("\n📊 Running Strategy Analysis...", "cyan")
-                    for token in MONITORED_TOKENS:
+                    active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
+                    for token in active_tokens:
                         if token not in EXCLUDED_TOKENS:  # Skip USDC and other excluded tokens
                             cprint(f"\n🔍 Analyzing {token}...", "cyan")
                             strategy_agent.get_signals(token)

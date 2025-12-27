@@ -71,12 +71,12 @@ class StrategyAgent:
             try:
                 # Import strategies directly
                 from src.strategies.custom.example_strategy import ExampleStrategy
-                from src.strategies.custom.private_my_strategy import MyStrategy
-                
+                from src.strategies.custom.multifactor_strategy import MultifactorStrategy
+
                 # Initialize strategies
                 self.enabled_strategies.extend([
                     ExampleStrategy(),
-                    MyStrategy()
+                    MultifactorStrategy()
                 ])
                 
                 print(f"✅ Loaded {len(self.enabled_strategies)} strategies!")

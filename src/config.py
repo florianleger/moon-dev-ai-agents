@@ -4,7 +4,7 @@ Built with love by Moon Dev 🚀
 """
 
 # 🔄 Exchange Selection
-EXCHANGE = 'solana'  # Options: 'solana', 'hyperliquid'
+EXCHANGE = 'hyperliquid'  # Options: 'solana', 'hyperliquid'
 
 # 💰 Trading Configuration
 USDC_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # Never trade or close
@@ -25,7 +25,8 @@ MONITORED_TOKENS = [
 tokens_to_trade = MONITORED_TOKENS  # Using the same list for trading
 
 # ⚡ HyperLiquid Configuration
-HYPERLIQUID_SYMBOLS = ['BTC', 'ETH', 'SOL']  # Symbols to trade on HyperLiquid perps
+# Uses MULTIFACTOR_ASSETS defined below for consistency
+HYPERLIQUID_SYMBOLS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'DOT', 'MATIC']
 HYPERLIQUID_LEVERAGE = 5  # Default leverage for HyperLiquid trades (1-50)
 
 # 🔄 Exchange-Specific Token Lists
@@ -122,6 +123,25 @@ REALTIME_CLIPS_LENGTH = 2  # Minutes to analyze per check
 REALTIME_CLIPS_AI_MODEL = 'groq'  # Model type: groq, openai, claude, deepseek, xai, ollama
 REALTIME_CLIPS_AI_MODEL_NAME = None  # None = use default for model type
 REALTIME_CLIPS_TWITTER = True  # Auto-open Twitter compose after clip
+
+# Multifactor Strategy Settings 📊
+MULTIFACTOR_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'DOT', 'MATIC']
+MULTIFACTOR_SMALLCAPS = []  # Add small cap tokens here (e.g., ['WIF', 'BONK', 'PEPE'])
+MULTIFACTOR_TIMEFRAME = '15m'  # Intraday timeframe
+MULTIFACTOR_RISK_PER_TRADE = 0.04  # 4% risk per trade
+
+# Multifactor weights (must sum to 1.0)
+MULTIFACTOR_WEIGHTS = {
+    'trend': 0.25,      # EMA alignment
+    'momentum': 0.20,   # MACD
+    'rsi': 0.20,        # RSI zones
+    'volume': 0.15,     # Volume confirmation
+    'sentiment': 0.20   # Twitter sentiment
+}
+
+# Multifactor thresholds
+MULTIFACTOR_BUY_THRESHOLD = 0.6   # Score > 0.6 = BUY
+MULTIFACTOR_SELL_THRESHOLD = -0.6  # Score < -0.6 = SELL
 
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3

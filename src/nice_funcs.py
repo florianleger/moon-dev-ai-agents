@@ -14,7 +14,10 @@ import time
 import json
 import numpy as np
 import datetime
-import pandas_ta as ta
+try:
+    import pandas_ta as ta
+except ImportError:
+    ta = None  # pandas_ta not available, some features disabled
 from datetime import datetime, timedelta
 from termcolor import colored, cprint
 import solders

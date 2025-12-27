@@ -17,7 +17,10 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
+try:
+    import pandas_ta as ta
+except ImportError:
+    ta = None  # pandas_ta not available, some features disabled
 import datetime
 from datetime import timedelta
 from termcolor import colored, cprint
