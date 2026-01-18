@@ -73,6 +73,25 @@ def run_agents():
                 # Run Strategy Analysis
                 if strategy_agent:
                     cprint("\n📊 Running Strategy Analysis...", "cyan")
+
+                    # First, monitor existing paper positions for SL/TP hits
+                    for strategy in strategy_agent.enabled_strategies:
+                        if hasattr(strategy, 'monitor_paper_positions'):
+                            closed = strategy.monitor_paper_positions()
+                            if closed:
+                                cprint(f"📉 Closed {len(closed)} paper positions", "magenta")
+
+                        # Show paper trading status
+                        if hasattr(strategy, 'get_paper_status'):
+                            status = strategy.get_paper_status()
+                            if status['open_positions'] > 0 or status['total_closed'] > 0:
+                                cprint(f"\n💰 Paper Trading Status:", "magenta")
+                                cprint(f"   Balance: ${status['paper_balance']:,.2f} (started: ${status['initial_balance']:,.2f})", "white")
+                                cprint(f"   Total PnL: ${status['total_pnl']:+,.2f}", "green" if status['total_pnl'] >= 0 else "red")
+                                cprint(f"   Daily PnL: ${status['daily_pnl']:+,.2f}", "white")
+                                cprint(f"   Open: {status['open_positions']} | Closed: {status['total_closed']}", "white")
+
+                    # Then analyze tokens for new signals
                     active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
                     for token in active_tokens:
                         if token not in EXCLUDED_TOKENS:  # Skip USDC and other excluded tokens

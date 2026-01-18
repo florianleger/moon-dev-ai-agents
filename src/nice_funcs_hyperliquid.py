@@ -320,84 +320,114 @@ def get_account_value(account):
     return account_value
 
 def market_buy(symbol, usd_size, account):
-    """Market buy using HyperLiquid"""
+    """Market buy using HyperLiquid with error handling"""
     print(colored(f'🛒 Market BUY {symbol} for ${usd_size}', 'green'))
 
-    # Get current ask price
-    ask, bid, _ = ask_bid(symbol)
+    try:
+        # Get current ask price
+        ask, bid, _ = ask_bid(symbol)
+        if ask is None or ask <= 0:
+            print(colored(f'❌ Failed to get valid ask price for {symbol}', 'red'))
+            return None
 
-    # Overbid by 0.1% to ensure fill (market buy needs to be above ask)
-    buy_price = ask * 1.001
+        # Overbid by 0.1% to ensure fill (market buy needs to be above ask)
+        buy_price = ask * 1.001
 
-    # Round to appropriate decimals for BTC (whole numbers)
-    if symbol == 'BTC':
-        buy_price = round(buy_price)
-    else:
-        buy_price = round(buy_price, 1)
+        # Round to appropriate decimals for BTC (whole numbers)
+        if symbol == 'BTC':
+            buy_price = round(buy_price)
+        else:
+            buy_price = round(buy_price, 1)
 
-    # Calculate position size
-    pos_size = usd_size / buy_price
+        # Calculate position size
+        pos_size = usd_size / buy_price
 
-    # Get decimals and round
-    sz_decimals, _ = get_sz_px_decimals(symbol)
-    pos_size = round(pos_size, sz_decimals)
-
-    # Ensure minimum order value
-    order_value = pos_size * buy_price
-    if order_value < 10:
-        print(f'   ⚠️ Order value ${order_value:.2f} below $10 minimum, adjusting...')
-        pos_size = 11 / buy_price  # $11 to have buffer
+        # Get decimals and round
+        sz_decimals, _ = get_sz_px_decimals(symbol)
         pos_size = round(pos_size, sz_decimals)
 
-    print(f'   Placing IOC buy at ${buy_price} (0.1% above ask ${ask})')
-    print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * buy_price:.2f})')
+        # Validate position size
+        if pos_size <= 0:
+            print(colored(f'❌ Invalid position size: {pos_size}', 'red'))
+            return None
 
-    # Place IOC order above ask to ensure fill
-    exchange = Exchange(account, constants.MAINNET_API_URL)
-    order_result = exchange.order(symbol, True, pos_size, buy_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
+        # Ensure minimum order value
+        order_value = pos_size * buy_price
+        if order_value < 10:
+            print(f'   ⚠️ Order value ${order_value:.2f} below $10 minimum, adjusting...')
+            pos_size = 11 / buy_price  # $11 to have buffer
+            pos_size = round(pos_size, sz_decimals)
 
-    print(colored(f'✅ Market buy executed: {pos_size} {symbol} at ${buy_price}', 'green'))
-    return order_result
+        print(f'   Placing IOC buy at ${buy_price} (0.1% above ask ${ask})')
+        print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * buy_price:.2f})')
+
+        # Place IOC order above ask to ensure fill
+        exchange = Exchange(account, constants.MAINNET_API_URL)
+        order_result = exchange.order(symbol, True, pos_size, buy_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
+
+        print(colored(f'✅ Market buy executed: {pos_size} {symbol} at ${buy_price}', 'green'))
+        return order_result
+
+    except Exception as e:
+        print(colored(f'❌ Market buy failed for {symbol}: {e}', 'red'))
+        import traceback
+        traceback.print_exc()
+        return None
 
 def market_sell(symbol, usd_size, account):
-    """Market sell using HyperLiquid"""
+    """Market sell using HyperLiquid with error handling"""
     print(colored(f'💸 Market SELL {symbol} for ${usd_size}', 'red'))
 
-    # Get current bid price
-    ask, bid, _ = ask_bid(symbol)
+    try:
+        # Get current bid price
+        ask, bid, _ = ask_bid(symbol)
+        if bid is None or bid <= 0:
+            print(colored(f'❌ Failed to get valid bid price for {symbol}', 'red'))
+            return None
 
-    # Undersell by 0.1% to ensure fill (market sell needs to be below bid)
-    sell_price = bid * 0.999
+        # Undersell by 0.1% to ensure fill (market sell needs to be below bid)
+        sell_price = bid * 0.999
 
-    # Round to appropriate decimals for BTC (whole numbers)
-    if symbol == 'BTC':
-        sell_price = round(sell_price)
-    else:
-        sell_price = round(sell_price, 1)
+        # Round to appropriate decimals for BTC (whole numbers)
+        if symbol == 'BTC':
+            sell_price = round(sell_price)
+        else:
+            sell_price = round(sell_price, 1)
 
-    # Calculate position size
-    pos_size = usd_size / sell_price
+        # Calculate position size
+        pos_size = usd_size / sell_price
 
-    # Get decimals and round
-    sz_decimals, _ = get_sz_px_decimals(symbol)
-    pos_size = round(pos_size, sz_decimals)
-
-    # Ensure minimum order value
-    order_value = pos_size * sell_price
-    if order_value < 10:
-        print(f'   ⚠️ Order value ${order_value:.2f} below $10 minimum, adjusting...')
-        pos_size = 11 / sell_price  # $11 to have buffer
+        # Get decimals and round
+        sz_decimals, _ = get_sz_px_decimals(symbol)
         pos_size = round(pos_size, sz_decimals)
 
-    print(f'   Placing IOC sell at ${sell_price} (0.1% below bid ${bid})')
-    print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * sell_price:.2f})')
+        # Validate position size
+        if pos_size <= 0:
+            print(colored(f'❌ Invalid position size: {pos_size}', 'red'))
+            return None
 
-    # Place IOC order below bid to ensure fill
-    exchange = Exchange(account, constants.MAINNET_API_URL)
-    order_result = exchange.order(symbol, False, pos_size, sell_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
+        # Ensure minimum order value
+        order_value = pos_size * sell_price
+        if order_value < 10:
+            print(f'   ⚠️ Order value ${order_value:.2f} below $10 minimum, adjusting...')
+            pos_size = 11 / sell_price  # $11 to have buffer
+            pos_size = round(pos_size, sz_decimals)
 
-    print(colored(f'✅ Market sell executed: {pos_size} {symbol} at ${sell_price}', 'red'))
-    return order_result
+        print(f'   Placing IOC sell at ${sell_price} (0.1% below bid ${bid})')
+        print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * sell_price:.2f})')
+
+        # Place IOC order below bid to ensure fill
+        exchange = Exchange(account, constants.MAINNET_API_URL)
+        order_result = exchange.order(symbol, False, pos_size, sell_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
+
+        print(colored(f'✅ Market sell executed: {pos_size} {symbol} at ${sell_price}', 'red'))
+        return order_result
+
+    except Exception as e:
+        print(colored(f'❌ Market sell failed for {symbol}: {e}', 'red'))
+        import traceback
+        traceback.print_exc()
+        return None
 
 def close_position(symbol, account):
     """Close any open position for a symbol"""

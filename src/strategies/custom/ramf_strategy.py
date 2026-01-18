@@ -49,6 +49,9 @@ except ImportError:
     PAPER_TRADING = True
     PAPER_TRADING_BALANCE = 500
 
+# Lower confidence threshold for low volatility regime (0.7x multiplier makes 70 impossible)
+RAMF_MIN_CONFIDENCE_LOW_VOL = 35
+
 
 class RAMFStrategy(BaseStrategy):
     """
@@ -100,7 +103,9 @@ class RAMFStrategy(BaseStrategy):
 
         # Paper trading state
         self.paper_balance = PAPER_TRADING_BALANCE
-        self.paper_positions = {}
+        self.paper_positions = {}  # {position_id: trade_dict}
+        self.closed_positions = []  # List of closed positions for logging
+        self._position_counter = 0  # Unique position ID counter
 
         # Initialize market data provider (replaces Moon Dev API)
         try:
@@ -586,14 +591,18 @@ class RAMFStrategy(BaseStrategy):
                 # Simple trend following based on price vs VWAP
                 if exhaustion['vwap_distance_atr'] > 0.5:
                     long_score += 40
+                    cprint(f"  + Price above VWAP (+40)", "green")
                     if btc_bullish:
                         long_score += 30
+                        cprint(f"  + BTC macro bullish (+30)", "green")
                 elif exhaustion['vwap_distance_atr'] < -0.5:
                     short_score += 40
+                    cprint(f"  + Price below VWAP (+40)", "red")
 
-                # Scale down for low vol (less confident)
+                # Scale down for low vol (less confident) - use lower threshold
                 long_score = int(long_score * 0.7)
                 short_score = int(short_score * 0.7)
+                # NOTE: Using RAMF_MIN_CONFIDENCE_LOW_VOL (35) for this regime
 
             else:
                 # NORMAL VOLATILITY: No clear edge, stay out
@@ -610,10 +619,13 @@ class RAMFStrategy(BaseStrategy):
                 }
 
             # Determine direction and signal strength
-            if long_score >= self.min_confidence:
+            # Use lower threshold for low volatility regime
+            effective_min_confidence = RAMF_MIN_CONFIDENCE_LOW_VOL if regime['regime'] == 'low' else self.min_confidence
+
+            if long_score >= effective_min_confidence:
                 direction = 'BUY'
                 signal_strength = min(1.0, long_score / 100)
-            elif short_score >= self.min_confidence:
+            elif short_score >= effective_min_confidence:
                 direction = 'SELL'
                 signal_strength = min(1.0, short_score / 100)
             else:
@@ -723,8 +735,13 @@ class RAMFStrategy(BaseStrategy):
             risk_amount = self.paper_balance * 0.02
             position_size = risk_amount / (RAMF_STOP_LOSS_PCT / 100) * RAMF_LEVERAGE
 
+            # Generate unique position ID
+            self._position_counter += 1
+            position_id = f"{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._position_counter}"
+
             # Record trade
             trade = {
+                'position_id': position_id,
                 'timestamp': datetime.now().isoformat(),
                 'symbol': symbol,
                 'direction': direction,
@@ -737,8 +754,8 @@ class RAMFStrategy(BaseStrategy):
                 'status': 'OPEN'
             }
 
-            # Store position
-            self.paper_positions[symbol] = trade
+            # Store position with unique ID (no overwrite!)
+            self.paper_positions[position_id] = trade
             self.daily_trades += 1
 
             # Log to file
@@ -750,7 +767,7 @@ class RAMFStrategy(BaseStrategy):
             else:
                 df.to_csv(log_file, index=False)
 
-            cprint(f"[RAMF PAPER] Opened {direction} {symbol}", "magenta")
+            cprint(f"[RAMF PAPER] Opened {direction} {symbol} (ID: {position_id})", "magenta")
             cprint(f"  Entry: ${price:,.2f} | Size: ${position_size:,.2f}", "white")
             cprint(f"  SL: ${trade['stop_loss']:,.2f} | TP: ${trade['take_profit']:,.2f}", "white")
 
@@ -758,7 +775,204 @@ class RAMFStrategy(BaseStrategy):
 
         except Exception as e:
             cprint(f"[RAMF] Error executing paper trade: {e}", "red")
+            import traceback
+            traceback.print_exc()
             return None
+
+    def monitor_paper_positions(self) -> list:
+        """
+        Monitor all open paper positions and close those that hit SL/TP.
+
+        This should be called periodically (e.g., every cycle in main.py).
+
+        Returns:
+            list: List of closed positions
+        """
+        if not PAPER_TRADING or not self.paper_positions:
+            return []
+
+        closed = []
+
+        # Get current prices for all symbols with open positions
+        symbols_to_check = set(pos['symbol'] for pos in self.paper_positions.values())
+        current_prices = {}
+
+        for symbol in symbols_to_check:
+            try:
+                df = self._fetch_candles(symbol, interval='15m', candles=5)
+                if df is not None and len(df) > 0:
+                    current_prices[symbol] = float(df['close'].iloc[-1])
+            except Exception as e:
+                cprint(f"[RAMF] Could not fetch price for {symbol}: {e}", "yellow")
+
+        # Check each position
+        positions_to_close = []
+
+        for position_id, trade in self.paper_positions.items():
+            symbol = trade['symbol']
+            if symbol not in current_prices:
+                continue
+
+            current_price = current_prices[symbol]
+            direction = trade['direction']
+            entry_price = trade['entry_price']
+            stop_loss = trade['stop_loss']
+            take_profit = trade['take_profit']
+
+            close_reason = None
+
+            if direction == 'BUY':
+                # Long position
+                if current_price <= stop_loss:
+                    close_reason = 'STOP_LOSS'
+                elif current_price >= take_profit:
+                    close_reason = 'TAKE_PROFIT'
+            else:
+                # Short position
+                if current_price >= stop_loss:
+                    close_reason = 'STOP_LOSS'
+                elif current_price <= take_profit:
+                    close_reason = 'TAKE_PROFIT'
+
+            if close_reason:
+                positions_to_close.append((position_id, current_price, close_reason))
+
+        # Close positions and calculate PnL
+        for position_id, close_price, reason in positions_to_close:
+            closed_trade = self._close_paper_position(position_id, close_price, reason)
+            if closed_trade:
+                closed.append(closed_trade)
+
+        return closed
+
+    def _close_paper_position(self, position_id: str, close_price: float, reason: str) -> dict:
+        """
+        Close a paper position and update PnL.
+
+        Args:
+            position_id: Unique position ID
+            close_price: Price at which to close
+            reason: Closure reason (STOP_LOSS, TAKE_PROFIT, MANUAL)
+
+        Returns:
+            dict: Closed position with PnL
+        """
+        if position_id not in self.paper_positions:
+            return None
+
+        try:
+            trade = self.paper_positions[position_id].copy()
+            entry_price = trade['entry_price']
+            direction = trade['direction']
+            position_size = trade['position_size']
+
+            # Calculate PnL
+            if direction == 'BUY':
+                price_change_pct = (close_price - entry_price) / entry_price
+            else:
+                price_change_pct = (entry_price - close_price) / entry_price
+
+            # PnL = position_size * price_change_pct (leverage already factored in position_size)
+            pnl = position_size * price_change_pct
+
+            # Update trade record
+            trade['close_price'] = close_price
+            trade['close_timestamp'] = datetime.now().isoformat()
+            trade['close_reason'] = reason
+            trade['pnl'] = round(pnl, 2)
+            trade['pnl_pct'] = round(price_change_pct * 100, 2)
+            trade['status'] = 'CLOSED'
+
+            # Update daily PnL
+            self.daily_pnl += pnl
+
+            # Update paper balance
+            self.paper_balance += pnl
+
+            # Remove from open positions
+            del self.paper_positions[position_id]
+
+            # Add to closed positions
+            self.closed_positions.append(trade)
+
+            # Log closure
+            color = 'green' if pnl > 0 else 'red'
+            cprint(f"[RAMF PAPER] Closed {trade['symbol']} ({reason})", color, attrs=['bold'])
+            cprint(f"  Entry: ${entry_price:,.2f} → Exit: ${close_price:,.2f}", "white")
+            cprint(f"  PnL: ${pnl:+,.2f} ({price_change_pct*100:+.2f}%)", color)
+            cprint(f"  Daily PnL: ${self.daily_pnl:+,.2f} | Balance: ${self.paper_balance:,.2f}", "white")
+
+            # Log to closed trades file
+            self._log_closed_trade(trade)
+
+            return trade
+
+        except Exception as e:
+            cprint(f"[RAMF] Error closing position {position_id}: {e}", "red")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _log_closed_trade(self, trade: dict):
+        """Log closed trade to CSV file."""
+        try:
+            log_file = os.path.join(self.data_dir, 'closed_trades.csv')
+            df = pd.DataFrame([trade])
+
+            if os.path.exists(log_file):
+                df.to_csv(log_file, mode='a', header=False, index=False)
+            else:
+                df.to_csv(log_file, index=False)
+
+        except Exception as e:
+            cprint(f"[RAMF] Error logging closed trade: {e}", "yellow")
+
+    def get_paper_status(self) -> dict:
+        """
+        Get current paper trading status.
+
+        Returns:
+            dict: Status including balance, open positions, daily PnL
+        """
+        return {
+            'paper_balance': round(self.paper_balance, 2),
+            'initial_balance': PAPER_TRADING_BALANCE,
+            'total_pnl': round(self.paper_balance - PAPER_TRADING_BALANCE, 2),
+            'daily_pnl': round(self.daily_pnl, 2),
+            'daily_trades': self.daily_trades,
+            'open_positions': len(self.paper_positions),
+            'total_closed': len(self.closed_positions),
+            'positions': list(self.paper_positions.values())
+        }
+
+    def close_all_paper_positions(self) -> list:
+        """
+        Force close all open paper positions at current market price.
+
+        Returns:
+            list: List of closed positions
+        """
+        if not self.paper_positions:
+            return []
+
+        closed = []
+        position_ids = list(self.paper_positions.keys())
+
+        for position_id in position_ids:
+            trade = self.paper_positions[position_id]
+            symbol = trade['symbol']
+
+            try:
+                df = self._fetch_candles(symbol, interval='15m', candles=5)
+                if df is not None and len(df) > 0:
+                    current_price = float(df['close'].iloc[-1])
+                    closed_trade = self._close_paper_position(position_id, current_price, 'MANUAL')
+                    if closed_trade:
+                        closed.append(closed_trade)
+            except Exception as e:
+                cprint(f"[RAMF] Error closing {position_id}: {e}", "red")
+
+        return closed
 
 
 # For standalone testing

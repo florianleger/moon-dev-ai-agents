@@ -36,7 +36,7 @@ except ImportError:
     from src import nice_funcs as n
     USE_EXCHANGE_MANAGER = False
 
-# 🎯 Strategy Evaluation Prompt
+# 🎯 Strategy Evaluation Prompt - JSON format for robust parsing
 STRATEGY_EVAL_PROMPT = """
 You are Moon Dev's Strategy Validation Assistant 🌙
 
@@ -54,19 +54,21 @@ Your task:
 3. Look for confirmation/contradiction between different strategies
 4. Consider risk factors
 
-Respond in this format:
-1. First line: EXECUTE or REJECT for each signal (e.g., "EXECUTE signal_1, REJECT signal_2")
-2. Then explain your reasoning:
-   - Signal analysis
-   - Market alignment
-   - Risk assessment
-   - Confidence in each decision (0-100%)
+IMPORTANT: Respond ONLY with valid JSON in this exact format:
+{{
+  "decisions": [
+    {{"signal_index": 0, "action": "EXECUTE", "confidence": 85, "reason": "Strong momentum exhaustion with volume confirmation"}},
+    {{"signal_index": 1, "action": "REJECT", "confidence": 60, "reason": "Conflicting signals, low conviction"}}
+  ],
+  "overall_reasoning": "Summary of analysis..."
+}}
 
-Remember:
+Rules:
+- "action" must be exactly "EXECUTE" or "REJECT"
+- "signal_index" corresponds to position in signals array (0-indexed)
+- "confidence" is 0-100
+- If unsure, use REJECT (better to miss a trade than risk a bad one)
 - Moon Dev prioritizes risk management! 🛡️
-- Multiple confirming signals increase confidence
-- Contradicting signals require deeper analysis
-- Better to reject a signal than risk a bad trade
 """
 
 class StrategyAgent:
@@ -127,14 +129,14 @@ class StrategyAgent:
         print(f"🤖 Moon Dev's Strategy Agent initialized with {len(self.enabled_strategies)} strategies!")
 
     def evaluate_signals(self, signals, market_data):
-        """Have LLM evaluate strategy signals"""
+        """Have LLM evaluate strategy signals with robust JSON parsing"""
         try:
             if not signals:
                 return None
-                
+
             # Format signals for prompt (use NumpyEncoder for numpy types)
             signals_str = json.dumps(signals, indent=2, cls=NumpyEncoder)
-            
+
             message = self.client.messages.create(
                 model=AI_MODEL,
                 max_tokens=AI_MAX_TOKENS,
@@ -143,31 +145,74 @@ class StrategyAgent:
                     "role": "user",
                     "content": STRATEGY_EVAL_PROMPT.format(
                         strategy_signals=signals_str,
-                        market_data=market_data
+                        market_data=market_data if market_data else "No market data available"
                     )
                 }]
             )
-            
+
             response = message.content
             if isinstance(response, list):
                 response = response[0].text if hasattr(response[0], 'text') else str(response[0])
-            
-            # Parse response
-            lines = response.split('\n')
-            decisions = lines[0].strip().split(',')
-            reasoning = '\n'.join(lines[1:])
-            
-            print("🤖 Strategy Evaluation:")
-            print(f"Decisions: {decisions}")
-            print(f"Reasoning: {reasoning}")
-            
-            return {
-                'decisions': decisions,
-                'reasoning': reasoning
-            }
-            
+
+            # Try to parse JSON response
+            try:
+                # Extract JSON from response (handle markdown code blocks)
+                json_str = response.strip()
+                if '```json' in json_str:
+                    json_str = json_str.split('```json')[1].split('```')[0].strip()
+                elif '```' in json_str:
+                    json_str = json_str.split('```')[1].split('```')[0].strip()
+
+                evaluation = json.loads(json_str)
+
+                # Convert to list of decisions for backward compatibility
+                decisions = []
+                for decision in evaluation.get('decisions', []):
+                    action = decision.get('action', 'REJECT')
+                    decisions.append(action)
+
+                reasoning = evaluation.get('overall_reasoning', 'No reasoning provided')
+
+                cprint("🤖 Strategy Evaluation (JSON parsed successfully):", "green")
+                for i, decision in enumerate(evaluation.get('decisions', [])):
+                    action = decision.get('action', 'REJECT')
+                    confidence = decision.get('confidence', 0)
+                    reason = decision.get('reason', 'No reason')
+                    color = 'green' if action == 'EXECUTE' else 'red'
+                    cprint(f"  Signal {i}: {action} (confidence: {confidence}%) - {reason}", color)
+
+                return {
+                    'decisions': decisions,
+                    'reasoning': reasoning,
+                    'raw_evaluation': evaluation
+                }
+
+            except json.JSONDecodeError:
+                # Fallback: try old parsing method
+                cprint("⚠️ JSON parsing failed, using fallback parser", "yellow")
+                lines = response.split('\n')
+                decisions = []
+
+                # Look for EXECUTE or REJECT keywords in each line
+                for line in lines:
+                    upper_line = line.upper()
+                    if 'EXECUTE' in upper_line:
+                        decisions.append('EXECUTE')
+                    elif 'REJECT' in upper_line:
+                        decisions.append('REJECT')
+
+                # If we found fewer decisions than signals, default to REJECT for safety
+                while len(decisions) < len(signals):
+                    decisions.append('REJECT')
+
+                return {
+                    'decisions': decisions[:len(signals)],
+                    'reasoning': response
+                }
+
         except Exception as e:
-            print(f"❌ Error evaluating signals: {e}")
+            cprint(f"❌ Error evaluating signals: {e}", "red")
+            # Return None to trigger fallback behavior
             return None
 
     def get_signals(self, token):
@@ -176,7 +221,7 @@ class StrategyAgent:
             # 1. Collect signals from all strategies
             signals = []
             print(f"\n🔍 Analyzing {token} with {len(self.enabled_strategies)} strategies...")
-            
+
             for strategy in self.enabled_strategies:
                 # Pass symbol to strategy (RAMF and newer strategies support this)
                 try:
@@ -193,56 +238,71 @@ class StrategyAgent:
                         'direction': signal['direction'],
                         'metadata': signal.get('metadata', {})
                     })
-            
+
             if not signals:
                 print(f"ℹ️ No strategy signals for {token}")
                 return []
-            
+
             print(f"\n📊 Raw Strategy Signals for {token}:")
             for signal in signals:
                 print(f"  • {signal['strategy_name']}: {signal['direction']} ({signal['signal']}) for {signal['token']}")
-            
-            # 2. Get market data for context
+
+            # 2. Get market data for context (optional)
+            market_data = None
             try:
                 from src.data.ohlcv_collector import collect_token_data
                 market_data = collect_token_data(token)
             except Exception as e:
                 print(f"⚠️ Could not get market data: {e}")
-                market_data = {}
-            
-            # 3. Have LLM evaluate the signals
+
+            # 3. Try LLM evaluation (but don't fail if unavailable)
             print("\n🤖 Getting LLM evaluation of signals...")
             evaluation = self.evaluate_signals(signals, market_data)
-            
-            if not evaluation:
-                print("❌ Failed to get LLM evaluation")
-                return []
-            
-            # 4. Filter signals based on LLM decisions
+
+            # 4. Filter signals based on LLM decisions OR use high-confidence signals directly
             approved_signals = []
-            for signal, decision in zip(signals, evaluation['decisions']):
-                if "EXECUTE" in decision.upper():
-                    print(f"✅ LLM approved {signal['strategy_name']}'s {signal['direction']} signal")
-                    approved_signals.append(signal)
-                else:
-                    print(f"❌ LLM rejected {signal['strategy_name']}'s {signal['direction']} signal")
-            
+
+            if evaluation:
+                # LLM evaluation available - use it
+                for i, signal in enumerate(signals):
+                    if i < len(evaluation['decisions']):
+                        decision = evaluation['decisions'][i]
+                        if "EXECUTE" in decision.upper():
+                            cprint(f"✅ LLM approved {signal['strategy_name']}'s {signal['direction']} signal", "green")
+                            approved_signals.append(signal)
+                        else:
+                            cprint(f"❌ LLM rejected {signal['strategy_name']}'s {signal['direction']} signal", "red")
+                    else:
+                        cprint(f"⚠️ No LLM decision for signal {i}, defaulting to REJECT", "yellow")
+            else:
+                # LLM unavailable - fallback to using high-confidence signals directly
+                cprint("⚠️ LLM evaluation unavailable - using signal confidence fallback", "yellow")
+                for signal in signals:
+                    # Only auto-approve signals with direction != NEUTRAL and confidence >= 0.7
+                    if signal['direction'] != 'NEUTRAL' and signal['signal'] >= 0.7:
+                        cprint(f"✅ Auto-approved high-confidence signal: {signal['strategy_name']} {signal['direction']} ({signal['signal']})", "green")
+                        approved_signals.append(signal)
+                    elif signal['direction'] != 'NEUTRAL':
+                        cprint(f"⚠️ Signal confidence too low for auto-approval: {signal['signal']}", "yellow")
+
             # 5. Print final approved signals
             if approved_signals:
-                print(f"\n🎯 Final Approved Signals for {token}:")
+                cprint(f"\n🎯 Final Approved Signals for {token}:", "cyan")
                 for signal in approved_signals:
-                    print(f"  • {signal['strategy_name']}: {signal['direction']} ({signal['signal']})")
-                
+                    cprint(f"  • {signal['strategy_name']}: {signal['direction']} ({signal['signal']})", "white")
+
                 # 6. Execute approved signals
-                print("\n💫 Executing approved strategy signals...")
+                cprint("\n💫 Executing approved strategy signals...", "cyan")
                 self.execute_strategy_signals(approved_signals)
             else:
-                print(f"\n⚠️ No signals approved by LLM for {token}")
-            
+                print(f"\n⚠️ No signals approved for {token}")
+
             return approved_signals
-            
+
         except Exception as e:
-            print(f"❌ Error getting strategy signals: {e}")
+            cprint(f"❌ Error getting strategy signals: {e}", "red")
+            import traceback
+            traceback.print_exc()
             return []
 
     def combine_with_portfolio(self, signals, current_portfolio):
