@@ -1,8 +1,6 @@
 # Moon Dev AI Trading Bot - Docker Compose
 # For local development and Coolify deployment
 
-version: '3.8'
-
 services:
   trading-bot:
     build:
@@ -21,8 +19,10 @@ services:
       - TZ=UTC
 
     # Persistent volume for trade data and logs
+    # Note: Mount specific subdirectories to preserve Python source files
     volumes:
-      - trading-data:/app/src/data
+      - trading-data:/app/src/data/ramf
+      - execution-results:/app/src/data/execution_results
       - ./logs:/app/logs
 
     # Resource limits (adjust for your Coolify instance)
@@ -52,4 +52,6 @@ services:
 
 volumes:
   trading-data:
+    driver: local
+  execution-results:
     driver: local

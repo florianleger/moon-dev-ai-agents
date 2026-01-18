@@ -15,13 +15,6 @@ from config import *
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
-# Import agents
-from src.agents.trading_agent import TradingAgent
-from src.agents.risk_agent import RiskAgent
-from src.agents.strategy_agent import StrategyAgent
-from src.agents.copybot_agent import CopyBotAgent
-from src.agents.sentiment_agent import SentimentAgent
-
 # Load environment variables
 load_dotenv()
 
@@ -36,6 +29,24 @@ ACTIVE_AGENTS = {
     # Add more agents here as we build them:
     # 'portfolio': False,  # Future portfolio optimization agent
 }
+
+# Import agents conditionally to avoid loading unnecessary dependencies
+TradingAgent = None
+RiskAgent = None
+StrategyAgent = None
+CopyBotAgent = None
+SentimentAgent = None
+
+if ACTIVE_AGENTS['trading']:
+    from src.agents.trading_agent import TradingAgent
+if ACTIVE_AGENTS['risk']:
+    from src.agents.risk_agent import RiskAgent
+if ACTIVE_AGENTS['strategy']:
+    from src.agents.strategy_agent import StrategyAgent
+if ACTIVE_AGENTS['copybot']:
+    from src.agents.copybot_agent import CopyBotAgent
+if ACTIVE_AGENTS['sentiment']:
+    from src.agents.sentiment_agent import SentimentAgent
 
 def run_agents():
     """Run all active agents in sequence"""
