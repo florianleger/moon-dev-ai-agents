@@ -8,7 +8,18 @@ This is an experimental AI trading system that orchestrates 48+ specialized AI a
 
 ## Key Development Commands
 
-### Environment Setup
+### Conductor Workspace Setup
+```bash
+# For Conductor workspaces, run the setup script first:
+./setup-conductor.sh
+
+# This will:
+# 1. Copy .env from ~/dev/moon-dev-ai-agents/
+# 2. Activate conda environment 'tflow'
+# 3. Install all Python dependencies
+```
+
+### Manual Environment Setup
 ```bash
 # Use existing conda environment (DO NOT create new virtual environments)
 conda activate tflow
