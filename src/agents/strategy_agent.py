@@ -11,6 +11,22 @@ import os
 import importlib
 import inspect
 import time
+import numpy as np
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        if isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        if isinstance(obj, (np.bool_, bool)):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
 
 # Import exchange manager for unified trading
 try:
@@ -116,8 +132,8 @@ class StrategyAgent:
             if not signals:
                 return None
                 
-            # Format signals for prompt
-            signals_str = json.dumps(signals, indent=2)
+            # Format signals for prompt (use NumpyEncoder for numpy types)
+            signals_str = json.dumps(signals, indent=2, cls=NumpyEncoder)
             
             message = self.client.messages.create(
                 model=AI_MODEL,

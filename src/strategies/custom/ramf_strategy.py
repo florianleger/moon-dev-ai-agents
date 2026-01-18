@@ -203,8 +203,8 @@ class RAMFStrategy(BaseStrategy):
 
             return {
                 'regime': regime,
-                'atr_percentile': round(percentile, 1),
-                'current_atr': round(current_atr, 6)
+                'atr_percentile': round(float(percentile), 1),
+                'current_atr': round(float(current_atr), 6)
             }
 
         except Exception as e:
@@ -263,13 +263,13 @@ class RAMFStrategy(BaseStrategy):
             )
 
             return {
-                'vwap_distance_atr': round(vwap_distance_atr, 2),
-                'consecutive_up': consecutive_up,
-                'consecutive_down': consecutive_down,
-                'overbought_exhaustion': overbought_exhaustion,
-                'oversold_exhaustion': oversold_exhaustion,
-                'current_vwap': round(current_vwap, 2),
-                'current_price': round(current_price, 2)
+                'vwap_distance_atr': round(float(vwap_distance_atr), 2),
+                'consecutive_up': int(consecutive_up),
+                'consecutive_down': int(consecutive_down),
+                'overbought_exhaustion': bool(overbought_exhaustion),
+                'oversold_exhaustion': bool(oversold_exhaustion),
+                'current_vwap': round(float(current_vwap), 2),
+                'current_price': round(float(current_price), 2)
             }
 
         except Exception as e:
@@ -303,10 +303,10 @@ class RAMFStrategy(BaseStrategy):
             is_volume_spike = volume_ratio > self.volume_spike_threshold
 
             return {
-                'volume_ratio': round(volume_ratio, 2),
-                'is_volume_spike': is_volume_spike,
-                'current_volume': round(current_volume, 2),
-                'avg_volume': round(avg_volume, 2)
+                'volume_ratio': round(float(volume_ratio), 2),
+                'is_volume_spike': bool(is_volume_spike),
+                'current_volume': round(float(current_volume), 2),
+                'avg_volume': round(float(avg_volume), 2)
             }
 
         except Exception as e:
@@ -620,23 +620,23 @@ class RAMFStrategy(BaseStrategy):
 
             signal = {
                 'token': symbol,
-                'signal': round(signal_strength, 3),
+                'signal': round(float(signal_strength), 3),
                 'direction': direction,
                 'metadata': {
                     'strategy_type': 'ramf',
                     'regime': regime,
                     'exhaustion': exhaustion,
                     'volume': volume,
-                    'funding_zscore': funding_zscore,
-                    'liquidation_ratio': liq_ratio,
-                    'btc_macro_bullish': btc_bullish,
-                    'rsi': rsi,
-                    'long_score': long_score,
-                    'short_score': short_score,
-                    'current_price': current_price,
-                    'stop_loss_pct': RAMF_STOP_LOSS_PCT,
-                    'take_profit_pct': RAMF_TAKE_PROFIT_PCT,
-                    'leverage': RAMF_LEVERAGE
+                    'funding_zscore': float(funding_zscore),
+                    'liquidation_ratio': float(liq_ratio),
+                    'btc_macro_bullish': bool(btc_bullish),
+                    'rsi': float(rsi),
+                    'long_score': int(long_score),
+                    'short_score': int(short_score),
+                    'current_price': float(current_price),
+                    'stop_loss_pct': float(RAMF_STOP_LOSS_PCT),
+                    'take_profit_pct': float(RAMF_TAKE_PROFIT_PCT),
+                    'leverage': int(RAMF_LEVERAGE)
                 }
             }
 
