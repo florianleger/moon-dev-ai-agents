@@ -55,7 +55,7 @@ fi
 # Optional but recommended
 echo ""
 echo "Checking optional environment variables..."
-check_env "MOONDEV_API_KEY" "optional"
+# Note: MOONDEV_API_KEY no longer needed - using Binance WebSocket for liquidations
 check_env "COINGECKO_API_KEY" "optional"
 check_env "BIRDEYE_API_KEY" "optional"
 

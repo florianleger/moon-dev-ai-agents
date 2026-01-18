@@ -101,7 +101,7 @@ response = model.generate_response(system_prompt, user_content, temperature, max
 - AI settings: `AI_MODEL`, `AI_MAX_TOKENS`, `AI_TEMPERATURE`
 
 **Environment Variables**: `.env` (see `.env_example`)
-- Trading APIs: `BIRDEYE_API_KEY`, `MOONDEV_API_KEY`, `COINGECKO_API_KEY`
+- Trading APIs: `BIRDEYE_API_KEY`, `COINGECKO_API_KEY` (MOONDEV_API_KEY no longer needed)
 - AI Services: `ANTHROPIC_KEY`, `OPENAI_KEY`, `DEEPSEEK_KEY`, `GROQ_API_KEY`, `GEMINI_KEY`
 - Blockchain: `SOLANA_PRIVATE_KEY`, `HYPER_LIQUID_ETH_PRIVATE_KEY`, `RPC_ENDPOINT`
 
@@ -112,8 +112,9 @@ response = model.generate_response(system_prompt, user_content, temperature, max
 - Trading: `market_buy()`, `market_sell()`, `chunk_kill()`, `open_position()`
 - Analysis: Technical indicators, PnL calculations, rug pull detection
 
-**`src/agents/api.py`**: `MoonDevAPI` class for custom Moon Dev API endpoints
-- `get_liquidation_data()`, `get_funding_data()`, `get_oi_data()`, `get_copybot_follow_list()`
+**`src/data_providers/`**: Market data providers (replaces Moon Dev API)
+- `binance_futures.py`: Real-time liquidations via WebSocket
+- `market_data.py`: Unified interface for funding rates, OI (HyperLiquid), liquidations (Binance)
 
 ### Data Flow Pattern
 
@@ -175,10 +176,11 @@ class YourStrategy(BaseStrategy):
 - AI confirmation for position-closing decisions (configurable via `USE_AI_CONFIRMATION`)
 
 ### Data Sources
-1. **BirdEye API** - Solana token data (price, volume, liquidity, OHLCV)
-2. **Moon Dev API** - Custom signals (liquidations, funding rates, OI, copybot data)
-3. **CoinGecko API** - 15,000+ token metadata, market caps, sentiment
-4. **Helius RPC** - Solana blockchain interaction
+1. **HyperLiquid API** - Funding rates, open interest, positions (free, real-time)
+2. **Binance Futures WebSocket** - Real-time liquidation data (free)
+3. **BirdEye API** - Solana token data (price, volume, liquidity, OHLCV)
+4. **CoinGecko API** - 15,000+ token metadata, market caps, sentiment
+5. **Helius RPC** - Solana blockchain interaction
 
 ### Autonomous Execution
 - Main loop runs every 15 minutes by default (`SLEEP_BETWEEN_RUNS_MINUTES`)

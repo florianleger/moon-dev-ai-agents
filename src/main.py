@@ -19,15 +19,15 @@ sys.path.append(project_root)
 load_dotenv()
 
 # Agent Configuration
+# Note: Only RAMF strategy is active. Other agents disabled to simplify system.
+# Data sources: HyperLiquid (funding, OI) + Binance WebSocket (liquidations)
+# No Moon Dev API dependency.
 ACTIVE_AGENTS = {
-    'risk': False,      # Risk management agent
-    'trading': False,   # LLM trading agent
-    'strategy': True,   # Strategy-based trading agent (MultifactorStrategy)
-    'copybot': False,   # CopyBot agent
-    'sentiment': False, # Run sentiment_agent.py directly instead
-    # whale_agent is run from whale_agent.py
-    # Add more agents here as we build them:
-    # 'portfolio': False,  # Future portfolio optimization agent
+    'risk': False,      # Risk management agent (disabled)
+    'trading': False,   # LLM trading agent (disabled)
+    'strategy': True,   # RAMF Strategy only
+    'copybot': False,   # CopyBot agent (disabled)
+    'sentiment': False, # Sentiment agent (disabled)
 }
 
 # Import agents conditionally to avoid loading unnecessary dependencies

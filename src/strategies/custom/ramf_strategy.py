@@ -102,6 +102,15 @@ class RAMFStrategy(BaseStrategy):
         self.paper_balance = PAPER_TRADING_BALANCE
         self.paper_positions = {}
 
+        # Initialize market data provider (replaces Moon Dev API)
+        try:
+            from src.data_providers.market_data import MarketDataProvider
+            self._market_data = MarketDataProvider(start_liquidation_stream=True)
+            cprint("[RAMF] Market data provider initialized", "green")
+        except Exception as e:
+            self._market_data = None
+            cprint(f"[RAMF] Warning: Could not initialize market data provider: {e}", "yellow")
+
         # Data directory for logging
         self.data_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -358,32 +367,28 @@ class RAMFStrategy(BaseStrategy):
         """
         Calculate ratio of long to short liquidations.
 
-        Uses Moon Dev API for liquidation data if available.
+        Uses Binance Futures WebSocket for real-time liquidation data.
+
+        Ratio > 1.0 = More longs liquidated (bearish pressure)
+        Ratio < 1.0 = More shorts liquidated (bullish pressure)
+        Ratio = 1.0 = Balanced (or no data)
 
         Returns:
             float: Long/Short liquidation ratio (1.0 = balanced)
         """
         try:
-            from src.agents.api import MoonDevAPI
+            if self._market_data is not None:
+                ratio = self._market_data.get_liquidation_ratio(minutes=15)
+                return round(float(ratio), 2)
 
-            api = MoonDevAPI()
-            df = api.get_liquidation_data(limit=10000)
+            # Fallback: try direct import
+            from src.data_providers.market_data import get_market_data_provider
+            provider = get_market_data_provider()
+            ratio = provider.get_liquidation_ratio(minutes=15)
+            return round(float(ratio), 2)
 
-            if df is not None and not df.empty and 'side' in df.columns:
-                # SELL side = long liquidations, BUY side = short liquidations
-                longs_liq = df[df['side'] == 'SELL']['usd_value'].sum() if 'usd_value' in df.columns else 0
-                shorts_liq = df[df['side'] == 'BUY']['usd_value'].sum() if 'usd_value' in df.columns else 0
-
-                if shorts_liq > 0:
-                    ratio = longs_liq / shorts_liq
-                else:
-                    ratio = 1.0 if longs_liq == 0 else 2.0
-
-                return round(ratio, 2)
-
-            return 1.0
-
-        except Exception:
+        except Exception as e:
+            cprint(f"[RAMF] Warning: Could not get liquidation ratio: {e}", "yellow")
             # Return neutral if liquidation data unavailable
             return 1.0
 

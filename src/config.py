@@ -159,6 +159,16 @@ RAMF_MAX_DAILY_LOSS_USD = 25         # Daily loss limit in USD
 RAMF_MAX_DAILY_GAIN_USD = 25         # Daily gain limit in USD (prevents overtrading)
 
 # ============================================================================
+# Data Provider Settings (Replaces Moon Dev API)
+# ============================================================================
+# Liquidations: Binance Futures WebSocket (free, real-time)
+# Funding/OI: HyperLiquid API (free, real-time)
+
+BINANCE_WS_URL = "wss://fstream.binance.com/ws/!forceOrder@arr"
+LIQUIDATION_BUFFER_SIZE = 10000      # Max liquidations to keep in memory
+LIQUIDATION_LOOKBACK_MINUTES = 15    # Default lookback for ratio calculation
+
+# ============================================================================
 # Paper Trading Mode
 # ============================================================================
 # Set PAPER_TRADING = True to simulate trades without real execution
