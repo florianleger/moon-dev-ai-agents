@@ -96,6 +96,22 @@ def run_agents():
 
 if __name__ == "__main__":
     cprint("\n🌙 Moon Dev AI Agent Trading System Starting...", "white", "on_blue")
+
+    # Show paper trading status
+    try:
+        from src.config import PAPER_TRADING, PAPER_TRADING_BALANCE, ACTIVE_STRATEGY
+        if PAPER_TRADING:
+            cprint("\n⚠️  PAPER TRADING MODE ENABLED", "yellow", "on_red", attrs=['bold'])
+            cprint(f"   Simulated Balance: ${PAPER_TRADING_BALANCE}", "yellow")
+            cprint("   No real trades will be executed\n", "yellow")
+        else:
+            cprint("\n🔴 LIVE TRADING MODE", "white", "on_red", attrs=['bold'])
+            cprint("   Real trades will be executed!\n", "red")
+
+        cprint(f"📈 Active Strategy: {ACTIVE_STRATEGY.upper()}", "cyan")
+    except ImportError:
+        pass
+
     cprint("\n📊 Active Agents:", "white", "on_blue")
     for agent, active in ACTIVE_AGENTS.items():
         status = "✅ ON" if active else "❌ OFF"

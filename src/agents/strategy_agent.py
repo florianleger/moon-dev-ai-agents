@@ -67,24 +67,44 @@ class StrategyAgent:
             self.em = None
             cprint("✅ Strategy Agent using direct nice_funcs", "green")
         
+        # Import active strategy config
+        try:
+            from src.config import ACTIVE_STRATEGY, PAPER_TRADING
+            self.active_strategy = ACTIVE_STRATEGY
+            self.paper_trading = PAPER_TRADING
+        except ImportError:
+            self.active_strategy = 'ramf'
+            self.paper_trading = True
+
         if ENABLE_STRATEGIES:
             try:
-                # Import strategies directly
-                from src.strategies.custom.example_strategy import ExampleStrategy
-                from src.strategies.custom.multifactor_strategy import MultifactorStrategy
+                # Load strategy based on ACTIVE_STRATEGY config
+                if self.active_strategy == 'ramf':
+                    from src.strategies.custom.ramf_strategy import RAMFStrategy
+                    self.enabled_strategies.append(RAMFStrategy())
+                    cprint(f"✅ Loaded RAMF Strategy (Paper Trading: {self.paper_trading})", "green")
+                elif self.active_strategy == 'multifactor':
+                    from src.strategies.custom.multifactor_strategy import MultifactorStrategy
+                    self.enabled_strategies.append(MultifactorStrategy())
+                    cprint("✅ Loaded Multifactor Strategy", "green")
+                elif self.active_strategy == 'example':
+                    from src.strategies.custom.example_strategy import ExampleStrategy
+                    self.enabled_strategies.append(ExampleStrategy())
+                    cprint("✅ Loaded Example Strategy", "green")
+                else:
+                    # Load all strategies if unknown
+                    from src.strategies.custom.example_strategy import ExampleStrategy
+                    from src.strategies.custom.multifactor_strategy import MultifactorStrategy
+                    self.enabled_strategies.extend([ExampleStrategy(), MultifactorStrategy()])
 
-                # Initialize strategies
-                self.enabled_strategies.extend([
-                    ExampleStrategy(),
-                    MultifactorStrategy()
-                ])
-                
                 print(f"✅ Loaded {len(self.enabled_strategies)} strategies!")
                 for strategy in self.enabled_strategies:
                     print(f"  • {strategy.name}")
-                    
+
             except Exception as e:
                 print(f"⚠️ Error loading strategies: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             print("🤖 Strategy Agent is disabled in config.py")
         
@@ -142,8 +162,14 @@ class StrategyAgent:
             print(f"\n🔍 Analyzing {token} with {len(self.enabled_strategies)} strategies...")
             
             for strategy in self.enabled_strategies:
-                signal = strategy.generate_signals()
-                if signal and signal['token'] == token:
+                # Pass symbol to strategy (RAMF and newer strategies support this)
+                try:
+                    signal = strategy.generate_signals(symbol=token)
+                except TypeError:
+                    # Fallback for strategies that don't accept symbol parameter
+                    signal = strategy.generate_signals()
+
+                if signal and signal.get('token') == token:
                     signals.append({
                         'token': signal['token'],
                         'strategy_name': strategy.name,
@@ -234,6 +260,23 @@ class StrategyAgent:
             if not approved_signals:
                 print("⚠️ No approved signals to execute")
                 return
+
+            # Check for paper trading mode
+            try:
+                from src.config import PAPER_TRADING
+                if PAPER_TRADING:
+                    cprint("\n📝 PAPER TRADING MODE - Simulating trades...", "yellow")
+                    for signal in approved_signals:
+                        # Try to use strategy's paper trade method if available
+                        for strategy in self.enabled_strategies:
+                            if hasattr(strategy, 'execute_paper_trade'):
+                                strategy.execute_paper_trade(signal)
+                                break
+                        else:
+                            cprint(f"  [PAPER] Would execute: {signal['direction']} {signal['token']}", "yellow")
+                    return
+            except ImportError:
+                pass
 
             print("\n🚀 Moon Dev executing strategy signals...")
             print(f"📝 Received {len(approved_signals)} signals to execute")

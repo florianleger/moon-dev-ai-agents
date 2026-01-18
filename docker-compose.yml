@@ -1,0 +1,55 @@
+# Moon Dev AI Trading Bot - Docker Compose
+# For local development and Coolify deployment
+
+version: '3.8'
+
+services:
+  trading-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: moon-dev-trading-bot
+    restart: unless-stopped
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Override specific env vars if needed
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+
+    # Persistent volume for trade data and logs
+    volumes:
+      - trading-data:/app/src/data
+      - ./logs:/app/logs
+
+    # Resource limits (adjust for your Coolify instance)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('healthy')"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  trading-data:
+    driver: local

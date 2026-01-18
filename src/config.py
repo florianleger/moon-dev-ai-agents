@@ -143,6 +143,37 @@ MULTIFACTOR_WEIGHTS = {
 MULTIFACTOR_BUY_THRESHOLD = 0.6   # Score > 0.6 = BUY
 MULTIFACTOR_SELL_THRESHOLD = -0.6  # Score < -0.6 = SELL
 
+# ============================================================================
+# RAMF Strategy Settings (Regime Adaptive Momentum Fade)
+# ============================================================================
+# A contrarian strategy that fades exhausted momentum in high volatility regimes
+# Designed for small accounts with conservative risk management
+
+RAMF_ASSETS = ['BTC', 'ETH', 'SOL']  # Assets to trade with RAMF strategy
+RAMF_LEVERAGE = 3                    # Conservative leverage for small accounts (1-5 recommended)
+RAMF_STOP_LOSS_PCT = 1.0             # Stop-loss percentage (1% tight for intraday)
+RAMF_TAKE_PROFIT_PCT = 2.0           # Take-profit percentage (2:1 R:R ratio)
+RAMF_MIN_CONFIDENCE = 70             # Minimum confidence score to trade (0-100)
+RAMF_MAX_DAILY_TRADES = 6            # Maximum trades per day
+RAMF_MAX_DAILY_LOSS_USD = 25         # Daily loss limit in USD
+RAMF_MAX_DAILY_GAIN_USD = 25         # Daily gain limit in USD (prevents overtrading)
+
+# ============================================================================
+# Paper Trading Mode
+# ============================================================================
+# Set PAPER_TRADING = True to simulate trades without real execution
+# Recommended: Start with paper trading to validate strategy performance
+
+PAPER_TRADING = True                 # True = simulation mode, False = live trading
+PAPER_TRADING_BALANCE = 500          # Simulated starting balance in USD
+
+# ============================================================================
+# Active Strategy Selection
+# ============================================================================
+# Choose which strategy to run (only one should be active at a time)
+
+ACTIVE_STRATEGY = 'ramf'             # Options: 'multifactor', 'ramf', 'example'
+
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3
 USDC_SIZE = 1

@@ -1,0 +1,87 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets and config (loaded via env vars)
+.env
+.env.local
+.env.production
+dontshare.py
+secrets.json
+config.private.py
+
+# Data directories (mounted as volumes)
+src/data/
+temp_data/
+trading_history/
+logs/
+
+# Documentation and non-essential files
+*.md
+!README.md
+LICENSE
+docs/
+
+# Test files
+tests/
+test_*.py
+*_test.py
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Private strategies (should be copied separately if needed)
+src/strategies/custom/private_*
+src/strategies/custom/secret_*
+src/strategies/custom/dev_*
+
+# Frontend (if any)
+src/frontend/
+node_modules/
+
+# Conductor workspace files
+.context/
+conductor.json
+setup-conductor.sh
+
+# Plan files
+*.plan.md
