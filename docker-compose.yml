@@ -19,9 +19,10 @@ services:
       - TZ=UTC
       - DATA_DIR=/app/data
 
-    # Expose web dashboard port
-    ports:
-      - "8080:8080"
+    # Note: For Coolify, don't expose ports directly - use Coolify's domain routing
+    # For local dev, uncomment: ports: ["8080:8080"]
+    expose:
+      - "8080"
 
     # Persistent volume for trade data and logs
     # Note: Mount specific subdirectories to preserve Python source files
