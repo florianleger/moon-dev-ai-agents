@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Moon Dev Trading{% endblock %}
+
+{% block content %}
+<div x-data="dashboardData()" x-init="init()">
+    <!-- Header with actions -->
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-2xl font-bold text-white">Trading Dashboard</h1>
+        <div class="flex gap-2">
+            <button @click="toggleStrategy()"
+                    :class="running ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'"
+                    class="px-4 py-2 rounded-lg text-white font-medium transition-colors">
+                <span x-text="running ? 'Stop Strategy' : 'Start Strategy'"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <!-- Balance -->
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-gray-400 text-sm">Paper Balance</p>
+                    <p class="text-2xl font-bold text-white" x-text="'$' + balance.toFixed(2)">$0.00</p>
+                </div>
+                <div class="text-3xl">&#128176;</div>
+            </div>
+        </div>
+
+        <!-- Daily PnL -->
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-gray-400 text-sm">Daily PnL</p>
+                    <p class="text-2xl font-bold"
+                       :class="dailyPnl >= 0 ? 'text-green-400' : 'text-red-400'"
+                       x-text="(dailyPnl >= 0 ? '+$' : '-$') + Math.abs(dailyPnl).toFixed(2)">$0.00</p>
+                </div>
+                <div class="text-3xl" x-text="dailyPnl >= 0 ? '&#128200;' : '&#128201;'">&#128200;</div>
+            </div>
+        </div>
+
+        <!-- Open Positions -->
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-gray-400 text-sm">Open Positions</p>
+                    <p class="text-2xl font-bold text-white">
+                        <span x-text="openPositions">0</span>
+                        <span class="text-gray-500 text-lg">/ 6 max</span>
+                    </p>
+                </div>
+                <div class="text-3xl">&#128202;</div>
+            </div>
+        </div>
+
+        <!-- Total PnL -->
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-gray-400 text-sm">Total PnL</p>
+                    <p class="text-2xl font-bold"
+                       :class="totalPnl >= 0 ? 'text-green-400' : 'text-red-400'"
+                       x-text="(totalPnl >= 0 ? '+$' : '-$') + Math.abs(totalPnl).toFixed(2)">$0.00</p>
+                </div>
+                <div class="text-3xl">&#127775;</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PnL Chart -->
+    <div class="bg-gray-800 rounded-xl p-4 border border-gray-700 mb-6">
+        <h2 class="text-lg font-semibold text-white mb-4">PnL History (7 Days)</h2>
+        <div class="h-64">
+            <canvas id="pnlChart"></canvas>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Open Positions Table -->
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-white">Open Positions</h2>
+                <button @click="closeAllPositions()"
+                        x-show="positions.length > 0"
+                        class="text-sm bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-white transition-colors">
+                    Close All
+                </button>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-gray-400 border-b border-gray-700">
+                            <th class="text-left py-2">Symbol</th>
+                            <th class="text-left py-2">Side</th>
+                            <th class="text-right py-2">Size</th>
+                            <th class="text-right py-2">Entry</th>
+                            <th class="text-right py-2">PnL</th>
+                            <th class="text-right py-2">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="pos in positions" :key="pos.symbol">
+                            <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                <td class="py-3 font-medium text-white" x-text="pos.symbol"></td>
+                                <td class="py-3">
+                                    <span :class="pos.side === 'LONG' ? 'text-green-400' : 'text-red-400'"
+                                          x-text="pos.side"></span>
+                                </td>
+                                <td class="py-3 text-right text-gray-300" x-text="'$' + pos.size_usd.toFixed(2)"></td>
+                                <td class="py-3 text-right text-gray-300" x-text="'$' + pos.entry_price.toFixed(2)"></td>
+                                <td class="py-3 text-right"
+                                    :class="pos.unrealized_pnl >= 0 ? 'text-green-400' : 'text-red-400'"
+                                    x-text="(pos.unrealized_pnl >= 0 ? '+' : '') + '$' + pos.unrealized_pnl.toFixed(2)"></td>
+                                <td class="py-3 text-right">
+                                    <button @click="closePosition(pos.symbol)"
+                                            class="text-red-400 hover:text-red-300 px-2 py-1 rounded border border-red-400/30 hover:border-red-400">
+                                        Close
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                        <tr x-show="positions.length === 0">
+                            <td colspan="6" class="py-8 text-center text-gray-500">
+                                No open positions
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Recent Signals -->
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <h2 class="text-lg font-semibold text-white mb-4">Recent Signals</h2>
+
+            <div class="space-y-3 max-h-96 overflow-y-auto">
+                <template x-for="signal in signals" :key="signal.timestamp">
+                    <div class="flex items-center justify-between p-3 bg-gray-700/30 rounded-lg">
+                        <div class="flex items-center gap-3">
+                            <span class="text-gray-400 text-xs" x-text="formatTime(signal.timestamp)"></span>
+                            <span class="font-medium text-white" x-text="signal.symbol"></span>
+                            <span :class="{
+                                'bg-green-500/20 text-green-400': signal.action === 'BUY',
+                                'bg-red-500/20 text-red-400': signal.action === 'SELL',
+                                'bg-gray-500/20 text-gray-400': signal.action === 'HOLD'
+                            }" class="px-2 py-0.5 rounded text-xs font-medium" x-text="signal.action"></span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <div class="w-20 bg-gray-600 rounded-full h-2">
+                                <div class="h-2 rounded-full"
+                                     :class="signal.confidence >= 70 ? 'bg-green-500' : signal.confidence >= 50 ? 'bg-yellow-500' : 'bg-red-500'"
+                                     :style="'width: ' + signal.confidence + '%'"></div>
+                            </div>
+                            <span class="text-gray-400 text-xs w-8" x-text="signal.confidence + '%'"></span>
+                        </div>
+                    </div>
+                </template>
+                <div x-show="signals.length === 0" class="py-8 text-center text-gray-500">
+                    No recent signals
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function dashboardData() {
+    return {
+        running: {{ 'true' if strategy_running else 'false' }},
+        balance: 500.0,
+        dailyPnl: 0.0,
+        totalPnl: 0.0,
+        openPositions: 0,
+        positions: [],
+        signals: [],
+        pnlChart: null,
+
+        init() {
+            this.fetchStats();
+            this.fetchPositions();
+            this.fetchSignals();
+            this.initChart();
+            this.setupSSE();
+
+            // Refresh data periodically
+            setInterval(() => {
+                this.fetchStats();
+                this.fetchPositions();
+                this.fetchSignals();
+            }, 10000);
+        },
+
+        async fetchStats() {
+            try {
+                const res = await fetch('/api/dashboard/stats');
+                const data = await res.json();
+                this.balance = data.balance || 500;
+                this.dailyPnl = data.daily_pnl || 0;
+                this.totalPnl = data.total_pnl || 0;
+                this.openPositions = data.open_positions || 0;
+                this.running = data.running || false;
+            } catch (e) {
+                console.error('Failed to fetch stats:', e);
+            }
+        },
+
+        async fetchPositions() {
+            try {
+                const res = await fetch('/api/positions');
+                this.positions = await res.json();
+            } catch (e) {
+                console.error('Failed to fetch positions:', e);
+            }
+        },
+
+        async fetchSignals() {
+            try {
+                const res = await fetch('/api/strategy/signals?limit=10');
+                const data = await res.json();
+                this.signals = data.signals || [];
+            } catch (e) {
+                console.error('Failed to fetch signals:', e);
+            }
+        },
+
+        async initChart() {
+            try {
+                const res = await fetch('/api/dashboard/pnl?days=7');
+                const data = await res.json();
+
+                const ctx = document.getElementById('pnlChart').getContext('2d');
+                this.pnlChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: data.labels || [],
+                        datasets: [{
+                            label: 'Cumulative PnL',
+                            data: data.data || [],
+                            borderColor: '#22c55e',
+                            backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                            fill: true,
+                            tension: 0.4,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: 'rgba(75, 85, 99, 0.3)' },
+                                ticks: { color: '#9ca3af' }
+                            },
+                            y: {
+                                grid: { color: 'rgba(75, 85, 99, 0.3)' },
+                                ticks: {
+                                    color: '#9ca3af',
+                                    callback: (value) => '$' + value
+                                }
+                            }
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error('Failed to init chart:', e);
+            }
+        },
+
+        setupSSE() {
+            // SSE for real-time updates (optional, fallback to polling)
+            try {
+                const eventSource = new EventSource('/api/dashboard/sse');
+
+                eventSource.addEventListener('stats', (e) => {
+                    const data = JSON.parse(e.data);
+                    this.balance = data.balance || this.balance;
+                    this.dailyPnl = data.daily_pnl || this.dailyPnl;
+                    this.totalPnl = data.total_pnl || this.totalPnl;
+                    this.openPositions = data.open_positions || this.openPositions;
+                    this.running = data.running || false;
+                });
+
+                eventSource.addEventListener('positions', (e) => {
+                    this.positions = JSON.parse(e.data);
+                });
+
+                eventSource.addEventListener('signals', (e) => {
+                    this.signals = JSON.parse(e.data);
+                });
+
+                eventSource.onerror = () => {
+                    eventSource.close();
+                    // Fall back to polling only
+                };
+            } catch (e) {
+                // SSE not supported or failed, polling will handle updates
+            }
+        },
+
+        async toggleStrategy() {
+            const endpoint = this.running ? '/api/strategy/stop' : '/api/strategy/start';
+            try {
+                const res = await fetch(endpoint, { method: 'POST' });
+                const data = await res.json();
+                this.running = !this.running;
+                showToast(data.message, 'success');
+            } catch (e) {
+                showToast('Failed to toggle strategy', 'error');
+            }
+        },
+
+        async closePosition(symbol) {
+            if (!confirm(`Close ${symbol} position?`)) return;
+            try {
+                const res = await fetch(`/api/positions/${symbol}/close`, { method: 'POST' });
+                const data = await res.json();
+                showToast(`Closed ${symbol}: ${data.pnl >= 0 ? '+' : ''}$${data.pnl}`, 'success');
+                this.fetchPositions();
+                this.fetchStats();
+            } catch (e) {
+                showToast('Failed to close position', 'error');
+            }
+        },
+
+        async closeAllPositions() {
+            if (!confirm('Close ALL positions?')) return;
+            try {
+                const res = await fetch('/api/positions/close-all', { method: 'POST' });
+                const data = await res.json();
+                showToast(`Closed ${data.count} positions: ${data.total_pnl >= 0 ? '+' : ''}$${data.total_pnl}`, 'success');
+                this.fetchPositions();
+                this.fetchStats();
+            } catch (e) {
+                showToast('Failed to close positions', 'error');
+            }
+        },
+
+        formatTime(timestamp) {
+            if (!timestamp) return '';
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        }
+    };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}Signals - Moon Dev Trading{% endblock %}
+
+{% block content %}
+<div x-data="signalsData()" x-init="init()">
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-2xl font-bold text-white">Signal History</h1>
+        <div class="flex items-center gap-4">
+            <select x-model="filter"
+                    class="bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:border-moon-purple focus:outline-none">
+                <option value="all">All Signals</option>
+                <option value="BUY">Buy Only</option>
+                <option value="SELL">Sell Only</option>
+                <option value="HOLD">Hold Only</option>
+            </select>
+            <button @click="fetchSignals()"
+                    class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white transition-colors">
+                &#8635; Refresh
+            </button>
+        </div>
+    </div>
+
+    <!-- Stats Summary -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <p class="text-gray-400 text-sm">Total Signals</p>
+            <p class="text-2xl font-bold text-white" x-text="signals.length">0</p>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <p class="text-gray-400 text-sm">Buy Signals</p>
+            <p class="text-2xl font-bold text-green-400" x-text="signals.filter(s => s.action === 'BUY').length">0</p>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <p class="text-gray-400 text-sm">Sell Signals</p>
+            <p class="text-2xl font-bold text-red-400" x-text="signals.filter(s => s.action === 'SELL').length">0</p>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <p class="text-gray-400 text-sm">Avg Confidence</p>
+            <p class="text-2xl font-bold text-yellow-400" x-text="avgConfidence + '%'">0%</p>
+        </div>
+    </div>
+
+    <!-- Signals Table -->
+    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-700/50">
+                    <tr class="text-gray-400">
+                        <th class="text-left py-3 px-4">Time</th>
+                        <th class="text-left py-3 px-4">Symbol</th>
+                        <th class="text-left py-3 px-4">Signal</th>
+                        <th class="text-left py-3 px-4">Confidence</th>
+                        <th class="text-left py-3 px-4">Reasoning</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="signal in filteredSignals" :key="signal.timestamp + signal.symbol">
+                        <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                            <td class="py-3 px-4 text-gray-400" x-text="formatDateTime(signal.timestamp)"></td>
+                            <td class="py-3 px-4 font-medium text-white" x-text="signal.symbol"></td>
+                            <td class="py-3 px-4">
+                                <span :class="{
+                                    'bg-green-500/20 text-green-400 border-green-500/30': signal.action === 'BUY',
+                                    'bg-red-500/20 text-red-400 border-red-500/30': signal.action === 'SELL',
+                                    'bg-gray-500/20 text-gray-400 border-gray-500/30': signal.action === 'HOLD'
+                                }" class="px-3 py-1 rounded-full text-xs font-medium border" x-text="signal.action"></span>
+                            </td>
+                            <td class="py-3 px-4">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-24 bg-gray-600 rounded-full h-2">
+                                        <div class="h-2 rounded-full transition-all"
+                                             :class="signal.confidence >= 70 ? 'bg-green-500' : signal.confidence >= 50 ? 'bg-yellow-500' : 'bg-red-500'"
+                                             :style="'width: ' + signal.confidence + '%'"></div>
+                                    </div>
+                                    <span class="text-gray-400 text-xs" x-text="signal.confidence + '%'"></span>
+                                </div>
+                            </td>
+                            <td class="py-3 px-4 text-gray-400 text-xs max-w-md truncate" x-text="signal.reasoning || '-'"></td>
+                        </tr>
+                    </template>
+                    <tr x-show="filteredSignals.length === 0">
+                        <td colspan="5" class="py-12 text-center text-gray-500">
+                            <div class="text-4xl mb-2">&#128269;</div>
+                            <p>No signals found</p>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Load More -->
+    <div class="mt-4 text-center" x-show="signals.length >= limit">
+        <button @click="loadMore()"
+                class="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded-lg text-white transition-colors">
+            Load More
+        </button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function signalsData() {
+    return {
+        signals: [],
+        filter: 'all',
+        limit: 50,
+
+        get filteredSignals() {
+            if (this.filter === 'all') return this.signals;
+            return this.signals.filter(s => s.action === this.filter);
+        },
+
+        get avgConfidence() {
+            if (this.signals.length === 0) return 0;
+            const sum = this.signals.reduce((acc, s) => acc + (s.confidence || 0), 0);
+            return Math.round(sum / this.signals.length);
+        },
+
+        init() {
+            this.fetchSignals();
+            // Auto-refresh every 30 seconds
+            setInterval(() => this.fetchSignals(), 30000);
+        },
+
+        async fetchSignals() {
+            try {
+                const res = await fetch(`/api/strategy/signals?limit=${this.limit}`);
+                const data = await res.json();
+                this.signals = data.signals || [];
+            } catch (e) {
+                console.error('Failed to fetch signals:', e);
+            }
+        },
+
+        loadMore() {
+            this.limit += 50;
+            this.fetchSignals();
+        },
+
+        formatDateTime(timestamp) {
+            if (!timestamp) return '-';
+            const date = new Date(timestamp);
+            return date.toLocaleString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+    };
+}
+</script>
+{% endblock %}
