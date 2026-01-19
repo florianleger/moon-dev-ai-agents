@@ -108,6 +108,21 @@ class MarketDataProvider:
             }
         return None
 
+    def get_current_price(self, symbol: str) -> Optional[float]:
+        """
+        Get current price (mark price) from HyperLiquid.
+
+        Args:
+            symbol: Asset symbol (e.g., 'BTC', 'ETH', 'SOL')
+
+        Returns:
+            float: Current mark price or None if unavailable
+        """
+        data = self.get_funding_rate(symbol)
+        if data and 'mark_price' in data:
+            return data.get('mark_price')
+        return None
+
     def get_funding_zscore(self, symbol: str) -> float:
         """
         Calculate funding rate Z-score approximation.
@@ -271,6 +286,11 @@ def get_open_interest(symbol: str) -> Optional[Dict]:
 def get_funding_zscore(symbol: str) -> float:
     """Get funding rate Z-score for a symbol."""
     return get_market_data_provider().get_funding_zscore(symbol)
+
+
+def get_current_price(symbol: str) -> Optional[float]:
+    """Get current price for a symbol."""
+    return get_market_data_provider().get_current_price(symbol)
 
 
 # For standalone testing

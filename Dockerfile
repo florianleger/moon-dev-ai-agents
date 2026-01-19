@@ -1,6 +1,6 @@
 # Moon Dev AI Trading Bot - Docker Image
 # Optimized for Coolify deployment
-# Build: 2026-01-19-v2 - Force rebuild with margin management fix
+# Build: 2026-01-19-v3 - Add get_current_price method to MarketDataProvider
 
 FROM python:3.10-slim
 
