@@ -1,6 +1,6 @@
 # Moon Dev AI Trading Bot - Docker Image
 # Optimized for Coolify deployment
-# Build: 2026-01-19-v3 - Add get_current_price method to MarketDataProvider
+# Build: 2026-01-19-v4 - Real-time unrealized PnL for open positions
 
 FROM python:3.10-slim
 

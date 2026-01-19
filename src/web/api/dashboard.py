@@ -22,13 +22,15 @@ INITIAL_BALANCE = 500.0
 
 
 def _get_stats_from_csv() -> Dict:
-    """Calculate stats from paper_trades.csv file."""
+    """Calculate stats from paper_trades.csv file with real-time unrealized PnL."""
     from src.config import RAMF_LEVERAGE
 
     stats = {
         "balance": INITIAL_BALANCE,
         "daily_pnl": 0.0,
         "total_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "realized_pnl": 0.0,
         "open_positions": 0,
         "used_margin": 0.0,
         "available_margin": INITIAL_BALANCE,
@@ -46,29 +48,71 @@ def _get_stats_from_csv() -> Dict:
         open_positions = df[df['status'] == 'OPEN']
         stats["open_positions"] = len(open_positions)
 
+        # Calculate unrealized PnL from open positions
+        unrealized_pnl = 0.0
         if not open_positions.empty and 'position_size' in open_positions.columns:
             # Margin = position_size / leverage
-            leverage_col = open_positions.get('leverage', RAMF_LEVERAGE)
-            if isinstance(leverage_col, (int, float)):
-                leverage_col = RAMF_LEVERAGE
             stats["used_margin"] = round(
                 (open_positions['position_size'] / RAMF_LEVERAGE).sum(), 2
             )
 
-        # Calculate PnL from closed positions
+            # Get market data provider for current prices
+            provider = None
+            try:
+                from src.data_providers.market_data import MarketDataProvider
+                provider = MarketDataProvider(start_liquidation_stream=False)
+            except Exception:
+                pass
+
+            # Calculate unrealized PnL for each open position
+            for _, row in open_positions.iterrows():
+                symbol = row.get('symbol', '')
+                entry_price = float(row.get('entry_price', 0))
+                position_size = float(row.get('position_size', 0))
+                direction = row.get('direction', 'BUY')
+
+                current_price = entry_price
+                if provider:
+                    try:
+                        price = provider.get_current_price(symbol)
+                        if price:
+                            current_price = price
+                    except Exception:
+                        pass
+
+                if entry_price > 0:
+                    if direction == "BUY":
+                        unrealized_pnl += position_size * (current_price - entry_price) / entry_price
+                    else:
+                        unrealized_pnl += position_size * (entry_price - current_price) / entry_price
+
+        stats["unrealized_pnl"] = round(unrealized_pnl, 2)
+
+        # Calculate realized PnL from closed positions
         closed_positions = df[df['status'] != 'OPEN']
+        realized_pnl = 0.0
+        daily_realized_pnl = 0.0
+
         if not closed_positions.empty and 'pnl' in closed_positions.columns:
-            stats["total_pnl"] = round(closed_positions['pnl'].sum(), 2)
+            realized_pnl = closed_positions['pnl'].sum()
 
             # Daily PnL (trades closed today)
             today = datetime.now().strftime('%Y-%m-%d')
             if 'exit_time' in closed_positions.columns:
                 today_closed = closed_positions[closed_positions['exit_time'].str.startswith(today, na=False)]
                 if not today_closed.empty:
-                    stats["daily_pnl"] = round(today_closed['pnl'].sum(), 2)
+                    daily_realized_pnl = today_closed['pnl'].sum()
 
-        # Balance = initial + total PnL
-        stats["balance"] = round(INITIAL_BALANCE + stats["total_pnl"], 2)
+        stats["realized_pnl"] = round(realized_pnl, 2)
+
+        # Total PnL = realized + unrealized
+        stats["total_pnl"] = round(realized_pnl + unrealized_pnl, 2)
+
+        # Daily PnL = realized today + current unrealized
+        stats["daily_pnl"] = round(daily_realized_pnl + unrealized_pnl, 2)
+
+        # Balance (equity) = initial + realized + unrealized
+        stats["balance"] = round(INITIAL_BALANCE + realized_pnl + unrealized_pnl, 2)
         stats["available_margin"] = round(max(0, stats["balance"] - stats["used_margin"]), 2)
 
     except Exception as e:

@@ -19,7 +19,7 @@ PAPER_TRADES_CSV = os.path.join(os.path.dirname(__file__), '..', '..', 'data', '
 
 
 def _get_positions_from_csv() -> List[Dict]:
-    """Read open positions from paper_trades.csv file."""
+    """Read open positions from paper_trades.csv file with real-time PnL."""
     positions = []
 
     if not os.path.exists(PAPER_TRADES_CSV):
@@ -33,18 +33,46 @@ def _get_positions_from_csv() -> List[Dict]:
         # Filter for OPEN positions only
         open_positions = df[df['status'] == 'OPEN']
 
+        # Get market data provider for current prices
+        provider = None
+        try:
+            from src.data_providers.market_data import MarketDataProvider
+            provider = MarketDataProvider(start_liquidation_stream=False)
+        except Exception:
+            pass
+
         for _, row in open_positions.iterrows():
+            symbol = row.get('symbol', '?')
             direction = row.get('direction', 'BUY')
             side = "LONG" if direction == "BUY" else "SHORT"
             entry_price = float(row.get('entry_price', 0))
+            position_size = float(row.get('position_size', 0))
+
+            # Get current price from HyperLiquid
+            current_price = entry_price
+            if provider:
+                try:
+                    price = provider.get_current_price(symbol)
+                    if price:
+                        current_price = price
+                except Exception:
+                    pass
+
+            # Calculate unrealized PnL
+            unrealized_pnl = 0.0
+            if entry_price > 0:
+                if direction == "BUY":
+                    unrealized_pnl = position_size * (current_price - entry_price) / entry_price
+                else:
+                    unrealized_pnl = position_size * (entry_price - current_price) / entry_price
 
             positions.append({
-                "symbol": row.get('symbol', '?'),
+                "symbol": symbol,
                 "side": side,
-                "size_usd": float(row.get('position_size', 0)),
+                "size_usd": position_size,
                 "entry_price": entry_price,
-                "current_price": entry_price,  # Will be updated by frontend or separate call
-                "unrealized_pnl": 0,  # Calculated dynamically
+                "current_price": current_price,
+                "unrealized_pnl": round(unrealized_pnl, 2),
                 "stop_loss": float(row.get('stop_loss', 0)),
                 "take_profit": float(row.get('take_profit', 0)),
                 "opened_at": row.get('timestamp', ''),
