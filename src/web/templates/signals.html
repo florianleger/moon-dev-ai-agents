@@ -12,7 +12,7 @@
                 <option value="all">All Signals</option>
                 <option value="BUY">Buy Only</option>
                 <option value="SELL">Sell Only</option>
-                <option value="HOLD">Hold Only</option>
+                <option value="NEUTRAL">Neutral Only</option>
             </select>
             <button @click="fetchSignals()"
                     class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white transition-colors">
@@ -63,8 +63,10 @@
                                 <span :class="{
                                     'bg-green-500/20 text-green-400 border-green-500/30': signal.action === 'BUY',
                                     'bg-red-500/20 text-red-400 border-red-500/30': signal.action === 'SELL',
-                                    'bg-gray-500/20 text-gray-400 border-gray-500/30': signal.action === 'HOLD'
+                                    'bg-gray-500/20 text-gray-400 border-gray-500/30': signal.action === 'NEUTRAL'
                                 }" class="px-3 py-1 rounded-full text-xs font-medium border" x-text="signal.action"></span>
+                                <span x-show="signal.approved === false" class="ml-1 text-xs text-red-400">(rejected)</span>
+                                <span x-show="signal.approved === true" class="ml-1 text-xs text-green-400">(approved)</span>
                             </td>
                             <td class="py-3 px-4">
                                 <div class="flex items-center gap-2">
@@ -127,9 +129,16 @@ function signalsData() {
 
         async fetchSignals() {
             try {
-                const res = await fetch(`/api/strategy/signals?limit=${this.limit}`);
-                const data = await res.json();
-                this.signals = data.signals || [];
+                const data = await apiFetch(`/api/strategy/signals?limit=${this.limit}`);
+                // Map field names from stored format to template format
+                this.signals = (data.signals || []).map(s => ({
+                    timestamp: s.timestamp,
+                    symbol: s.token || s.symbol,
+                    action: s.direction || s.action,
+                    confidence: s.confidence || 0,
+                    reasoning: s.reason || s.reasoning || '',
+                    approved: s.approved
+                }));
             } catch (e) {
                 console.error('Failed to fetch signals:', e);
             }

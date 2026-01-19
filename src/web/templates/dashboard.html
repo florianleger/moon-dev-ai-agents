@@ -146,7 +146,7 @@
                             <span :class="{
                                 'bg-green-500/20 text-green-400': signal.action === 'BUY',
                                 'bg-red-500/20 text-red-400': signal.action === 'SELL',
-                                'bg-gray-500/20 text-gray-400': signal.action === 'HOLD'
+                                'bg-gray-500/20 text-gray-400': signal.action === 'NEUTRAL'
                             }" class="px-2 py-0.5 rounded text-xs font-medium" x-text="signal.action"></span>
                         </div>
                         <div class="flex items-center gap-2">
@@ -198,8 +198,7 @@ function dashboardData() {
 
         async fetchStats() {
             try {
-                const res = await fetch('/api/dashboard/stats');
-                const data = await res.json();
+                const data = await apiFetch('/api/dashboard/stats');
                 this.balance = data.balance || 500;
                 this.dailyPnl = data.daily_pnl || 0;
                 this.totalPnl = data.total_pnl || 0;
@@ -212,8 +211,7 @@ function dashboardData() {
 
         async fetchPositions() {
             try {
-                const res = await fetch('/api/positions');
-                this.positions = await res.json();
+                this.positions = await apiFetch('/api/positions');
             } catch (e) {
                 console.error('Failed to fetch positions:', e);
             }
@@ -221,9 +219,14 @@ function dashboardData() {
 
         async fetchSignals() {
             try {
-                const res = await fetch('/api/strategy/signals?limit=10');
-                const data = await res.json();
-                this.signals = data.signals || [];
+                const data = await apiFetch('/api/strategy/signals?limit=10');
+                this.signals = (data.signals || []).map(s => ({
+                    timestamp: s.timestamp,
+                    symbol: s.token || s.symbol,
+                    action: s.direction || s.action,
+                    confidence: s.confidence || 0,
+                    reasoning: s.reason || s.reasoning || ''
+                }));
             } catch (e) {
                 console.error('Failed to fetch signals:', e);
             }
@@ -231,8 +234,7 @@ function dashboardData() {
 
         async initChart() {
             try {
-                const res = await fetch('/api/dashboard/pnl?days=7');
-                const data = await res.json();
+                const data = await apiFetch('/api/dashboard/pnl?days=7');
 
                 const ctx = document.getElementById('pnlChart').getContext('2d');
                 this.pnlChart = new Chart(ctx, {
@@ -308,8 +310,7 @@ function dashboardData() {
         async toggleStrategy() {
             const endpoint = this.running ? '/api/strategy/stop' : '/api/strategy/start';
             try {
-                const res = await fetch(endpoint, { method: 'POST' });
-                const data = await res.json();
+                const data = await apiFetch(endpoint, { method: 'POST' });
                 this.running = !this.running;
                 showToast(data.message, 'success');
             } catch (e) {
@@ -320,8 +321,7 @@ function dashboardData() {
         async closePosition(symbol) {
             if (!confirm(`Close ${symbol} position?`)) return;
             try {
-                const res = await fetch(`/api/positions/${symbol}/close`, { method: 'POST' });
-                const data = await res.json();
+                const data = await apiFetch(`/api/positions/${symbol}/close`, { method: 'POST' });
                 showToast(`Closed ${symbol}: ${data.pnl >= 0 ? '+' : ''}$${data.pnl}`, 'success');
                 this.fetchPositions();
                 this.fetchStats();
@@ -333,8 +333,7 @@ function dashboardData() {
         async closeAllPositions() {
             if (!confirm('Close ALL positions?')) return;
             try {
-                const res = await fetch('/api/positions/close-all', { method: 'POST' });
-                const data = await res.json();
+                const data = await apiFetch('/api/positions/close-all', { method: 'POST' });
                 showToast(`Closed ${data.count} positions: ${data.total_pnl >= 0 ? '+' : ''}$${data.total_pnl}`, 'success');
                 this.fetchPositions();
                 this.fetchStats();

@@ -26,6 +26,12 @@
 
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script>
+        // Configure HTMX to include credentials for Basic Auth
+        document.addEventListener('htmx:configRequest', function(evt) {
+            evt.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
+        });
+    </script>
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -114,6 +120,22 @@
     <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
 
     <script>
+        // API fetch helper with credentials
+        async function apiFetch(url, options = {}) {
+            const defaultOptions = {
+                credentials: 'include',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            };
+            const response = await fetch(url, { ...defaultOptions, ...options });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            return response.json();
+        }
+
         // HTMX event handlers
         document.body.addEventListener('htmx:afterRequest', function(evt) {
             if (evt.detail.failed) {
