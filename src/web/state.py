@@ -14,13 +14,6 @@ _data_dir = os.getenv("DATA_DIR", str(Path(__file__).parent.parent.parent / "dat
 STATE_FILE = Path(_data_dir) / "web_state.json"
 
 
-def _ensure_state_file():
-    """Ensure state file and directory exist."""
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if not STATE_FILE.exists():
-        _save_state(_default_state())
-
-
 def _default_state() -> Dict:
     """Default state structure."""
     return {
@@ -36,9 +29,14 @@ def _default_state() -> Dict:
     }
 
 
+def _ensure_dir():
+    """Ensure state directory exists."""
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
 def _load_state() -> Dict:
     """Load state from file."""
-    _ensure_state_file()
+    _ensure_dir()
     try:
         with open(STATE_FILE, "r") as f:
             return json.load(f)
@@ -48,7 +46,7 @@ def _load_state() -> Dict:
 
 def _save_state(state: Dict):
     """Save state to file."""
-    _ensure_state_file()
+    _ensure_dir()
     state["last_updated"] = datetime.now().isoformat()
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, default=str)
