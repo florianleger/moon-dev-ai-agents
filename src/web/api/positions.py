@@ -2,8 +2,10 @@
 Positions API endpoints
 """
 
+import os
 from typing import Dict, List
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.web.auth import verify_credentials
@@ -11,58 +13,83 @@ from src.web.state import get_paper_positions
 
 router = APIRouter()
 
+# Path to paper trades CSV file
+PAPER_TRADES_CSV = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'ramf', 'paper_trades.csv')
+
+
+def _get_positions_from_csv() -> List[Dict]:
+    """Read open positions from paper_trades.csv file."""
+    positions = []
+
+    if not os.path.exists(PAPER_TRADES_CSV):
+        return positions
+
+    try:
+        df = pd.read_csv(PAPER_TRADES_CSV)
+        if df.empty:
+            return positions
+
+        # Filter for OPEN positions only
+        open_positions = df[df['status'] == 'OPEN']
+
+        for _, row in open_positions.iterrows():
+            direction = row.get('direction', 'BUY')
+            side = "LONG" if direction == "BUY" else "SHORT"
+            entry_price = float(row.get('entry_price', 0))
+
+            positions.append({
+                "symbol": row.get('symbol', '?'),
+                "side": side,
+                "size_usd": float(row.get('position_size', 0)),
+                "entry_price": entry_price,
+                "current_price": entry_price,  # Will be updated by frontend or separate call
+                "unrealized_pnl": 0,  # Calculated dynamically
+                "stop_loss": float(row.get('stop_loss', 0)),
+                "take_profit": float(row.get('take_profit', 0)),
+                "opened_at": row.get('timestamp', ''),
+                "position_id": row.get('position_id', ''),
+            })
+
+    except Exception as e:
+        print(f"[Positions API] Error reading CSV: {e}")
+
+    return positions
+
 
 @router.get("")
 async def get_positions(username: str = Depends(verify_credentials)) -> List[Dict]:
     """Get all open positions."""
-    positions = []
+    # Read positions from CSV file (shared between processes)
+    positions = _get_positions_from_csv()
 
-    # Try to get live positions from RAMF strategy
+    if positions:
+        return positions
+
+    # Fallback to in-memory singleton (works when API and strategy in same process)
     try:
         from src.strategies.custom.ramf_strategy import RAMFStrategy
 
         strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
         if strategy and hasattr(strategy, 'paper_positions') and strategy.paper_positions:
-            # paper_positions is a dict: {position_id: trade_dict}
             for position_id, pos in strategy.paper_positions.items():
-                # Map field names from RAMF format to dashboard format
-                # RAMF uses: direction, position_size, entry_price, stop_loss, take_profit
                 direction = pos.get("direction", "BUY")
                 side = "LONG" if direction == "BUY" else "SHORT"
                 entry_price = pos.get("entry_price", 0)
-
-                # Calculate current price and unrealized PnL
-                current_price = entry_price  # Default
-                unrealized_pnl = 0
-                try:
-                    df = strategy._fetch_candles(pos.get("symbol"), interval='15m', candles=5)
-                    if df is not None and len(df) > 0:
-                        current_price = float(df['close'].iloc[-1])
-                        # Calculate unrealized PnL
-                        position_size = pos.get("position_size", 0)
-                        if direction == "BUY":
-                            price_change_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
-                        else:
-                            price_change_pct = (entry_price - current_price) / entry_price if entry_price > 0 else 0
-                        unrealized_pnl = position_size * price_change_pct
-                except Exception:
-                    pass
 
                 positions.append({
                     "symbol": pos.get("symbol", "?"),
                     "side": side,
                     "size_usd": pos.get("position_size", 0),
                     "entry_price": entry_price,
-                    "current_price": current_price,
-                    "unrealized_pnl": round(unrealized_pnl, 2),
+                    "current_price": entry_price,
+                    "unrealized_pnl": 0,
                     "stop_loss": pos.get("stop_loss", 0),
                     "take_profit": pos.get("take_profit", 0),
                     "opened_at": pos.get("timestamp", ""),
                     "position_id": position_id,
                 })
-    except Exception as e:
-        # Fall back to state file
-        positions = get_paper_positions()
+    except Exception:
+        pass
 
     return positions
 
