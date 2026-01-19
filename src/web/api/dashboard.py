@@ -154,11 +154,13 @@ async def get_pnl_history(
 @router.get("/sse")
 async def sse_updates(username: str = Depends(verify_credentials)):
     """Server-Sent Events for real-time updates."""
+    from src.web.api.positions import _get_positions_from_csv
 
     async def event_generator():
         while True:
-            stats = get_dashboard_stats()
-            positions = get_paper_positions()
+            # Use CSV-based functions for cross-process data sharing
+            stats = _get_stats_from_csv()
+            positions = _get_positions_from_csv()
             signals = get_signals_history(limit=5)
 
             # Send stats update
