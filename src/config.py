@@ -154,9 +154,9 @@ RAMF_LEVERAGE = 3                    # Conservative leverage for small accounts 
 RAMF_STOP_LOSS_PCT = 1.0             # Base stop-loss percentage (dynamically adjusted by ATR)
 RAMF_TAKE_PROFIT_PCT = 2.0           # Base take-profit percentage (dynamically adjusted by ATR)
 RAMF_MIN_CONFIDENCE = 70             # Minimum confidence score to trade (0-100)
-RAMF_MAX_DAILY_TRADES = 6            # Maximum trades per day
-RAMF_MAX_DAILY_LOSS_USD = 25         # Daily loss limit in USD
-RAMF_MAX_DAILY_GAIN_USD = 25         # Daily gain limit in USD (prevents overtrading)
+RAMF_MAX_DAILY_TRADES = 15           # Maximum trades per day (increased for paper trading)
+RAMF_MAX_DAILY_LOSS_USD = 50         # Daily loss limit in USD (~10% of $500)
+RAMF_MAX_DAILY_GAIN_USD = 75         # Daily gain limit in USD (~15% of $500)
 
 # Volatility Regime Settings
 # The strategy only trades in HIGH or LOW volatility regimes
