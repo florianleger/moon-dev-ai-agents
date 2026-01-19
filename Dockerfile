@@ -43,10 +43,12 @@ USER trader
 # Volume for persistent data (trades, logs, signals)
 VOLUME ["/app/src/data"]
 
-# Health check - verify Python and main.py exist
-HEALTHCHECK --interval=5m --timeout=30s --start-period=60s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)" || exit 1
+# Expose web dashboard port
+EXPOSE 8080
+
+# Health check - verify web dashboard is responding
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/api/strategy/status || exit 1
 
 # Default entry point
 ENTRYPOINT ["./entrypoint.sh"]
-CMD ["python", "src/main.py"]

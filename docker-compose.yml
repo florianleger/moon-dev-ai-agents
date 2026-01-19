@@ -17,12 +17,18 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - TZ=UTC
+      - DATA_DIR=/app/data
+
+    # Expose web dashboard port
+    ports:
+      - "8080:8080"
 
     # Persistent volume for trade data and logs
     # Note: Mount specific subdirectories to preserve Python source files
     volumes:
       - trading-data:/app/src/data/ramf
       - execution-results:/app/src/data/execution_results
+      - web-state:/app/data
       - ./logs:/app/logs
 
     # Resource limits (adjust for your Coolify instance)
@@ -35,13 +41,13 @@ services:
           cpus: '0.25'
           memory: 256M
 
-    # Health check
+    # Health check - verify web dashboard is responding
     healthcheck:
-      test: ["CMD", "python", "-c", "print('healthy')"]
-      interval: 5m
-      timeout: 30s
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/strategy/status"]
+      interval: 30s
+      timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 30s
 
     # Logging configuration
     logging:
@@ -54,4 +60,6 @@ volumes:
   trading-data:
     driver: local
   execution-results:
+    driver: local
+  web-state:
     driver: local

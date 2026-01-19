@@ -9,8 +9,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
-# State file path
-STATE_FILE = Path(__file__).parent.parent.parent / "data" / "web_state.json"
+# State file path - use /app/data in Docker, or project/data locally
+_data_dir = os.getenv("DATA_DIR", str(Path(__file__).parent.parent.parent / "data"))
+STATE_FILE = Path(_data_dir) / "web_state.json"
 
 
 def _ensure_state_file():

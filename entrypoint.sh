@@ -82,6 +82,7 @@ echo ""
 echo "Creating data directories..."
 mkdir -p /app/src/data/ramf
 mkdir -p /app/src/data/execution_results
+mkdir -p /app/data
 mkdir -p /app/logs
 echo -e "${GREEN}Data directories ready${NC}"
 
@@ -97,9 +98,33 @@ fi
 
 echo -e "${GREEN}=========================================="
 echo "  Environment validated successfully"
-echo "  Starting trading bot..."
 echo "==========================================${NC}"
 echo ""
 
-# Execute the main command
-exec "$@"
+# Start web dashboard in background
+WEB_PORT=${WEB_PORT:-8080}
+WEB_HOST=${WEB_HOST:-0.0.0.0}
+echo -e "${GREEN}Starting web dashboard on http://${WEB_HOST}:${WEB_PORT}${NC}"
+python -m uvicorn src.web.app:app --host $WEB_HOST --port $WEB_PORT &
+WEB_PID=$!
+
+# Give web server time to start
+sleep 2
+
+# Trap to cleanup background process on exit
+cleanup() {
+    echo ""
+    echo -e "${YELLOW}Shutting down...${NC}"
+    kill $WEB_PID 2>/dev/null || true
+    exit 0
+}
+trap cleanup SIGTERM SIGINT
+
+echo -e "${GREEN}Starting trading bot...${NC}"
+echo ""
+
+# Execute the main trading bot
+python src/main.py
+
+# Keep running (in case main.py exits, keep web dashboard alive)
+wait $WEB_PID
