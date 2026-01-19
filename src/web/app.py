@@ -55,6 +55,13 @@ templates = Jinja2Templates(directory=str(templates_path))
 app.include_router(api_router)
 
 
+# Health check endpoint (no auth required for Docker/Coolify healthchecks)
+@app.get("/health")
+async def health_check():
+    """Health check endpoint - no authentication required."""
+    return {"status": "healthy", "service": "moon-dev-trading-dashboard"}
+
+
 # Page routes
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request, username: str = Depends(verify_credentials)):

@@ -46,9 +46,9 @@ VOLUME ["/app/src/data"]
 # Expose web dashboard port
 EXPOSE 8080
 
-# Health check - verify web dashboard is responding
+# Health check - verify web dashboard is responding (uses public /health endpoint)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/api/strategy/status || exit 1
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Default entry point
 ENTRYPOINT ["./entrypoint.sh"]

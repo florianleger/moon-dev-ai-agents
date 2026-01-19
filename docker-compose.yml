@@ -42,9 +42,9 @@ services:
           cpus: '0.25'
           memory: 256M
 
-    # Health check - verify web dashboard is responding
+    # Health check - verify web dashboard is responding (uses public /health endpoint)
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/strategy/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
