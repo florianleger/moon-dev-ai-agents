@@ -1253,10 +1253,33 @@ class RAMFStrategy(BaseStrategy):
 
             cprint(f"[RAMF] Executing paper trade: {direction} {symbol} @ ${price:,.2f}", "cyan")
 
+            # Calculate margin already used by open positions
+            used_margin = sum(
+                pos.get('position_size', 0) / pos.get('leverage', RAMF_LEVERAGE)
+                for pos in self.paper_positions.values()
+            )
+            available_margin = max(0, self.paper_balance - used_margin)
+
             # Calculate position size (2% risk per trade)
             # Position size is adjusted for the adaptive SL
             risk_amount = self.paper_balance * 0.02
             position_size = risk_amount / (sl_pct / 100) * RAMF_LEVERAGE
+
+            # Calculate margin required for this position
+            margin_required = position_size / RAMF_LEVERAGE
+
+            # Cap position size to available margin (leave 10% buffer)
+            max_position_for_margin = available_margin * 0.9 * RAMF_LEVERAGE
+            if position_size > max_position_for_margin:
+                old_size = position_size
+                position_size = max_position_for_margin
+                margin_required = position_size / RAMF_LEVERAGE
+                cprint(f"[RAMF] Position capped: ${old_size:,.2f} -> ${position_size:,.2f} (margin limit)", "yellow")
+
+            # Minimum viable position size check
+            if position_size < 10:
+                cprint(f"[RAMF] Insufficient margin for trade. Available: ${available_margin:.2f}, Required: ${margin_required:.2f}", "red")
+                return None
 
             # Generate unique position ID
             self._position_counter += 1

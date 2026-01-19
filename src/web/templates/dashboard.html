@@ -42,15 +42,15 @@
             </div>
         </div>
 
-        <!-- Open Positions -->
+        <!-- Margin Used -->
         <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
             <div class="flex items-center justify-between">
                 <div>
-                    <p class="text-gray-400 text-sm">Open Positions</p>
-                    <p class="text-2xl font-bold text-white">
-                        <span x-text="openPositions">0</span>
-                        <span class="text-gray-500 text-lg">/ 6 max</span>
-                    </p>
+                    <p class="text-gray-400 text-sm">Margin Used</p>
+                    <p class="text-2xl font-bold"
+                       :class="usedMargin > balance * 0.8 ? 'text-red-400' : 'text-white'"
+                       x-text="'$' + usedMargin.toFixed(2)">$0.00</p>
+                    <p class="text-xs text-gray-500" x-text="openPositions + ' positions'"></p>
                 </div>
                 <div class="text-3xl">&#128202;</div>
             </div>
@@ -177,6 +177,7 @@ function dashboardData() {
         dailyPnl: 0.0,
         totalPnl: 0.0,
         openPositions: 0,
+        usedMargin: 0.0,
         positions: [],
         signals: [],
         pnlChart: null,
@@ -203,6 +204,7 @@ function dashboardData() {
                 this.dailyPnl = data.daily_pnl || 0;
                 this.totalPnl = data.total_pnl || 0;
                 this.openPositions = data.open_positions || 0;
+                this.usedMargin = data.used_margin || 0;
                 this.running = data.running || false;
             } catch (e) {
                 console.error('Failed to fetch stats:', e);
@@ -298,6 +300,7 @@ function dashboardData() {
                     this.dailyPnl = data.daily_pnl || this.dailyPnl;
                     this.totalPnl = data.total_pnl || this.totalPnl;
                     this.openPositions = data.open_positions || this.openPositions;
+                    this.usedMargin = data.used_margin || this.usedMargin;
                     this.running = data.running || false;
                 });
 

@@ -23,11 +23,15 @@ INITIAL_BALANCE = 500.0
 
 def _get_stats_from_csv() -> Dict:
     """Calculate stats from paper_trades.csv file."""
+    from src.config import RAMF_LEVERAGE
+
     stats = {
         "balance": INITIAL_BALANCE,
         "daily_pnl": 0.0,
         "total_pnl": 0.0,
         "open_positions": 0,
+        "used_margin": 0.0,
+        "available_margin": INITIAL_BALANCE,
     }
 
     if not os.path.exists(PAPER_TRADES_CSV):
@@ -38,9 +42,18 @@ def _get_stats_from_csv() -> Dict:
         if df.empty:
             return stats
 
-        # Count open positions
+        # Count open positions and calculate used margin
         open_positions = df[df['status'] == 'OPEN']
         stats["open_positions"] = len(open_positions)
+
+        if not open_positions.empty and 'position_size' in open_positions.columns:
+            # Margin = position_size / leverage
+            leverage_col = open_positions.get('leverage', RAMF_LEVERAGE)
+            if isinstance(leverage_col, (int, float)):
+                leverage_col = RAMF_LEVERAGE
+            stats["used_margin"] = round(
+                (open_positions['position_size'] / RAMF_LEVERAGE).sum(), 2
+            )
 
         # Calculate PnL from closed positions
         closed_positions = df[df['status'] != 'OPEN']
@@ -56,6 +69,7 @@ def _get_stats_from_csv() -> Dict:
 
         # Balance = initial + total PnL
         stats["balance"] = round(INITIAL_BALANCE + stats["total_pnl"], 2)
+        stats["available_margin"] = round(max(0, stats["balance"] - stats["used_margin"]), 2)
 
     except Exception as e:
         print(f"[Dashboard API] Error reading CSV: {e}")
