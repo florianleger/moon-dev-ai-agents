@@ -116,7 +116,12 @@ class RAMFStrategy(BaseStrategy):
     - Most bots ignore funding/liquidations; we use them as core signals
     """
 
+    # Singleton instance for web dashboard access
+    _instance = None
+
     def __init__(self):
+        # Set singleton instance for web API access
+        RAMFStrategy._instance = self
         super().__init__("RAMF Strategy")
 
         # Assets to trade

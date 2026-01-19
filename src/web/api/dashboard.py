@@ -18,7 +18,10 @@ router = APIRouter()
 @router.get("/stats")
 async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
     """Get dashboard statistics."""
+    from src.web.state import is_strategy_running
+
     stats = get_dashboard_stats()
+    stats["running"] = is_strategy_running()
 
     # Try to get live data from RAMF strategy if available
     try:
