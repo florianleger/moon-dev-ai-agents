@@ -157,9 +157,12 @@ async def sse_updates(username: str = Depends(verify_credentials)):
     from src.web.api.positions import _get_positions_from_csv
 
     async def event_generator():
+        from src.web.state import is_strategy_running
+
         while True:
             # Use CSV-based functions for cross-process data sharing
             stats = _get_stats_from_csv()
+            stats["running"] = is_strategy_running()
             positions = _get_positions_from_csv()
             signals = get_signals_history(limit=5)
 
