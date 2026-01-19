@@ -56,7 +56,10 @@ try:
         RAMF_FUNDING_DIV_BONUS,
         RAMF_USE_LIQ_CLUSTERS,
         RAMF_LIQ_CLUSTER_THRESHOLD,
-        RAMF_LIQ_CLUSTER_BONUS
+        RAMF_LIQ_CLUSTER_BONUS,
+        # Volatility regime thresholds
+        RAMF_VOLATILITY_HIGH_PERCENTILE,
+        RAMF_VOLATILITY_LOW_PERCENTILE
     )
 except ImportError:
     # Default values
@@ -92,6 +95,9 @@ except ImportError:
     RAMF_USE_LIQ_CLUSTERS = True
     RAMF_LIQ_CLUSTER_THRESHOLD = 2.0
     RAMF_LIQ_CLUSTER_BONUS = 15
+    # Volatility regime defaults (widened for more signals)
+    RAMF_VOLATILITY_HIGH_PERCENTILE = 60
+    RAMF_VOLATILITY_LOW_PERCENTILE = 40
 
 # Lower confidence threshold for low volatility regime (0.7x multiplier makes 70 impossible)
 RAMF_MIN_CONFIDENCE_LOW_VOL = 35
@@ -116,9 +122,9 @@ class RAMFStrategy(BaseStrategy):
         # Assets to trade
         self.assets = RAMF_ASSETS
 
-        # Volatility regime thresholds
-        self.volatility_high_percentile = 75
-        self.volatility_low_percentile = 25
+        # Volatility regime thresholds (configurable)
+        self.volatility_high_percentile = RAMF_VOLATILITY_HIGH_PERCENTILE
+        self.volatility_low_percentile = RAMF_VOLATILITY_LOW_PERCENTILE
 
         # Momentum exhaustion parameters
         self.atr_extension_threshold = 2.0  # ATRs from VWAP for exhaustion

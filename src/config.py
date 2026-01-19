@@ -158,6 +158,14 @@ RAMF_MAX_DAILY_TRADES = 6            # Maximum trades per day
 RAMF_MAX_DAILY_LOSS_USD = 25         # Daily loss limit in USD
 RAMF_MAX_DAILY_GAIN_USD = 25         # Daily gain limit in USD (prevents overtrading)
 
+# Volatility Regime Settings
+# The strategy only trades in HIGH or LOW volatility regimes
+# ATR percentile > HIGH threshold = mean-reversion mode (fade exhaustion)
+# ATR percentile < LOW threshold = trend-following mode
+# Between these thresholds = NORMAL (no trade) - widen bands for more signals
+RAMF_VOLATILITY_HIGH_PERCENTILE = 60  # Top 40% of ATR = "high" volatility (default was 75)
+RAMF_VOLATILITY_LOW_PERCENTILE = 40   # Bottom 40% of ATR = "low" volatility (default was 25)
+
 # RAMF Advanced Settings (v2.0 improvements)
 RAMF_USE_ADAPTIVE_SL_TP = True       # Dynamic SL/TP based on ATR
 RAMF_ATR_SL_MULTIPLIER = 1.5         # SL = ATR * multiplier (e.g., 1.5 ATR)
