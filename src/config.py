@@ -151,12 +151,43 @@ MULTIFACTOR_SELL_THRESHOLD = -0.6  # Score < -0.6 = SELL
 
 RAMF_ASSETS = ['BTC', 'ETH', 'SOL']  # Assets to trade with RAMF strategy
 RAMF_LEVERAGE = 3                    # Conservative leverage for small accounts (1-5 recommended)
-RAMF_STOP_LOSS_PCT = 1.0             # Stop-loss percentage (1% tight for intraday)
-RAMF_TAKE_PROFIT_PCT = 2.0           # Take-profit percentage (2:1 R:R ratio)
+RAMF_STOP_LOSS_PCT = 1.0             # Base stop-loss percentage (dynamically adjusted by ATR)
+RAMF_TAKE_PROFIT_PCT = 2.0           # Base take-profit percentage (dynamically adjusted by ATR)
 RAMF_MIN_CONFIDENCE = 70             # Minimum confidence score to trade (0-100)
 RAMF_MAX_DAILY_TRADES = 6            # Maximum trades per day
 RAMF_MAX_DAILY_LOSS_USD = 25         # Daily loss limit in USD
 RAMF_MAX_DAILY_GAIN_USD = 25         # Daily gain limit in USD (prevents overtrading)
+
+# RAMF Advanced Settings (v2.0 improvements)
+RAMF_USE_ADAPTIVE_SL_TP = True       # Dynamic SL/TP based on ATR
+RAMF_ATR_SL_MULTIPLIER = 1.5         # SL = ATR * multiplier (e.g., 1.5 ATR)
+RAMF_ATR_TP_MULTIPLIER = 3.0         # TP = ATR * multiplier (e.g., 3.0 ATR for 2:1 R:R)
+RAMF_MIN_SL_PCT = 0.5                # Minimum SL percentage (floor)
+RAMF_MAX_SL_PCT = 2.0                # Maximum SL percentage (ceiling)
+
+# Time Windows Settings (UTC hours)
+RAMF_USE_TIME_WINDOWS = True         # Enable time-based confidence modifier
+RAMF_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 19, 20, 21]  # London open, NY open, Asia close
+RAMF_AVOID_HOURS = [0, 1, 2, 3, 4, 5]  # Low liquidity hours
+RAMF_OPTIMAL_HOUR_BONUS = 15         # Bonus confidence during optimal hours
+RAMF_AVOID_HOUR_PENALTY = 20         # Penalty during low liquidity hours
+
+# Multi-Timeframe Settings
+RAMF_USE_MTF = True                  # Enable multi-timeframe confluence
+RAMF_MTF_TIMEFRAMES = ['5m', '15m', '1h', '4h']  # Timeframes to check
+RAMF_MTF_AGREEMENT_BONUS = 10        # Bonus per timeframe agreement
+RAMF_MTF_MIN_AGREEMENT = 2           # Minimum timeframes that must agree
+
+# Funding Rate Divergence Settings
+RAMF_USE_FUNDING_DIVERGENCE = True   # Enable funding divergence detection
+RAMF_FUNDING_DIV_LOOKBACK = 24       # Hours to look back for divergence
+RAMF_FUNDING_DIV_THRESHOLD = 0.3     # Minimum divergence score (-1 to +1)
+RAMF_FUNDING_DIV_BONUS = 20          # Bonus for strong divergence signal
+
+# Liquidation Cluster Settings
+RAMF_USE_LIQ_CLUSTERS = True         # Enable liquidation cluster prediction
+RAMF_LIQ_CLUSTER_THRESHOLD = 2.0     # Ratio threshold for cluster detection
+RAMF_LIQ_CLUSTER_BONUS = 15          # Bonus when price near liquidation cluster
 
 # ============================================================================
 # Data Provider Settings (Replaces Moon Dev API)

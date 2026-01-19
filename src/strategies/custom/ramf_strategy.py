@@ -34,7 +34,29 @@ try:
         RAMF_MAX_DAILY_LOSS_USD,
         RAMF_MAX_DAILY_GAIN_USD,
         PAPER_TRADING,
-        PAPER_TRADING_BALANCE
+        PAPER_TRADING_BALANCE,
+        # v2.0 Advanced Settings
+        RAMF_USE_ADAPTIVE_SL_TP,
+        RAMF_ATR_SL_MULTIPLIER,
+        RAMF_ATR_TP_MULTIPLIER,
+        RAMF_MIN_SL_PCT,
+        RAMF_MAX_SL_PCT,
+        RAMF_USE_TIME_WINDOWS,
+        RAMF_OPTIMAL_HOURS,
+        RAMF_AVOID_HOURS,
+        RAMF_OPTIMAL_HOUR_BONUS,
+        RAMF_AVOID_HOUR_PENALTY,
+        RAMF_USE_MTF,
+        RAMF_MTF_TIMEFRAMES,
+        RAMF_MTF_AGREEMENT_BONUS,
+        RAMF_MTF_MIN_AGREEMENT,
+        RAMF_USE_FUNDING_DIVERGENCE,
+        RAMF_FUNDING_DIV_LOOKBACK,
+        RAMF_FUNDING_DIV_THRESHOLD,
+        RAMF_FUNDING_DIV_BONUS,
+        RAMF_USE_LIQ_CLUSTERS,
+        RAMF_LIQ_CLUSTER_THRESHOLD,
+        RAMF_LIQ_CLUSTER_BONUS
     )
 except ImportError:
     # Default values
@@ -48,6 +70,28 @@ except ImportError:
     RAMF_MAX_DAILY_GAIN_USD = 25
     PAPER_TRADING = True
     PAPER_TRADING_BALANCE = 500
+    # v2.0 defaults
+    RAMF_USE_ADAPTIVE_SL_TP = True
+    RAMF_ATR_SL_MULTIPLIER = 1.5
+    RAMF_ATR_TP_MULTIPLIER = 3.0
+    RAMF_MIN_SL_PCT = 0.5
+    RAMF_MAX_SL_PCT = 2.0
+    RAMF_USE_TIME_WINDOWS = True
+    RAMF_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 19, 20, 21]
+    RAMF_AVOID_HOURS = [0, 1, 2, 3, 4, 5]
+    RAMF_OPTIMAL_HOUR_BONUS = 15
+    RAMF_AVOID_HOUR_PENALTY = 20
+    RAMF_USE_MTF = True
+    RAMF_MTF_TIMEFRAMES = ['5m', '15m', '1h', '4h']
+    RAMF_MTF_AGREEMENT_BONUS = 10
+    RAMF_MTF_MIN_AGREEMENT = 2
+    RAMF_USE_FUNDING_DIVERGENCE = True
+    RAMF_FUNDING_DIV_LOOKBACK = 24
+    RAMF_FUNDING_DIV_THRESHOLD = 0.3
+    RAMF_FUNDING_DIV_BONUS = 20
+    RAMF_USE_LIQ_CLUSTERS = True
+    RAMF_LIQ_CLUSTER_THRESHOLD = 2.0
+    RAMF_LIQ_CLUSTER_BONUS = 15
 
 # Lower confidence threshold for low volatility regime (0.7x multiplier makes 70 impossible)
 RAMF_MIN_CONFIDENCE_LOW_VOL = 35
@@ -442,6 +486,335 @@ class RAMFStrategy(BaseStrategy):
         except Exception:
             return 50.0
 
+    # =========================================================================
+    # v2.0 IMPROVEMENTS - New Analysis Methods
+    # =========================================================================
+
+    def get_funding_divergence(self, symbol: str, df: pd.DataFrame) -> dict:
+        """
+        Detect divergence between funding rate and price action.
+
+        Bullish divergence: Price falling but funding very negative (shorts paying longs)
+        Bearish divergence: Price rising but funding very positive (longs paying shorts)
+
+        Returns:
+            dict: {
+                'score': float (-1 to +1, positive = bullish divergence),
+                'signal': str ('bullish_div', 'bearish_div', 'neutral'),
+                'funding_rate': float,
+                'price_change_pct': float
+            }
+        """
+        if not RAMF_USE_FUNDING_DIVERGENCE:
+            return {'score': 0.0, 'signal': 'neutral', 'funding_rate': 0.0, 'price_change_pct': 0.0}
+
+        try:
+            # Get current funding rate
+            funding_zscore = self.get_funding_zscore(symbol)
+
+            # Calculate price change over lookback period
+            lookback_candles = min(len(df), RAMF_FUNDING_DIV_LOOKBACK * 4)  # Assuming 15m candles
+            if lookback_candles < 10:
+                return {'score': 0.0, 'signal': 'neutral', 'funding_rate': 0.0, 'price_change_pct': 0.0}
+
+            start_price = df['close'].iloc[-lookback_candles]
+            end_price = df['close'].iloc[-1]
+            price_change_pct = (end_price - start_price) / start_price * 100
+
+            # Detect divergence
+            # Bullish: Price down but funding extremely negative (shorts are overcrowded)
+            # Bearish: Price up but funding extremely positive (longs are overcrowded)
+
+            score = 0.0
+            signal = 'neutral'
+
+            if price_change_pct < -2 and funding_zscore < -1.5:
+                # Price falling, funding very negative = bullish divergence
+                score = min(1.0, abs(funding_zscore) * 0.3)
+                signal = 'bullish_div'
+            elif price_change_pct > 2 and funding_zscore > 1.5:
+                # Price rising, funding very positive = bearish divergence
+                score = -min(1.0, abs(funding_zscore) * 0.3)
+                signal = 'bearish_div'
+            elif abs(funding_zscore) > 2.0:
+                # Extreme funding without price confirmation - still valuable
+                if funding_zscore < -2.0:
+                    score = 0.5
+                    signal = 'bullish_div'
+                elif funding_zscore > 2.0:
+                    score = -0.5
+                    signal = 'bearish_div'
+
+            return {
+                'score': round(score, 2),
+                'signal': signal,
+                'funding_rate': funding_zscore,
+                'price_change_pct': round(price_change_pct, 2)
+            }
+
+        except Exception as e:
+            cprint(f"[RAMF] Error calculating funding divergence: {e}", "yellow")
+            return {'score': 0.0, 'signal': 'neutral', 'funding_rate': 0.0, 'price_change_pct': 0.0}
+
+    def calculate_adaptive_sl_tp(self, df: pd.DataFrame, direction: str) -> dict:
+        """
+        Calculate dynamic stop-loss and take-profit based on ATR.
+
+        In high volatility: wider SL/TP to avoid noise
+        In low volatility: tighter SL/TP for better R:R
+
+        Args:
+            df: OHLCV DataFrame
+            direction: 'BUY' or 'SELL'
+
+        Returns:
+            dict: {'sl_pct': float, 'tp_pct': float, 'atr_value': float}
+        """
+        if not RAMF_USE_ADAPTIVE_SL_TP:
+            return {
+                'sl_pct': RAMF_STOP_LOSS_PCT,
+                'tp_pct': RAMF_TAKE_PROFIT_PCT,
+                'atr_value': 0.0
+            }
+
+        try:
+            # Calculate ATR
+            atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14)
+            current_atr = atr.average_true_range().iloc[-1]
+            current_price = df['close'].iloc[-1]
+
+            # ATR as percentage of price
+            atr_pct = (current_atr / current_price) * 100
+
+            # Calculate SL based on ATR multiplier
+            sl_pct = atr_pct * RAMF_ATR_SL_MULTIPLIER
+
+            # Apply floor and ceiling
+            sl_pct = max(RAMF_MIN_SL_PCT, min(RAMF_MAX_SL_PCT, sl_pct))
+
+            # TP based on ATR multiplier (maintains R:R ratio)
+            tp_pct = atr_pct * RAMF_ATR_TP_MULTIPLIER
+
+            return {
+                'sl_pct': round(sl_pct, 2),
+                'tp_pct': round(tp_pct, 2),
+                'atr_value': round(current_atr, 4),
+                'atr_pct': round(atr_pct, 2)
+            }
+
+        except Exception as e:
+            cprint(f"[RAMF] Error calculating adaptive SL/TP: {e}", "yellow")
+            return {
+                'sl_pct': RAMF_STOP_LOSS_PCT,
+                'tp_pct': RAMF_TAKE_PROFIT_PCT,
+                'atr_value': 0.0
+            }
+
+    def get_time_window_modifier(self) -> dict:
+        """
+        Calculate confidence modifier based on current trading hour (UTC).
+
+        Optimal hours: London open (7-9), NY open (13-15), Asia close (19-21)
+        Avoid hours: Late US session and early Asia (0-5 UTC)
+
+        Returns:
+            dict: {'modifier': int, 'hour': int, 'session': str}
+        """
+        if not RAMF_USE_TIME_WINDOWS:
+            return {'modifier': 0, 'hour': 0, 'session': 'any'}
+
+        try:
+            current_hour = datetime.utcnow().hour
+
+            if current_hour in RAMF_OPTIMAL_HOURS:
+                # Determine session
+                if current_hour in [7, 8, 9]:
+                    session = 'london_open'
+                elif current_hour in [13, 14, 15]:
+                    session = 'ny_open'
+                else:
+                    session = 'asia_close'
+
+                return {
+                    'modifier': RAMF_OPTIMAL_HOUR_BONUS,
+                    'hour': current_hour,
+                    'session': session
+                }
+
+            elif current_hour in RAMF_AVOID_HOURS:
+                return {
+                    'modifier': -RAMF_AVOID_HOUR_PENALTY,
+                    'hour': current_hour,
+                    'session': 'low_liquidity'
+                }
+
+            else:
+                return {
+                    'modifier': 0,
+                    'hour': current_hour,
+                    'session': 'normal'
+                }
+
+        except Exception as e:
+            cprint(f"[RAMF] Error calculating time window: {e}", "yellow")
+            return {'modifier': 0, 'hour': 0, 'session': 'unknown'}
+
+    def get_mtf_confluence(self, symbol: str, direction: str) -> dict:
+        """
+        Check for multi-timeframe confluence.
+
+        Looks for alignment across multiple timeframes to confirm trade direction.
+
+        Args:
+            symbol: Crypto symbol
+            direction: Expected direction ('BUY' or 'SELL')
+
+        Returns:
+            dict: {
+                'agreements': int (number of timeframes agreeing),
+                'total': int (total timeframes checked),
+                'bonus': int (confidence bonus),
+                'details': dict (per-timeframe results)
+            }
+        """
+        if not RAMF_USE_MTF:
+            return {'agreements': 0, 'total': 0, 'bonus': 0, 'details': {}}
+
+        try:
+            agreements = 0
+            details = {}
+
+            for tf in RAMF_MTF_TIMEFRAMES:
+                try:
+                    # Fetch data for this timeframe
+                    tf_df = self._fetch_candles(symbol, interval=tf, candles=100)
+                    if tf_df is None or len(tf_df) < 50:
+                        details[tf] = 'no_data'
+                        continue
+
+                    # Simple trend check: price vs EMA20
+                    close = tf_df['close']
+                    ema20 = EMAIndicator(close, window=20).ema_indicator()
+                    current_price = close.iloc[-1]
+                    current_ema = ema20.iloc[-1]
+
+                    # Check RSI for confirmation
+                    rsi = RSIIndicator(close, window=14).rsi().iloc[-1]
+
+                    tf_bullish = current_price > current_ema and rsi > 40
+                    tf_bearish = current_price < current_ema and rsi < 60
+
+                    if direction == 'BUY' and tf_bullish:
+                        agreements += 1
+                        details[tf] = 'bullish'
+                    elif direction == 'SELL' and tf_bearish:
+                        agreements += 1
+                        details[tf] = 'bearish'
+                    else:
+                        details[tf] = 'neutral'
+
+                except Exception as e:
+                    details[tf] = f'error: {str(e)[:20]}'
+
+            # Calculate bonus
+            bonus = 0
+            if agreements >= RAMF_MTF_MIN_AGREEMENT:
+                bonus = (agreements - RAMF_MTF_MIN_AGREEMENT + 1) * RAMF_MTF_AGREEMENT_BONUS
+
+            return {
+                'agreements': agreements,
+                'total': len(RAMF_MTF_TIMEFRAMES),
+                'bonus': bonus,
+                'details': details
+            }
+
+        except Exception as e:
+            cprint(f"[RAMF] Error calculating MTF confluence: {e}", "yellow")
+            return {'agreements': 0, 'total': 0, 'bonus': 0, 'details': {}}
+
+    def predict_liquidation_clusters(self, df: pd.DataFrame, direction: str) -> dict:
+        """
+        Predict areas where liquidations might cluster based on:
+        - Recent swing highs/lows (common SL placement)
+        - Round numbers
+        - Previous liquidation imbalance direction
+
+        Args:
+            df: OHLCV DataFrame
+            direction: Trade direction ('BUY' or 'SELL')
+
+        Returns:
+            dict: {
+                'near_cluster': bool,
+                'cluster_price': float,
+                'distance_pct': float,
+                'bonus': int
+            }
+        """
+        if not RAMF_USE_LIQ_CLUSTERS:
+            return {'near_cluster': False, 'cluster_price': 0.0, 'distance_pct': 0.0, 'bonus': 0}
+
+        try:
+            current_price = df['close'].iloc[-1]
+
+            # Find recent swing points (potential liquidation levels)
+            highs = df['high'].tail(50)
+            lows = df['low'].tail(50)
+
+            # Recent high/low that could be a liquidation cluster
+            recent_high = highs.max()
+            recent_low = lows.min()
+
+            # Get liquidation ratio to understand current pressure
+            liq_ratio = self.get_liquidation_imbalance()
+
+            near_cluster = False
+            cluster_price = 0.0
+            bonus = 0
+
+            if direction == 'BUY':
+                # For longs: shorts might be liquidated above recent high
+                # If we're near recent high and liq_ratio shows short liquidations
+                distance_to_high = (recent_high - current_price) / current_price * 100
+
+                if 0 < distance_to_high < 2 and liq_ratio < 1.0:
+                    # Price approaching recent high, shorts being liquidated
+                    # This could trigger a cascade - bullish!
+                    near_cluster = True
+                    cluster_price = recent_high
+                    bonus = RAMF_LIQ_CLUSTER_BONUS
+
+                distance_pct = distance_to_high
+
+            else:  # SELL
+                # For shorts: longs might be liquidated below recent low
+                distance_to_low = (current_price - recent_low) / current_price * 100
+
+                if 0 < distance_to_low < 2 and liq_ratio > 1.0:
+                    # Price approaching recent low, longs being liquidated
+                    # This could trigger a cascade - bearish!
+                    near_cluster = True
+                    cluster_price = recent_low
+                    bonus = RAMF_LIQ_CLUSTER_BONUS
+
+                distance_pct = distance_to_low
+
+            return {
+                'near_cluster': near_cluster,
+                'cluster_price': round(cluster_price, 2),
+                'distance_pct': round(distance_pct, 2),
+                'bonus': bonus,
+                'liq_ratio': liq_ratio
+            }
+
+        except Exception as e:
+            cprint(f"[RAMF] Error predicting liquidation clusters: {e}", "yellow")
+            return {'near_cluster': False, 'cluster_price': 0.0, 'distance_pct': 0.0, 'bonus': 0}
+
+    # =========================================================================
+    # END v2.0 IMPROVEMENTS
+    # =========================================================================
+
     def generate_signals(self, symbol: str = None, df: pd.DataFrame = None) -> dict:
         """
         Generate trading signal for the given symbol.
@@ -503,6 +876,7 @@ class RAMFStrategy(BaseStrategy):
         This is where the RAMF magic happens:
         - In HIGH volatility: Look for momentum exhaustion (contrarian)
         - In LOW volatility: Look for trend continuation
+        - v2.0: Enhanced with funding divergence, MTF, time windows, adaptive SL/TP
         """
         try:
             # 1. Calculate volatility regime
@@ -526,35 +900,46 @@ class RAMFStrategy(BaseStrategy):
             # 7. Get RSI for additional context
             rsi = self.calculate_rsi(df)
 
+            # =========================================================================
+            # v2.0: Get additional analysis data
+            # =========================================================================
+            # 8. Funding rate divergence
+            funding_div = self.get_funding_divergence(symbol, df)
+
+            # 9. Time window modifier
+            time_window = self.get_time_window_modifier()
+
             # Initialize scores
             long_score = 0
             short_score = 0
 
-            # Scoring logic depends on volatility regime
+            # =========================================================================
+            # BASE SCORING (depends on volatility regime)
+            # =========================================================================
             if regime['regime'] == 'high':
                 # HIGH VOLATILITY MODE: Mean-reversion / Fade exhaustion
                 cprint(f"[RAMF] {symbol}: High volatility mode (ATR {regime['atr_percentile']:.0f}th pctl)", "cyan")
 
                 # LONG conditions (fade oversold exhaustion)
                 if exhaustion['oversold_exhaustion']:
-                    long_score += 30
-                    cprint(f"  + Oversold exhaustion detected (+30)", "green")
+                    long_score += 25
+                    cprint(f"  + Oversold exhaustion detected (+25)", "green")
 
                 if volume['is_volume_spike']:
-                    long_score += 15
-                    cprint(f"  + Volume spike ({volume['volume_ratio']:.1f}x) (+15)", "green")
+                    long_score += 10
+                    cprint(f"  + Volume spike ({volume['volume_ratio']:.1f}x) (+10)", "green")
 
                 if funding_zscore < -self.funding_zscore_threshold:
-                    long_score += 20
-                    cprint(f"  + Negative funding Z={funding_zscore:.2f} (+20)", "green")
+                    long_score += 15
+                    cprint(f"  + Negative funding Z={funding_zscore:.2f} (+15)", "green")
 
                 if liq_ratio > self.liquidation_ratio_threshold:
-                    long_score += 15
-                    cprint(f"  + Long liquidation cascade ({liq_ratio:.2f}) (+15)", "green")
+                    long_score += 10
+                    cprint(f"  + Long liquidation cascade ({liq_ratio:.2f}) (+10)", "green")
 
                 if btc_bullish:
-                    long_score += 15
-                    cprint(f"  + BTC macro bullish (+15)", "green")
+                    long_score += 10
+                    cprint(f"  + BTC macro bullish (+10)", "green")
 
                 if rsi < 30:
                     long_score += 5
@@ -562,20 +947,20 @@ class RAMFStrategy(BaseStrategy):
 
                 # SHORT conditions (fade overbought exhaustion)
                 if exhaustion['overbought_exhaustion']:
-                    short_score += 30
-                    cprint(f"  + Overbought exhaustion detected (+30)", "red")
+                    short_score += 25
+                    cprint(f"  + Overbought exhaustion detected (+25)", "red")
 
                 if volume['is_volume_spike']:
-                    short_score += 15
-                    cprint(f"  + Volume spike ({volume['volume_ratio']:.1f}x) (+15)", "red")
+                    short_score += 10
+                    cprint(f"  + Volume spike ({volume['volume_ratio']:.1f}x) (+10)", "red")
 
                 if funding_zscore > self.funding_zscore_threshold:
-                    short_score += 20
-                    cprint(f"  + Positive funding Z={funding_zscore:.2f} (+20)", "red")
+                    short_score += 15
+                    cprint(f"  + Positive funding Z={funding_zscore:.2f} (+15)", "red")
 
                 if liq_ratio < (1 / self.liquidation_ratio_threshold):
-                    short_score += 15
-                    cprint(f"  + Short liquidation cascade ({liq_ratio:.2f}) (+15)", "red")
+                    short_score += 10
+                    cprint(f"  + Short liquidation cascade ({liq_ratio:.2f}) (+10)", "red")
 
                 if rsi > 70:
                     short_score += 5
@@ -590,14 +975,14 @@ class RAMFStrategy(BaseStrategy):
 
                 # Simple trend following based on price vs VWAP
                 if exhaustion['vwap_distance_atr'] > 0.5:
-                    long_score += 40
-                    cprint(f"  + Price above VWAP (+40)", "green")
+                    long_score += 35
+                    cprint(f"  + Price above VWAP (+35)", "green")
                     if btc_bullish:
-                        long_score += 30
-                        cprint(f"  + BTC macro bullish (+30)", "green")
+                        long_score += 25
+                        cprint(f"  + BTC macro bullish (+25)", "green")
                 elif exhaustion['vwap_distance_atr'] < -0.5:
-                    short_score += 40
-                    cprint(f"  + Price below VWAP (+40)", "red")
+                    short_score += 35
+                    cprint(f"  + Price below VWAP (+35)", "red")
 
                 # Scale down for low vol (less confident) - use lower threshold
                 long_score = int(long_score * 0.7)
@@ -612,14 +997,65 @@ class RAMFStrategy(BaseStrategy):
                     'signal': 0.0,
                     'direction': 'NEUTRAL',
                     'metadata': {
-                        'strategy_type': 'ramf',
+                        'strategy_type': 'ramf_v2',
                         'regime': regime,
                         'reason': 'Normal volatility - no clear edge'
                     }
                 }
 
-            # Determine direction and signal strength
-            # Use lower threshold for low volatility regime
+            # =========================================================================
+            # v2.0: APPLY ENHANCEMENT MODIFIERS
+            # =========================================================================
+
+            # Funding divergence bonus
+            if funding_div['signal'] == 'bullish_div' and funding_div['score'] >= RAMF_FUNDING_DIV_THRESHOLD:
+                bonus = int(RAMF_FUNDING_DIV_BONUS * abs(funding_div['score']))
+                long_score += bonus
+                cprint(f"  + Bullish funding divergence (+{bonus})", "green")
+            elif funding_div['signal'] == 'bearish_div' and abs(funding_div['score']) >= RAMF_FUNDING_DIV_THRESHOLD:
+                bonus = int(RAMF_FUNDING_DIV_BONUS * abs(funding_div['score']))
+                short_score += bonus
+                cprint(f"  + Bearish funding divergence (+{bonus})", "red")
+
+            # Time window modifier (applies to both)
+            if time_window['modifier'] != 0:
+                if time_window['modifier'] > 0:
+                    long_score += time_window['modifier']
+                    short_score += time_window['modifier']
+                    cprint(f"  + Optimal trading hour ({time_window['session']}) (+{time_window['modifier']})", "cyan")
+                else:
+                    long_score += time_window['modifier']
+                    short_score += time_window['modifier']
+                    cprint(f"  - Low liquidity hour ({time_window['session']}) ({time_window['modifier']})", "yellow")
+
+            # Determine preliminary direction for MTF and liquidation cluster checks
+            prelim_direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
+
+            # MTF confluence (only check if we have a preliminary direction)
+            mtf_data = {'agreements': 0, 'total': 0, 'bonus': 0, 'details': {}}
+            if prelim_direction != 'NEUTRAL':
+                mtf_data = self.get_mtf_confluence(symbol, prelim_direction)
+                if mtf_data['bonus'] > 0:
+                    if prelim_direction == 'BUY':
+                        long_score += mtf_data['bonus']
+                    else:
+                        short_score += mtf_data['bonus']
+                    cprint(f"  + MTF confluence ({mtf_data['agreements']}/{mtf_data['total']} TFs) (+{mtf_data['bonus']})", "magenta")
+
+            # Liquidation cluster prediction
+            liq_cluster = {'near_cluster': False, 'bonus': 0}
+            if prelim_direction != 'NEUTRAL':
+                liq_cluster = self.predict_liquidation_clusters(df, prelim_direction)
+                if liq_cluster['bonus'] > 0:
+                    if prelim_direction == 'BUY':
+                        long_score += liq_cluster['bonus']
+                    else:
+                        short_score += liq_cluster['bonus']
+                    cprint(f"  + Near liquidation cluster @ ${liq_cluster['cluster_price']:,.0f} (+{liq_cluster['bonus']})", "magenta")
+
+            # =========================================================================
+            # FINAL DIRECTION DETERMINATION
+            # =========================================================================
             effective_min_confidence = RAMF_MIN_CONFIDENCE_LOW_VOL if regime['regime'] == 'low' else self.min_confidence
 
             if long_score >= effective_min_confidence:
@@ -632,6 +1068,11 @@ class RAMFStrategy(BaseStrategy):
                 direction = 'NEUTRAL'
                 signal_strength = 0.0
 
+            # =========================================================================
+            # v2.0: Calculate adaptive SL/TP
+            # =========================================================================
+            adaptive_levels = self.calculate_adaptive_sl_tp(df, direction)
+
             # Build signal
             current_price = float(df['close'].iloc[-1])
 
@@ -640,7 +1081,7 @@ class RAMFStrategy(BaseStrategy):
                 'signal': round(float(signal_strength), 3),
                 'direction': direction,
                 'metadata': {
-                    'strategy_type': 'ramf',
+                    'strategy_type': 'ramf_v2',
                     'regime': regime,
                     'exhaustion': exhaustion,
                     'volume': volume,
@@ -651,9 +1092,16 @@ class RAMFStrategy(BaseStrategy):
                     'long_score': int(long_score),
                     'short_score': int(short_score),
                     'current_price': float(current_price),
-                    'stop_loss_pct': float(RAMF_STOP_LOSS_PCT),
-                    'take_profit_pct': float(RAMF_TAKE_PROFIT_PCT),
-                    'leverage': int(RAMF_LEVERAGE)
+                    # v2.0: Adaptive SL/TP
+                    'stop_loss_pct': float(adaptive_levels['sl_pct']),
+                    'take_profit_pct': float(adaptive_levels['tp_pct']),
+                    'atr_pct': float(adaptive_levels.get('atr_pct', 0)),
+                    'leverage': int(RAMF_LEVERAGE),
+                    # v2.0: New metadata
+                    'funding_divergence': funding_div,
+                    'time_window': time_window,
+                    'mtf_confluence': mtf_data,
+                    'liq_cluster': liq_cluster
                 }
             }
 
@@ -663,14 +1111,16 @@ class RAMFStrategy(BaseStrategy):
                 score = long_score if direction == 'BUY' else short_score
 
                 cprint("=" * 60, color)
-                cprint(f"[RAMF] SIGNAL: {direction} {symbol} @ ${current_price:,.2f}", color, attrs=['bold'])
+                cprint(f"[RAMF v2.0] SIGNAL: {direction} {symbol} @ ${current_price:,.2f}", color, attrs=['bold'])
                 cprint(f"  Confidence: {score}%", color)
                 cprint(f"  Regime: {regime['regime']} ({regime['atr_percentile']:.0f}th pctl)", 'white')
                 cprint(f"  VWAP Distance: {exhaustion['vwap_distance_atr']:.2f} ATR", 'white')
-                cprint(f"  Funding Z-Score: {funding_zscore:.2f}", 'white')
+                cprint(f"  Funding Z-Score: {funding_zscore:.2f} | Divergence: {funding_div['signal']}", 'white')
                 cprint(f"  Liquidation Ratio: {liq_ratio:.2f}", 'white')
                 cprint(f"  RSI: {rsi:.0f}", 'white')
-                cprint(f"  Stop-Loss: {RAMF_STOP_LOSS_PCT}% | Take-Profit: {RAMF_TAKE_PROFIT_PCT}%", 'white')
+                cprint(f"  MTF Agreement: {mtf_data['agreements']}/{mtf_data['total']}", 'white')
+                cprint(f"  Time Window: {time_window['session']} (UTC {time_window['hour']}h)", 'white')
+                cprint(f"  Adaptive SL: {adaptive_levels['sl_pct']:.2f}% | TP: {adaptive_levels['tp_pct']:.2f}%", 'cyan')
                 cprint("=" * 60, color)
 
                 # Log to file
@@ -685,10 +1135,11 @@ class RAMFStrategy(BaseStrategy):
             return None
 
     def _log_signal(self, signal: dict):
-        """Log signal to CSV file."""
+        """Log signal to CSV file with v2.0 metadata."""
         try:
             log_file = os.path.join(self.data_dir, 'signals.csv')
 
+            # v2.0: Enhanced logging with all new features
             log_entry = {
                 'timestamp': datetime.now().isoformat(),
                 'symbol': signal['token'],
@@ -698,6 +1149,24 @@ class RAMFStrategy(BaseStrategy):
                 'regime': signal['metadata'].get('regime', {}).get('regime', 'unknown'),
                 'funding_zscore': signal['metadata'].get('funding_zscore', 0),
                 'rsi': signal['metadata'].get('rsi', 50),
+                'long_score': signal['metadata'].get('long_score', 0),
+                'short_score': signal['metadata'].get('short_score', 0),
+                # v2.0: Adaptive SL/TP
+                'sl_pct': signal['metadata'].get('stop_loss_pct', RAMF_STOP_LOSS_PCT),
+                'tp_pct': signal['metadata'].get('take_profit_pct', RAMF_TAKE_PROFIT_PCT),
+                'atr_pct': signal['metadata'].get('atr_pct', 0),
+                # v2.0: Funding divergence
+                'funding_div_signal': signal['metadata'].get('funding_divergence', {}).get('signal', 'neutral'),
+                'funding_div_score': signal['metadata'].get('funding_divergence', {}).get('score', 0),
+                # v2.0: Time window
+                'time_session': signal['metadata'].get('time_window', {}).get('session', 'unknown'),
+                'time_modifier': signal['metadata'].get('time_window', {}).get('modifier', 0),
+                # v2.0: MTF confluence
+                'mtf_agreements': signal['metadata'].get('mtf_confluence', {}).get('agreements', 0),
+                'mtf_total': signal['metadata'].get('mtf_confluence', {}).get('total', 0),
+                # v2.0: Liquidation cluster
+                'near_liq_cluster': signal['metadata'].get('liq_cluster', {}).get('near_cluster', False),
+                # Paper trading status
                 'paper_trading': PAPER_TRADING
             }
 
@@ -715,6 +1184,8 @@ class RAMFStrategy(BaseStrategy):
         """
         Execute a paper trade (simulation).
 
+        v2.0: Uses adaptive SL/TP from signal metadata when available.
+
         Args:
             signal: Signal dict from generate_signals()
 
@@ -731,15 +1202,28 @@ class RAMFStrategy(BaseStrategy):
             price = signal['metadata'].get('current_price', 0)
             confidence = signal['signal']
 
+            # v2.0: Get adaptive SL/TP from signal metadata (falls back to config defaults)
+            sl_pct = signal['metadata'].get('stop_loss_pct', RAMF_STOP_LOSS_PCT)
+            tp_pct = signal['metadata'].get('take_profit_pct', RAMF_TAKE_PROFIT_PCT)
+
             # Calculate position size (2% risk per trade)
+            # Position size is adjusted for the adaptive SL
             risk_amount = self.paper_balance * 0.02
-            position_size = risk_amount / (RAMF_STOP_LOSS_PCT / 100) * RAMF_LEVERAGE
+            position_size = risk_amount / (sl_pct / 100) * RAMF_LEVERAGE
 
             # Generate unique position ID
             self._position_counter += 1
             position_id = f"{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._position_counter}"
 
-            # Record trade
+            # Calculate SL/TP prices using adaptive percentages
+            if direction == 'BUY':
+                stop_loss_price = price * (1 - sl_pct / 100)
+                take_profit_price = price * (1 + tp_pct / 100)
+            else:  # SELL
+                stop_loss_price = price * (1 + sl_pct / 100)
+                take_profit_price = price * (1 - tp_pct / 100)
+
+            # Record trade with v2.0 metadata
             trade = {
                 'position_id': position_id,
                 'timestamp': datetime.now().isoformat(),
@@ -748,10 +1232,17 @@ class RAMFStrategy(BaseStrategy):
                 'entry_price': price,
                 'position_size': round(position_size, 2),
                 'leverage': RAMF_LEVERAGE,
-                'stop_loss': round(price * (1 - RAMF_STOP_LOSS_PCT/100) if direction == 'BUY' else price * (1 + RAMF_STOP_LOSS_PCT/100), 2),
-                'take_profit': round(price * (1 + RAMF_TAKE_PROFIT_PCT/100) if direction == 'BUY' else price * (1 - RAMF_TAKE_PROFIT_PCT/100), 2),
+                'stop_loss': round(stop_loss_price, 2),
+                'take_profit': round(take_profit_price, 2),
+                'sl_pct': sl_pct,
+                'tp_pct': tp_pct,
                 'confidence': confidence,
-                'status': 'OPEN'
+                'status': 'OPEN',
+                # v2.0: Store additional metadata for analysis
+                'regime': signal['metadata'].get('regime', {}).get('regime', 'unknown'),
+                'mtf_agreements': signal['metadata'].get('mtf_confluence', {}).get('agreements', 0),
+                'time_session': signal['metadata'].get('time_window', {}).get('session', 'unknown'),
+                'funding_div': signal['metadata'].get('funding_divergence', {}).get('signal', 'neutral')
             }
 
             # Store position with unique ID (no overwrite!)
@@ -767,9 +1258,11 @@ class RAMFStrategy(BaseStrategy):
             else:
                 df.to_csv(log_file, index=False)
 
-            cprint(f"[RAMF PAPER] Opened {direction} {symbol} (ID: {position_id})", "magenta")
+            cprint(f"[RAMF v2.0 PAPER] Opened {direction} {symbol} (ID: {position_id})", "magenta")
             cprint(f"  Entry: ${price:,.2f} | Size: ${position_size:,.2f}", "white")
-            cprint(f"  SL: ${trade['stop_loss']:,.2f} | TP: ${trade['take_profit']:,.2f}", "white")
+            cprint(f"  Adaptive SL: ${trade['stop_loss']:,.2f} ({sl_pct:.2f}%)", "white")
+            cprint(f"  Adaptive TP: ${trade['take_profit']:,.2f} ({tp_pct:.2f}%)", "white")
+            cprint(f"  Regime: {trade['regime']} | MTF: {trade['mtf_agreements']} | Session: {trade['time_session']}", "white")
 
             return trade
 
