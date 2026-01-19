@@ -3,7 +3,8 @@ Positions API endpoints
 """
 
 import os
-from typing import Dict, List
+from datetime import datetime
+from typing import Dict, List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
@@ -56,6 +57,121 @@ def _get_positions_from_csv() -> List[Dict]:
     return positions
 
 
+def _close_position_in_csv(symbol: str, exit_price: float) -> Optional[Dict]:
+    """Close a position directly in the CSV file. Returns closed position info or None."""
+    if not os.path.exists(PAPER_TRADES_CSV):
+        return None
+
+    try:
+        df = pd.read_csv(PAPER_TRADES_CSV)
+        if df.empty:
+            return None
+
+        # Find the OPEN position for this symbol
+        mask = (df['status'] == 'OPEN') & (df['symbol'].str.upper() == symbol.upper())
+        if not mask.any():
+            return None
+
+        idx = df[mask].index[0]
+        row = df.loc[idx]
+
+        # Calculate PnL
+        entry_price = float(row.get('entry_price', 0))
+        position_size = float(row.get('position_size', 0))
+        direction = row.get('direction', 'BUY')
+
+        if direction == 'BUY':
+            pnl = position_size * (exit_price - entry_price) / entry_price
+        else:
+            pnl = position_size * (entry_price - exit_price) / entry_price
+
+        # Update the row
+        df.loc[idx, 'status'] = 'CLOSED_MANUAL'
+        df.loc[idx, 'exit_price'] = exit_price
+        df.loc[idx, 'exit_time'] = datetime.now().isoformat()
+        df.loc[idx, 'pnl'] = round(pnl, 2)
+
+        # Save back to CSV
+        df.to_csv(PAPER_TRADES_CSV, index=False)
+
+        return {
+            'symbol': symbol.upper(),
+            'pnl': round(pnl, 2),
+            'entry_price': entry_price,
+            'exit_price': exit_price,
+            'position_size': position_size,
+        }
+
+    except Exception as e:
+        print(f"[Positions API] Error closing position in CSV: {e}")
+        return None
+
+
+def _close_all_positions_in_csv() -> List[Dict]:
+    """Close all open positions directly in the CSV file. Returns list of closed positions."""
+    closed = []
+
+    if not os.path.exists(PAPER_TRADES_CSV):
+        return closed
+
+    try:
+        df = pd.read_csv(PAPER_TRADES_CSV)
+        if df.empty:
+            return closed
+
+        # Find all OPEN positions
+        mask = df['status'] == 'OPEN'
+        if not mask.any():
+            return closed
+
+        # Get current prices for all symbols (use entry price as fallback)
+        for idx in df[mask].index:
+            row = df.loc[idx]
+            symbol = row.get('symbol', '')
+            entry_price = float(row.get('entry_price', 0))
+            position_size = float(row.get('position_size', 0))
+            direction = row.get('direction', 'BUY')
+
+            # Try to get current price, fallback to entry price (no loss assumed)
+            exit_price = entry_price
+            try:
+                from src.data_providers.market_data import MarketDataProvider
+                provider = MarketDataProvider()
+                current = provider.get_current_price(symbol)
+                if current:
+                    exit_price = current
+            except Exception:
+                pass
+
+            # Calculate PnL
+            if direction == 'BUY':
+                pnl = position_size * (exit_price - entry_price) / entry_price if entry_price > 0 else 0
+            else:
+                pnl = position_size * (entry_price - exit_price) / entry_price if entry_price > 0 else 0
+
+            # Update the row
+            df.loc[idx, 'status'] = 'CLOSED_MANUAL'
+            df.loc[idx, 'exit_price'] = exit_price
+            df.loc[idx, 'exit_time'] = datetime.now().isoformat()
+            df.loc[idx, 'pnl'] = round(pnl, 2)
+
+            closed.append({
+                'symbol': symbol,
+                'pnl': round(pnl, 2),
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'position_size': position_size,
+            })
+
+        # Save back to CSV
+        df.to_csv(PAPER_TRADES_CSV, index=False)
+
+    except Exception as e:
+        print(f"[Positions API] Error closing all positions in CSV: {e}")
+
+    return closed
+
+
 @router.get("")
 async def get_positions(username: str = Depends(verify_credentials)) -> List[Dict]:
     """Get all open positions."""
@@ -104,11 +220,9 @@ async def close_position(
         from src.strategies.custom.ramf_strategy import RAMFStrategy
 
         strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
-        if not strategy:
-            raise HTTPException(status_code=503, detail="Strategy not initialized")
 
-        # Find and close the position (paper_positions is a dict)
-        if hasattr(strategy, 'paper_positions') and strategy.paper_positions:
+        # Try strategy-based close first
+        if strategy and hasattr(strategy, 'paper_positions') and strategy.paper_positions:
             # Find position by symbol
             position_id_to_close = None
             for position_id, pos in strategy.paper_positions.items():
@@ -135,7 +249,33 @@ async def close_position(
                         "pnl": round(closed.get('pnl', 0), 2),
                     }
 
-            raise HTTPException(status_code=404, detail=f"Position {symbol} not found")
+        # Fallback: Close directly via CSV when strategy not running
+        # Try to get current price
+        exit_price = 0
+        try:
+            from src.data_providers.market_data import MarketDataProvider
+            provider = MarketDataProvider()
+            exit_price = provider.get_current_price(symbol.upper()) or 0
+        except Exception:
+            pass
+
+        # If no price available, read entry price from CSV
+        if exit_price == 0:
+            positions = _get_positions_from_csv()
+            for pos in positions:
+                if pos.get('symbol', '').upper() == symbol.upper():
+                    exit_price = pos.get('entry_price', 0)
+                    break
+
+        result = _close_position_in_csv(symbol, exit_price)
+        if result:
+            return {
+                "status": "closed",
+                "symbol": result['symbol'],
+                "pnl": result['pnl'],
+            }
+
+        raise HTTPException(status_code=404, detail=f"Position {symbol} not found")
 
     except HTTPException:
         raise
@@ -150,11 +290,9 @@ async def close_all_positions(username: str = Depends(verify_credentials)) -> Di
         from src.strategies.custom.ramf_strategy import RAMFStrategy
 
         strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
-        if not strategy:
-            raise HTTPException(status_code=503, detail="Strategy not initialized")
 
-        # Use strategy's built-in close all method
-        if hasattr(strategy, 'close_all_paper_positions'):
+        # Try strategy-based close first
+        if strategy and hasattr(strategy, 'close_all_paper_positions'):
             closed = strategy.close_all_paper_positions()
             total_pnl = sum(pos.get('pnl', 0) for pos in closed)
             return {
@@ -163,10 +301,13 @@ async def close_all_positions(username: str = Depends(verify_credentials)) -> Di
                 "total_pnl": round(total_pnl, 2),
             }
 
+        # Fallback: Close directly via CSV when strategy not running
+        closed = _close_all_positions_in_csv()
+        total_pnl = sum(pos.get('pnl', 0) for pos in closed)
         return {
             "status": "closed",
-            "count": 0,
-            "total_pnl": 0.0,
+            "count": len(closed),
+            "total_pnl": round(total_pnl, 2),
         }
 
     except HTTPException:
