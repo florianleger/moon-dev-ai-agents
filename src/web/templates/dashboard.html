@@ -103,7 +103,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <template x-for="pos in positions" :key="pos.position_id || pos.symbol">
+                        <template x-for="pos in positions" :key="pos._uid || pos.position_id || pos.symbol">
                             <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
                                 <td class="py-3 font-medium text-white" x-text="pos.symbol"></td>
                                 <td class="py-3">
@@ -211,7 +211,12 @@ function dashboardData() {
 
         async fetchPositions() {
             try {
-                this.positions = await apiFetch('/api/positions');
+                const rawPositions = await apiFetch('/api/positions') || [];
+                // Ensure each position has a unique ID
+                this.positions = rawPositions.map((p, i) => ({
+                    ...p,
+                    _uid: p.position_id || `${p.symbol}-${i}-${p.entry_price}`
+                }));
             } catch (e) {
                 console.error('Failed to fetch positions:', e);
             }
@@ -235,6 +240,12 @@ function dashboardData() {
         async initChart() {
             try {
                 const data = await apiFetch('/api/dashboard/pnl?days=7');
+
+                // Destroy existing chart if present
+                if (this.pnlChart) {
+                    this.pnlChart.destroy();
+                    this.pnlChart = null;
+                }
 
                 const ctx = document.getElementById('pnlChart').getContext('2d');
                 this.pnlChart = new Chart(ctx, {
@@ -291,7 +302,12 @@ function dashboardData() {
                 });
 
                 eventSource.addEventListener('positions', (e) => {
-                    this.positions = JSON.parse(e.data);
+                    const rawPositions = JSON.parse(e.data) || [];
+                    // Ensure each position has a unique ID
+                    this.positions = rawPositions.map((p, i) => ({
+                        ...p,
+                        _uid: p.position_id || `${p.symbol}-${i}-${p.entry_price}`
+                    }));
                 });
 
                 eventSource.addEventListener('signals', (e) => {
