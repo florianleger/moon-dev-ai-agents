@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash trader
-RUN mkdir -p /app/src/data && chown -R trader:trader /app
+RUN mkdir -p /app/src/data/ramf && chown -R trader:trader /app
 
 # Copy requirements first for better caching (use minimal docker requirements)
 COPY --chown=trader:trader requirements-docker.txt ./requirements.txt
@@ -33,12 +33,12 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY --chown=trader:trader src/ ./src/
-COPY --chown=trader:trader entrypoint.sh .
+COPY src/ ./src/
+COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-# Switch to non-root user
-USER trader
+# Note: Running as root for volume mount compatibility
+# The data volume needs write permissions
 
 # Volume for persistent data (trades, logs, signals)
 VOLUME ["/app/src/data"]
