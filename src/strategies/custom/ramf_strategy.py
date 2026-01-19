@@ -1208,14 +1208,50 @@ class RAMFStrategy(BaseStrategy):
             return None
 
         try:
-            symbol = signal['token']
-            direction = signal['direction']
-            price = signal['metadata'].get('current_price', 0)
-            confidence = signal['signal']
+            # Extract signal fields with safe defaults
+            symbol = signal.get('token', '')
+            direction = signal.get('direction', 'NEUTRAL')
+
+            if not symbol or direction == 'NEUTRAL':
+                cprint(f"[RAMF] Invalid signal: token={symbol}, direction={direction}", "yellow")
+                return None
+
+            # Get metadata safely (may be empty dict from strategy_agent wrapper)
+            metadata = signal.get('metadata', {})
+
+            # Get price from metadata, or fetch current price if not available
+            price = metadata.get('current_price', 0)
+            if price == 0 or price is None:
+                cprint(f"[RAMF] No price in metadata, fetching current price for {symbol}...", "yellow")
+                try:
+                    df = self._fetch_candles(symbol, interval='15m', candles=5)
+                    if df is not None and len(df) > 0:
+                        price = float(df['close'].iloc[-1])
+                        cprint(f"[RAMF] Fetched price: ${price:,.2f}", "white")
+                except Exception as e:
+                    cprint(f"[RAMF] Could not fetch price: {e}", "red")
+                    return None
+
+            if price <= 0:
+                cprint(f"[RAMF] Cannot execute trade with price={price}", "red")
+                return None
+
+            # Get confidence (support both 'signal' key and 'confidence' key)
+            confidence = signal.get('signal', signal.get('confidence', 0))
+            if isinstance(confidence, (int, float)) and confidence > 1:
+                confidence = confidence / 100  # Convert percentage to decimal
 
             # v2.0: Get adaptive SL/TP from signal metadata (falls back to config defaults)
-            sl_pct = signal['metadata'].get('stop_loss_pct', RAMF_STOP_LOSS_PCT)
-            tp_pct = signal['metadata'].get('take_profit_pct', RAMF_TAKE_PROFIT_PCT)
+            sl_pct = metadata.get('stop_loss_pct', RAMF_STOP_LOSS_PCT)
+            tp_pct = metadata.get('take_profit_pct', RAMF_TAKE_PROFIT_PCT)
+
+            # Ensure SL/TP are valid
+            if sl_pct <= 0:
+                sl_pct = RAMF_STOP_LOSS_PCT
+            if tp_pct <= 0:
+                tp_pct = RAMF_TAKE_PROFIT_PCT
+
+            cprint(f"[RAMF] Executing paper trade: {direction} {symbol} @ ${price:,.2f}", "cyan")
 
             # Calculate position size (2% risk per trade)
             # Position size is adjusted for the adaptive SL
@@ -1249,11 +1285,11 @@ class RAMFStrategy(BaseStrategy):
                 'tp_pct': tp_pct,
                 'confidence': confidence,
                 'status': 'OPEN',
-                # v2.0: Store additional metadata for analysis
-                'regime': signal['metadata'].get('regime', {}).get('regime', 'unknown'),
-                'mtf_agreements': signal['metadata'].get('mtf_confluence', {}).get('agreements', 0),
-                'time_session': signal['metadata'].get('time_window', {}).get('session', 'unknown'),
-                'funding_div': signal['metadata'].get('funding_divergence', {}).get('signal', 'neutral')
+                # v2.0: Store additional metadata for analysis (with safe access)
+                'regime': metadata.get('regime', {}).get('regime', 'unknown') if isinstance(metadata.get('regime'), dict) else 'unknown',
+                'mtf_agreements': metadata.get('mtf_confluence', {}).get('agreements', 0) if isinstance(metadata.get('mtf_confluence'), dict) else 0,
+                'time_session': metadata.get('time_window', {}).get('session', 'unknown') if isinstance(metadata.get('time_window'), dict) else 'unknown',
+                'funding_div': metadata.get('funding_divergence', {}).get('signal', 'neutral') if isinstance(metadata.get('funding_divergence'), dict) else 'neutral'
             }
 
             # Store position with unique ID (no overwrite!)
