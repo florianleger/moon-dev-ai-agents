@@ -13,6 +13,13 @@ import inspect
 import time
 import numpy as np
 
+# Import web state for signal logging
+try:
+    from src.web.state import add_signal as web_add_signal
+    WEB_STATE_AVAILABLE = True
+except ImportError:
+    WEB_STATE_AVAILABLE = False
+
 
 class NumpyEncoder(json.JSONEncoder):
     """Custom JSON encoder that handles numpy types."""
@@ -267,11 +274,26 @@ class StrategyAgent:
                 for i, signal in enumerate(signals):
                     if i < len(evaluation['decisions']):
                         decision = evaluation['decisions'][i]
-                        if "EXECUTE" in decision.upper():
+                        approved = "EXECUTE" in decision.upper()
+                        if approved:
                             cprint(f"✅ LLM approved {signal['strategy_name']}'s {signal['direction']} signal", "green")
                             approved_signals.append(signal)
                         else:
                             cprint(f"❌ LLM rejected {signal['strategy_name']}'s {signal['direction']} signal", "red")
+
+                        # Log signal to web dashboard
+                        if WEB_STATE_AVAILABLE:
+                            try:
+                                web_add_signal({
+                                    'token': signal.get('token', token),
+                                    'direction': signal['direction'],
+                                    'confidence': round(float(signal['signal']) * 100, 1),
+                                    'strategy': signal['strategy_name'],
+                                    'approved': approved,
+                                    'reason': decision if not approved else 'LLM approved'
+                                })
+                            except:
+                                pass
                     else:
                         cprint(f"⚠️ No LLM decision for signal {i}, defaulting to REJECT", "yellow")
             else:
@@ -282,6 +304,20 @@ class StrategyAgent:
                     if signal['direction'] != 'NEUTRAL' and signal['signal'] >= 0.7:
                         cprint(f"✅ Auto-approved high-confidence signal: {signal['strategy_name']} {signal['direction']} ({signal['signal']})", "green")
                         approved_signals.append(signal)
+
+                        # Log approved signal to web dashboard
+                        if WEB_STATE_AVAILABLE:
+                            try:
+                                web_add_signal({
+                                    'token': signal.get('token', token),
+                                    'direction': signal['direction'],
+                                    'confidence': round(float(signal['signal']) * 100, 1),
+                                    'strategy': signal['strategy_name'],
+                                    'approved': True,
+                                    'reason': 'Auto-approved (high confidence)'
+                                })
+                            except:
+                                pass
                     elif signal['direction'] != 'NEUTRAL':
                         cprint(f"⚠️ Signal confidence too low for auto-approval: {signal['signal']}", "yellow")
 

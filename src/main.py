@@ -11,6 +11,15 @@ import time
 from datetime import datetime, timedelta
 from config import *
 
+# Import web state for dashboard control
+try:
+    from src.web.state import is_strategy_running, update_paper_status
+    WEB_STATE_AVAILABLE = True
+except ImportError:
+    WEB_STATE_AVAILABLE = False
+    def is_strategy_running():
+        return True  # Default to running if web state not available
+
 # Add project root to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
@@ -70,18 +79,22 @@ def run_agents():
                     cprint("\n🤖 Running Trading Analysis...", "cyan")
                     trading_agent.run()
 
-                # Run Strategy Analysis
+                # Run Strategy Analysis (only if enabled via web dashboard)
                 if strategy_agent:
-                    cprint("\n📊 Running Strategy Analysis...", "cyan")
+                    # Check if strategy should run (controlled by web dashboard)
+                    if not is_strategy_running():
+                        cprint("\n⏸️  Strategy paused (Start from web dashboard to enable)", "yellow")
+                    else:
+                        cprint("\n📊 Running Strategy Analysis...", "cyan")
 
-                    # First, monitor existing paper positions for SL/TP hits
+                    # Always monitor existing paper positions for SL/TP hits (even when paused)
                     for strategy in strategy_agent.enabled_strategies:
                         if hasattr(strategy, 'monitor_paper_positions'):
                             closed = strategy.monitor_paper_positions()
                             if closed:
                                 cprint(f"📉 Closed {len(closed)} paper positions", "magenta")
 
-                        # Show paper trading status
+                        # Show paper trading status and sync to web dashboard
                         if hasattr(strategy, 'get_paper_status'):
                             status = strategy.get_paper_status()
                             if status['open_positions'] > 0 or status['total_closed'] > 0:
@@ -91,12 +104,26 @@ def run_agents():
                                 cprint(f"   Daily PnL: ${status['daily_pnl']:+,.2f}", "white")
                                 cprint(f"   Open: {status['open_positions']} | Closed: {status['total_closed']}", "white")
 
-                    # Then analyze tokens for new signals
-                    active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
-                    for token in active_tokens:
-                        if token not in EXCLUDED_TOKENS:  # Skip USDC and other excluded tokens
-                            cprint(f"\n🔍 Analyzing {token}...", "cyan")
-                            strategy_agent.get_signals(token)
+                            # Sync paper trading status to web dashboard
+                            if WEB_STATE_AVAILABLE:
+                                try:
+                                    update_paper_status(
+                                        balance=status['paper_balance'],
+                                        positions=status.get('positions', []),
+                                        daily_pnl=status['daily_pnl'],
+                                        total_pnl=status['total_pnl'],
+                                        trades_today=status.get('daily_trades', 0)
+                                    )
+                                except Exception as e:
+                                    pass  # Don't fail if web state update fails
+
+                    # Only analyze new signals if strategy is running (controlled by dashboard)
+                    if is_strategy_running():
+                        active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
+                        for token in active_tokens:
+                            if token not in EXCLUDED_TOKENS:  # Skip USDC and other excluded tokens
+                                cprint(f"\n🔍 Analyzing {token}...", "cyan")
+                                strategy_agent.get_signals(token)
 
                 # Run CopyBot Analysis
                 if copybot_agent:
