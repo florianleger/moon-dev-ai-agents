@@ -149,7 +149,16 @@ MULTIFACTOR_SELL_THRESHOLD = -0.6  # Score < -0.6 = SELL
 # A contrarian strategy that fades exhausted momentum in high volatility regimes
 # Designed for small accounts with conservative risk management
 
-RAMF_ASSETS = ['BTC', 'ETH', 'SOL']  # Assets to trade with RAMF strategy
+RAMF_ASSETS = [
+    # Blue chips
+    'BTC', 'ETH', 'SOL', 'XRP',
+    # AI tokens
+    'FET', 'RENDER', 'TAO', 'NEAR', 'WLD',
+    # Popular alts
+    'DOGE', 'ADA', 'AVAX', 'LINK', 'DOT',
+    # L2 & DeFi
+    'ARB', 'OP', 'SUI', 'SEI',
+]  # Assets to trade with RAMF strategy (HyperLiquid perpetuals)
 RAMF_LEVERAGE = 3                    # Conservative leverage for small accounts (1-5 recommended)
 RAMF_STOP_LOSS_PCT = 1.0             # Base stop-loss percentage (dynamically adjusted by ATR)
 RAMF_TAKE_PROFIT_PCT = 2.0           # Base take-profit percentage (dynamically adjusted by ATR)
