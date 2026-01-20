@@ -230,7 +230,7 @@ PAPER_TRADING_BALANCE = 500          # Simulated starting balance in USD
 # ============================================================================
 # Choose which strategy to run (only one should be active at a time)
 
-ACTIVE_STRATEGY = 'ramf'             # Options: 'multifactor', 'ramf', 'sniper', 'example'
+ACTIVE_STRATEGY = 'sniper'           # Options: 'multifactor', 'ramf', 'sniper', 'example'
 
 # ============================================================================
 # SNIPER AI Strategy Settings
