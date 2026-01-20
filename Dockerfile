@@ -1,6 +1,6 @@
 # Moon Dev AI Trading Bot - Docker Image
 # Optimized for Coolify deployment
-# Build: 2026-01-20-v3 - AUTO_START support for strategy persistence
+# Build: 2026-01-20-v4 - Critical fix: Load positions from CSV on startup (margin management)
 
 FROM python:3.10-slim
 

@@ -178,10 +178,15 @@ class RAMFStrategy(BaseStrategy):
         )
         os.makedirs(self.data_dir, exist_ok=True)
 
+        # Load existing state from CSV (critical for margin management!)
+        self._load_state_from_csv()
+
         cprint(f"[RAMF] Strategy initialized", "cyan")
         cprint(f"  - Assets: {self.assets}", "white")
         cprint(f"  - Min Confidence: {self.min_confidence}%", "white")
         cprint(f"  - Paper Trading: {PAPER_TRADING}", "white")
+        cprint(f"  - Loaded positions: {len(self.paper_positions)}", "white")
+        cprint(f"  - Current balance: ${self.paper_balance:,.2f}", "white")
 
     def _reset_daily_counters(self):
         """Reset daily counters if new day."""
@@ -191,6 +196,87 @@ class RAMFStrategy(BaseStrategy):
             self.daily_pnl = 0.0
             self.last_trade_date = today
             cprint(f"[RAMF] New trading day - counters reset", "cyan")
+
+    def _load_state_from_csv(self):
+        """
+        Load existing positions and balance from CSV files.
+
+        CRITICAL: This ensures margin management works correctly after restarts.
+        Without this, the strategy would think it has full balance available
+        and open new positions exceeding risk limits.
+        """
+        try:
+            paper_trades_file = os.path.join(self.data_dir, 'paper_trades.csv')
+            closed_trades_file = os.path.join(self.data_dir, 'closed_trades.csv')
+
+            # Load open positions from paper_trades.csv
+            if os.path.exists(paper_trades_file):
+                df = pd.read_csv(paper_trades_file)
+                if not df.empty:
+                    # Filter for OPEN positions only
+                    open_df = df[df['status'] == 'OPEN']
+
+                    for _, row in open_df.iterrows():
+                        position_id = row.get('position_id', '')
+                        if position_id:
+                            # Reconstruct position dict
+                            self.paper_positions[position_id] = {
+                                'position_id': position_id,
+                                'timestamp': row.get('timestamp', ''),
+                                'symbol': row.get('symbol', ''),
+                                'direction': row.get('direction', 'BUY'),
+                                'entry_price': float(row.get('entry_price', 0)),
+                                'position_size': float(row.get('position_size', 0)),
+                                'leverage': float(row.get('leverage', RAMF_LEVERAGE)),
+                                'stop_loss': float(row.get('stop_loss', 0)),
+                                'take_profit': float(row.get('take_profit', 0)),
+                                'sl_pct': float(row.get('sl_pct', RAMF_STOP_LOSS_PCT)),
+                                'tp_pct': float(row.get('tp_pct', RAMF_TAKE_PROFIT_PCT)),
+                                'confidence': float(row.get('confidence', 0)),
+                                'status': 'OPEN',
+                            }
+
+                    # Update position counter to avoid ID collisions
+                    if self.paper_positions:
+                        max_counter = 0
+                        for pos_id in self.paper_positions.keys():
+                            # Extract counter from position_id like "BTC_20260119_200651_1"
+                            parts = pos_id.split('_')
+                            if len(parts) >= 4:
+                                try:
+                                    counter = int(parts[-1])
+                                    max_counter = max(max_counter, counter)
+                                except ValueError:
+                                    pass
+                        self._position_counter = max_counter
+
+                    cprint(f"[RAMF] Loaded {len(self.paper_positions)} open positions from CSV", "green")
+
+            # Calculate realized PnL from closed trades
+            realized_pnl = 0.0
+            if os.path.exists(closed_trades_file):
+                closed_df = pd.read_csv(closed_trades_file)
+                if not closed_df.empty and 'pnl' in closed_df.columns:
+                    realized_pnl = closed_df['pnl'].sum()
+                    self.closed_positions = closed_df.to_dict('records')
+                    cprint(f"[RAMF] Loaded {len(closed_df)} closed trades, realized PnL: ${realized_pnl:+,.2f}", "green")
+
+            # Update balance with realized PnL
+            self.paper_balance = PAPER_TRADING_BALANCE + realized_pnl
+
+            # Calculate current margin usage for logging
+            used_margin = sum(
+                pos.get('position_size', 0) / pos.get('leverage', RAMF_LEVERAGE)
+                for pos in self.paper_positions.values()
+            )
+            available_margin = max(0, self.paper_balance - used_margin)
+
+            cprint(f"[RAMF] State restored - Balance: ${self.paper_balance:,.2f}, Used margin: ${used_margin:,.2f}, Available: ${available_margin:,.2f}", "cyan")
+
+        except Exception as e:
+            cprint(f"[RAMF] Warning: Could not load state from CSV: {e}", "yellow")
+            import traceback
+            traceback.print_exc()
 
     def _fetch_candles(self, symbol: str, interval: str = '15m', candles: int = 300) -> pd.DataFrame:
         """
@@ -1468,6 +1554,9 @@ class RAMFStrategy(BaseStrategy):
             # Log to closed trades file
             self._log_closed_trade(trade)
 
+            # Update status in paper_trades.csv (for web API consistency)
+            self._update_position_status_in_csv(position_id, trade)
+
             return trade
 
         except Exception as e:
@@ -1475,6 +1564,33 @@ class RAMFStrategy(BaseStrategy):
             import traceback
             traceback.print_exc()
             return None
+
+    def _update_position_status_in_csv(self, position_id: str, trade: dict):
+        """
+        Update a position's status in paper_trades.csv when closed.
+
+        This ensures the web API sees consistent data.
+        """
+        try:
+            paper_trades_file = os.path.join(self.data_dir, 'paper_trades.csv')
+            if not os.path.exists(paper_trades_file):
+                return
+
+            df = pd.read_csv(paper_trades_file)
+            if df.empty:
+                return
+
+            # Find and update the position
+            mask = df['position_id'] == position_id
+            if mask.any():
+                df.loc[mask, 'status'] = trade.get('status', 'CLOSED')
+                df.loc[mask, 'exit_price'] = trade.get('close_price', 0)
+                df.loc[mask, 'exit_time'] = trade.get('close_timestamp', '')
+                df.loc[mask, 'pnl'] = trade.get('pnl', 0)
+                df.to_csv(paper_trades_file, index=False)
+
+        except Exception as e:
+            cprint(f"[RAMF] Warning: Could not update CSV status: {e}", "yellow")
 
     def _log_closed_trade(self, trade: dict):
         """Log closed trade to CSV file."""
