@@ -144,12 +144,20 @@ def _get_stats_from_csv() -> Dict:
 async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
     """Get dashboard statistics."""
     from src.web.state import is_strategy_running
-    from src.config import RAMF_MAX_DAILY_TRADES
+    from src.config import ACTIVE_STRATEGY
+
+    # Get max daily trades based on active strategy
+    if ACTIVE_STRATEGY == 'sniper':
+        from src.config import SNIPER_MAX_DAILY_TRADES
+        max_daily_trades = SNIPER_MAX_DAILY_TRADES
+    else:
+        from src.config import RAMF_MAX_DAILY_TRADES
+        max_daily_trades = RAMF_MAX_DAILY_TRADES
 
     # First try to read from CSV file (shared between processes)
     stats = _get_stats_from_csv()
     stats["running"] = is_strategy_running()
-    stats["max_daily_trades"] = RAMF_MAX_DAILY_TRADES
+    stats["max_daily_trades"] = max_daily_trades
 
     # If CSV has data, return it
     if stats["total_pnl"] != 0 or stats["open_positions"] > 0:
@@ -157,9 +165,13 @@ async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
 
     # Fallback to in-memory singleton (works when API and strategy in same process)
     try:
-        from src.strategies.custom.ramf_strategy import RAMFStrategy
+        if ACTIVE_STRATEGY == 'sniper':
+            from src.strategies.custom.sniper_ai_strategy import SniperAIStrategy
+            strategy = SniperAIStrategy._instance if hasattr(SniperAIStrategy, '_instance') else None
+        else:
+            from src.strategies.custom.ramf_strategy import RAMFStrategy
+            strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
 
-        strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
         if strategy:
             paper_status = strategy.get_paper_status()
             stats.update({
@@ -182,10 +194,11 @@ async def get_pnl_history(
     """Get PnL history for chart."""
     pnl_by_date = {}
 
-    # Try to read from CSV file first
-    if os.path.exists(PAPER_TRADES_CSV):
+    # Try to read from CSV file first (dynamic path based on active strategy)
+    paper_trades_csv = _get_paper_trades_csv()
+    if os.path.exists(paper_trades_csv):
         try:
-            df = pd.read_csv(PAPER_TRADES_CSV)
+            df = pd.read_csv(paper_trades_csv)
             closed = df[df['status'] != 'OPEN']
             if not closed.empty and 'pnl' in closed.columns and 'exit_time' in closed.columns:
                 for _, row in closed.iterrows():
