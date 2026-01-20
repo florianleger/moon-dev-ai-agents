@@ -186,8 +186,11 @@ function dashboardData() {
             this.fetchStats();
             this.fetchPositions();
             this.fetchSignals();
-            this.initChart();
             this.setupSSE();
+
+            // Initialize chart after a short delay to ensure DOM is ready
+            // This fixes a race condition where Chart.js fails to render
+            setTimeout(() => this.initChart(), 100);
 
             // Refresh data periodically
             setInterval(() => {
