@@ -9,10 +9,14 @@ This module eliminates the dependency on Moon Dev API.
 """
 
 import time
+import requests
 from typing import Dict, Optional
 from termcolor import cprint
 
 from .binance_futures import get_liquidation_stream, get_liquidation_ratio
+
+# HyperLiquid API endpoint
+HYPERLIQUID_API_URL = 'https://api.hyperliquid.xyz/info'
 
 
 class MarketDataProvider:
@@ -37,6 +41,8 @@ class MarketDataProvider:
         self._liquidation_stream = None
         self._hl_cache = {}
         self._hl_cache_time = {}
+        self._all_prices_cache = {}  # Cache for all prices from single API call
+        self._all_prices_cache_time = 0
         self._cache_ttl = 30  # Cache HyperLiquid data for 30 seconds
 
         if start_liquidation_stream:
@@ -53,9 +59,56 @@ class MarketDataProvider:
         except Exception as e:
             cprint(f"[MarketData] Warning: Could not start liquidation stream: {e}", "yellow")
 
+    def _fetch_all_prices(self) -> bool:
+        """
+        Fetch all prices from HyperLiquid in a single API call.
+        Caches all symbol data for subsequent lookups.
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        # Check if cache is still valid
+        if self._all_prices_cache and (time.time() - self._all_prices_cache_time) < self._cache_ttl:
+            return True
+
+        try:
+            response = requests.post(
+                HYPERLIQUID_API_URL,
+                headers={'Content-Type': 'application/json'},
+                json={"type": "metaAndAssetCtxs"},
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if len(data) >= 2 and isinstance(data[0], dict) and isinstance(data[1], list):
+                    # Build symbol -> index mapping
+                    universe = {coin['name']: i for i, coin in enumerate(data[0]['universe'])}
+                    funding_data = data[1]
+
+                    # Cache all prices
+                    self._all_prices_cache = {}
+                    for symbol, idx in universe.items():
+                        if idx < len(funding_data):
+                            asset_data = funding_data[idx]
+                            self._all_prices_cache[symbol] = {
+                                'funding_rate': float(asset_data['funding']),
+                                'mark_price': float(asset_data['markPx']),
+                                'open_interest': float(asset_data['openInterest'])
+                            }
+
+                    self._all_prices_cache_time = time.time()
+                    return True
+
+            return False
+        except Exception as e:
+            cprint(f"[MarketData] Error fetching all prices: {e}", "yellow")
+            return False
+
     def get_funding_rate(self, symbol: str) -> Optional[Dict]:
         """
         Get current funding rate from HyperLiquid.
+        Uses bulk cache to avoid multiple API calls.
 
         Args:
             symbol: Asset symbol (e.g., 'BTC', 'ETH', 'SOL')
@@ -64,29 +117,11 @@ class MarketDataProvider:
             Dict with funding_rate, mark_price, open_interest
             Or None if unavailable
         """
-        # Check cache first
-        cache_key = f"funding_{symbol}"
-        if cache_key in self._hl_cache:
-            age = time.time() - self._hl_cache_time.get(cache_key, 0)
-            if age < self._cache_ttl:
-                return self._hl_cache[cache_key]
+        # Ensure we have fresh data (single API call caches all symbols)
+        self._fetch_all_prices()
 
-        try:
-            # Import here to avoid circular imports
-            from src.nice_funcs_hyperliquid import get_funding_rates
-
-            data = get_funding_rates(symbol)
-            if data:
-                # Cache the result
-                self._hl_cache[cache_key] = data
-                self._hl_cache_time[cache_key] = time.time()
-                return data
-
-            return None
-
-        except Exception as e:
-            cprint(f"[MarketData] Error getting funding rate for {symbol}: {e}", "yellow")
-            return None
+        # Return from cache
+        return self._all_prices_cache.get(symbol)
 
     def get_open_interest(self, symbol: str) -> Optional[Dict]:
         """

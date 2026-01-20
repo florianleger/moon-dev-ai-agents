@@ -1,6 +1,6 @@
 # Moon Dev AI Trading Bot - Docker Image
 # Optimized for Coolify deployment
-# Build: 2026-01-20-v1 - Optimize API with singleton MarketDataProvider (30s cache)
+# Build: 2026-01-20-v2 - Single API call for all prices (10x faster)
 
 FROM python:3.10-slim
 
