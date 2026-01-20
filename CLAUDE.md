@@ -51,6 +51,14 @@ python src/agents/chat_agent.py
 # /Users/md/Dropbox/dev/github/moon-dev-ai-agents-for-trading/src/data/rbi/BTC-USD-15m.csv
 ```
 
+### Coolify Deployment
+The application is deployed on Coolify at:
+- **Coolify Console**: https://console.gallion.tech
+- **Application UUID**: `v4cgs8wk8gsgw04ww8c8sk0o`
+- **Dashboard URL**: `http://v4cgs8wk8gsgw04ww8c8sk0o.46.224.59.218.sslip.io/dashboard`
+
+Deployments are triggered automatically on push to `main` branch.
+
 ## Architecture Overview
 
 ### Core Structure
