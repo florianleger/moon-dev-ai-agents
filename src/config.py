@@ -230,7 +230,49 @@ PAPER_TRADING_BALANCE = 500          # Simulated starting balance in USD
 # ============================================================================
 # Choose which strategy to run (only one should be active at a time)
 
-ACTIVE_STRATEGY = 'ramf'             # Options: 'multifactor', 'ramf', 'example'
+ACTIVE_STRATEGY = 'ramf'             # Options: 'multifactor', 'ramf', 'sniper', 'example'
+
+# ============================================================================
+# SNIPER AI Strategy Settings
+# ============================================================================
+# A precision trading strategy requiring ALL 7 checklist conditions to align.
+# Target: 1-2 trades/day with 80%+ win rate.
+# Philosophy: "Fewer trades, but quasi-certain trades"
+
+# Assets to trade (start conservative with majors)
+SNIPER_ASSETS = ['BTC', 'ETH', 'SOL']
+
+# Position sizing
+SNIPER_LEVERAGE = 3                    # Conservative leverage
+SNIPER_STOP_LOSS_PCT = 1.5             # Base SL (AI may adjust)
+SNIPER_TAKE_PROFIT_PCT = 3.0           # Base TP (2:1 minimum R:R)
+
+# Daily limits (strict - sniper means few trades)
+SNIPER_MAX_DAILY_TRADES = 2            # Max 2 trades per day
+SNIPER_MAX_DAILY_LOSS_USD = 30         # ~6% of $500
+SNIPER_MAX_DAILY_GAIN_USD = 60         # ~12% of $500
+
+# Checklist thresholds
+SNIPER_SIGMA_THRESHOLD = 2.5           # Condition 1: Extreme move sigma
+SNIPER_FUNDING_EXTREME_THRESHOLD = 2.0 # Condition 2: Funding Z-score
+SNIPER_LIQ_RATIO_THRESHOLD = 1.5       # Condition 3: Liquidation ratio
+SNIPER_VOLUME_SPIKE_THRESHOLD = 3.0    # Condition 5: Volume climax multiplier
+
+# Time window settings (UTC hours)
+SNIPER_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 16]  # London + NY open
+SNIPER_ALLOW_NORMAL_HOURS = False      # Strict: only trade optimal hours
+
+# AI Validation settings
+SNIPER_AI_MIN_CONFIDENCE = 85          # Minimum AI confidence to execute
+SNIPER_AI_MODEL = 'claude-3-5-sonnet-latest'  # Use capable model for reasoning
+SNIPER_AI_TEMPERATURE = 0.3            # Low temp for analytical responses
+SNIPER_AI_MAX_TOKENS = 1024
+
+# Setup-specific thresholds
+SNIPER_CAPITULATION_MIN_DROP_PCT = 5.0  # Min 5% drop for capitulation fade
+SNIPER_EUPHORIA_MIN_RISE_PCT = 5.0      # Min 5% rise for euphoria fade
+SNIPER_RSI_OVERSOLD = 25                # RSI < 25 for capitulation
+SNIPER_RSI_OVERBOUGHT = 75              # RSI > 75 for euphoria
 
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3

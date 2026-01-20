@@ -16,14 +16,33 @@ from src.web.state import get_dashboard_stats, get_signals_history, get_paper_po
 
 router = APIRouter()
 
-# Path to paper trades CSV file
-PAPER_TRADES_CSV = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'ramf', 'paper_trades.csv')
+# Base path for strategy data
+DATA_BASE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
 INITIAL_BALANCE = 500.0
+
+
+def _get_paper_trades_csv() -> str:
+    """Get the correct paper trades CSV path based on active strategy."""
+    from src.config import ACTIVE_STRATEGY
+    strategy_folder = 'sniper' if ACTIVE_STRATEGY == 'sniper' else 'ramf'
+    return os.path.join(DATA_BASE_PATH, strategy_folder, 'paper_trades.csv')
+
+
+def _get_leverage() -> int:
+    """Get the leverage for the active strategy."""
+    from src.config import ACTIVE_STRATEGY
+    if ACTIVE_STRATEGY == 'sniper':
+        from src.config import SNIPER_LEVERAGE
+        return SNIPER_LEVERAGE
+    else:
+        from src.config import RAMF_LEVERAGE
+        return RAMF_LEVERAGE
 
 
 def _get_stats_from_csv() -> Dict:
     """Calculate stats from paper_trades.csv file with real-time unrealized PnL."""
-    from src.config import RAMF_LEVERAGE
+    leverage = _get_leverage()
+    PAPER_TRADES_CSV = _get_paper_trades_csv()
 
     stats = {
         "balance": INITIAL_BALANCE,
@@ -53,7 +72,7 @@ def _get_stats_from_csv() -> Dict:
         if not open_positions.empty and 'position_size' in open_positions.columns:
             # Margin = position_size / leverage
             stats["used_margin"] = round(
-                (open_positions['position_size'] / RAMF_LEVERAGE).sum(), 2
+                (open_positions['position_size'] / leverage).sum(), 2
             )
 
             # Get market data provider singleton (uses 30s cache)

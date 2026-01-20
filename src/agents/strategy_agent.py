@@ -116,6 +116,10 @@ class StrategyAgent:
                     from src.strategies.custom.example_strategy import ExampleStrategy
                     self.enabled_strategies.append(ExampleStrategy())
                     cprint("✅ Loaded Example Strategy", "green")
+                elif self.active_strategy == 'sniper':
+                    from src.strategies.custom.sniper_ai_strategy import SniperAIStrategy
+                    self.enabled_strategies.append(SniperAIStrategy())
+                    cprint(f"✅ Loaded Sniper AI Strategy (Paper Trading: {self.paper_trading})", "green")
                 else:
                     # Load all strategies if unknown
                     from src.strategies.custom.example_strategy import ExampleStrategy
