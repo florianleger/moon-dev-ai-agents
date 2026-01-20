@@ -13,12 +13,14 @@ from config import *
 
 # Import web state for dashboard control
 try:
-    from src.web.state import is_strategy_running, update_paper_status
+    from src.web.state import is_strategy_running, update_paper_status, ensure_state_initialized
     WEB_STATE_AVAILABLE = True
 except ImportError:
     WEB_STATE_AVAILABLE = False
     def is_strategy_running():
         return True  # Default to running if web state not available
+    def ensure_state_initialized():
+        return {"running": True}
 
 # Add project root to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,6 +155,11 @@ def run_agents():
 
 if __name__ == "__main__":
     cprint("\n🌙 Moon Dev AI Agent Trading System Starting...", "white", "on_blue")
+
+    # Initialize and validate state (handles AUTO_START logic)
+    if WEB_STATE_AVAILABLE:
+        cprint("\n📋 Initializing state...", "cyan")
+        ensure_state_initialized()
 
     # Show paper trading status
     try:
