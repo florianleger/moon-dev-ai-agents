@@ -33,11 +33,11 @@ def _get_positions_from_csv() -> List[Dict]:
         # Filter for OPEN positions only
         open_positions = df[df['status'] == 'OPEN']
 
-        # Get market data provider for current prices
+        # Get market data provider singleton (uses 30s cache)
         provider = None
         try:
-            from src.data_providers.market_data import MarketDataProvider
-            provider = MarketDataProvider(start_liquidation_stream=False)
+            from src.data_providers.market_data import get_market_data_provider
+            provider = get_market_data_provider()
         except Exception:
             pass
 
@@ -152,6 +152,14 @@ def _close_all_positions_in_csv() -> List[Dict]:
         if not mask.any():
             return closed
 
+        # Get market data provider singleton (uses 30s cache)
+        provider = None
+        try:
+            from src.data_providers.market_data import get_market_data_provider
+            provider = get_market_data_provider()
+        except Exception:
+            pass
+
         # Get current prices for all symbols (use entry price as fallback)
         for idx in df[mask].index:
             row = df.loc[idx]
@@ -162,14 +170,13 @@ def _close_all_positions_in_csv() -> List[Dict]:
 
             # Try to get current price, fallback to entry price (no loss assumed)
             exit_price = entry_price
-            try:
-                from src.data_providers.market_data import MarketDataProvider
-                provider = MarketDataProvider()
-                current = provider.get_current_price(symbol)
-                if current:
-                    exit_price = current
-            except Exception:
-                pass
+            if provider:
+                try:
+                    current = provider.get_current_price(symbol)
+                    if current:
+                        exit_price = current
+                except Exception:
+                    pass
 
             # Calculate PnL
             if direction == 'BUY':
@@ -281,8 +288,8 @@ async def close_position(
         # Try to get current price
         exit_price = 0
         try:
-            from src.data_providers.market_data import MarketDataProvider
-            provider = MarketDataProvider()
+            from src.data_providers.market_data import get_market_data_provider
+            provider = get_market_data_provider()
             exit_price = provider.get_current_price(symbol.upper()) or 0
         except Exception:
             pass

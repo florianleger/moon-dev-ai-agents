@@ -56,11 +56,11 @@ def _get_stats_from_csv() -> Dict:
                 (open_positions['position_size'] / RAMF_LEVERAGE).sum(), 2
             )
 
-            # Get market data provider for current prices
+            # Get market data provider singleton (uses 30s cache)
             provider = None
             try:
-                from src.data_providers.market_data import MarketDataProvider
-                provider = MarketDataProvider(start_liquidation_stream=False)
+                from src.data_providers.market_data import get_market_data_provider
+                provider = get_market_data_provider()
             except Exception:
                 pass
 
