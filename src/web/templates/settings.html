@@ -5,7 +5,12 @@
 {% block content %}
 <div x-data="settingsData()" x-init="init()">
     <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-white">Settings</h1>
+        <div>
+            <h1 class="text-2xl font-bold text-white">Settings</h1>
+            <p class="text-gray-400 text-sm mt-1">
+                Active Strategy: <span class="text-moon-purple font-medium" x-text="settings.strategy === 'sniper' ? 'Sniper AI' : 'RAMF'"></span>
+            </p>
+        </div>
         <button @click="saveSettings()"
                 :disabled="saving"
                 class="bg-moon-purple hover:bg-purple-700 disabled:bg-gray-600 px-6 py-2 rounded-lg text-white font-medium transition-colors flex items-center gap-2">
@@ -38,12 +43,18 @@
                         <span>Live trading enabled - real money at risk!</span>
                     </p>
                 </div>
+
+                <!-- Paper Balance (Sniper only) -->
+                <div x-show="settings.strategy === 'sniper'" class="p-4 bg-gray-700/30 rounded-lg">
+                    <p class="text-gray-400 text-sm">Paper Trading Balance</p>
+                    <p class="text-white font-medium text-xl" x-text="'$' + (settings.paper_balance || 1000)"></p>
+                </div>
             </div>
         </div>
 
-        <!-- RAMF Parameters -->
+        <!-- Strategy Parameters -->
         <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
-            <h2 class="text-lg font-semibold text-white mb-4">RAMF Strategy Parameters</h2>
+            <h2 class="text-lg font-semibold text-white mb-4" x-text="settings.strategy === 'sniper' ? 'Sniper AI Parameters' : 'RAMF Strategy Parameters'"></h2>
 
             <div class="space-y-4">
                 <!-- Leverage -->
@@ -58,7 +69,7 @@
 
                 <!-- Min Confidence -->
                 <div>
-                    <label class="block text-gray-400 text-sm mb-2">Min Confidence (%)</label>
+                    <label class="block text-gray-400 text-sm mb-2">Min AI Confidence (%)</label>
                     <div class="flex items-center gap-4">
                         <input type="range" x-model="settings.min_confidence" min="0" max="100" step="5"
                                class="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
@@ -71,6 +82,16 @@
                     <label class="block text-gray-400 text-sm mb-2">Max Daily Trades</label>
                     <input type="number" x-model="settings.max_daily_trades" min="1" max="50"
                            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:border-moon-purple focus:outline-none">
+                </div>
+
+                <!-- Min Weighted Score (Sniper only) -->
+                <div x-show="settings.strategy === 'sniper' && settings.features?.weighted_scoring">
+                    <label class="block text-gray-400 text-sm mb-2">Min Weighted Score (0-10)</label>
+                    <div class="flex items-center gap-4">
+                        <input type="range" x-model="settings.feature_params.min_weighted_score" min="5" max="10" step="0.5"
+                               class="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
+                        <span class="text-white font-medium w-12 text-center" x-text="settings.feature_params?.min_weighted_score || 8.5"></span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -100,26 +121,78 @@
 
         <!-- Features Toggle -->
         <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
-            <h2 class="text-lg font-semibold text-white mb-4">RAMF Features</h2>
+            <h2 class="text-lg font-semibold text-white mb-4" x-text="settings.strategy === 'sniper' ? 'Sniper AI Features' : 'RAMF Features'"></h2>
 
             <div class="space-y-3">
                 <template x-for="(enabled, feature) in settings.features" :key="feature">
                     <div class="flex items-center justify-between p-3 bg-gray-700/30 rounded-lg">
-                        <span class="text-white" x-text="formatFeatureName(feature)"></span>
+                        <div>
+                            <span class="text-white" x-text="formatFeatureName(feature)"></span>
+                            <p class="text-gray-500 text-xs" x-text="getFeatureDescription(feature)"></p>
+                        </div>
                         <label class="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" x-model="settings.features[feature]" class="sr-only peer" disabled>
+                            <input type="checkbox"
+                                   x-model="settings.features[feature]"
+                                   class="sr-only peer"
+                                   :disabled="settings.strategy !== 'sniper'"
+                                   @change="featureToggled(feature)">
                             <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
                         </label>
                     </div>
                 </template>
-                <p class="text-gray-500 text-xs mt-2">Feature toggles require config.py edit (read-only here)</p>
+                <p class="text-gray-500 text-xs mt-2" x-show="settings.strategy !== 'sniper'">Feature toggles require config.py edit (read-only here)</p>
+                <p class="text-green-500 text-xs mt-2" x-show="settings.strategy === 'sniper'">Sniper features can be toggled - save to apply</p>
             </div>
         </div>
     </div>
 
-    <!-- Risk Management (read-only info) -->
+    <!-- Sniper Checklist Thresholds (Sniper only) -->
+    <div class="mt-6 bg-gray-800 rounded-xl p-6 border border-gray-700" x-show="settings.strategy === 'sniper'">
+        <h2 class="text-lg font-semibold text-white mb-4">Sniper Checklist Thresholds</h2>
+        <p class="text-gray-400 text-sm mb-4">All 7 conditions must pass for a trade signal (read-only, edit config.py to change)</p>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">Sigma Threshold</p>
+                <p class="text-white font-medium" x-text="(settings.checklist?.sigma_threshold || 2.5) + 'σ'"></p>
+                <p class="text-gray-500 text-xs">Extreme price move</p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">Funding Z-Score</p>
+                <p class="text-white font-medium" x-text="'>' + (settings.checklist?.funding_zscore_threshold || 2.0)"></p>
+                <p class="text-gray-500 text-xs">Contrarian signal</p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">Liquidation Ratio</p>
+                <p class="text-white font-medium" x-text="'>' + (settings.checklist?.liq_ratio_threshold || 1.5)"></p>
+                <p class="text-gray-500 text-xs">Cascade exhaustion</p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">Volume Spike</p>
+                <p class="text-white font-medium" x-text="(settings.checklist?.volume_spike_threshold || 3.0) + 'x'"></p>
+                <p class="text-gray-500 text-xs">vs average</p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">RSI Oversold</p>
+                <p class="text-white font-medium" x-text="'<' + (settings.checklist?.rsi_oversold || 30)"></p>
+                <p class="text-gray-500 text-xs">For longs</p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">RSI Overbought</p>
+                <p class="text-white font-medium" x-text="'>' + (settings.checklist?.rsi_overbought || 70)"></p>
+                <p class="text-gray-500 text-xs">For shorts</p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg col-span-2">
+                <p class="text-gray-400 text-sm">Optimal Hours (UTC)</p>
+                <p class="text-white font-medium" x-text="(settings.checklist?.optimal_hours || [7,8,9,13,14,15,16]).join(', ')"></p>
+                <p class="text-gray-500 text-xs">London & NY sessions</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Risk Management -->
     <div class="mt-6 bg-gray-800 rounded-xl p-6 border border-gray-700">
-        <h2 class="text-lg font-semibold text-white mb-4">Risk Management (from config.py)</h2>
+        <h2 class="text-lg font-semibold text-white mb-4">Risk Management</h2>
 
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div class="p-4 bg-gray-700/30 rounded-lg">
@@ -132,11 +205,58 @@
             </div>
             <div class="p-4 bg-gray-700/30 rounded-lg">
                 <p class="text-gray-400 text-sm">Max Daily Loss</p>
-                <p class="text-white font-medium">$25</p>
+                <p class="text-white font-medium" x-text="'$' + (settings.max_daily_loss_usd || 25)"></p>
             </div>
             <div class="p-4 bg-gray-700/30 rounded-lg">
                 <p class="text-gray-400 text-sm">Max Daily Gain</p>
-                <p class="text-white font-medium">$25</p>
+                <p class="text-white font-medium" x-text="'$' + (settings.max_daily_gain_usd || 25)"></p>
+            </div>
+        </div>
+
+        <!-- Trailing Stop Info (Sniper only) -->
+        <div x-show="settings.strategy === 'sniper' && settings.features?.trailing_stop" class="mt-4 p-4 bg-green-500/10 border border-green-500/30 rounded-lg">
+            <p class="text-green-400 text-sm flex items-center gap-2">
+                <span>&#10004;</span>
+                <span>ATR Trailing Stop active: activates at +<span x-text="settings.feature_params?.trailing_activation_pct || 1.0"></span>% profit, trails at <span x-text="settings.feature_params?.trailing_atr_multiplier || 2.0"></span>x ATR</span>
+            </p>
+        </div>
+    </div>
+
+    <!-- Weighted Scoring (Sniper only) -->
+    <div class="mt-6 bg-gray-800 rounded-xl p-6 border border-gray-700" x-show="settings.strategy === 'sniper' && settings.features?.weighted_scoring">
+        <h2 class="text-lg font-semibold text-white mb-4">Weighted Scoring System</h2>
+        <p class="text-gray-400 text-sm mb-4">Max score: 10.0 | Min required: <span class="text-moon-purple" x-text="settings.feature_params?.min_weighted_score || 8.5"></span></p>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <template x-for="(weight, check) in settings.feature_params?.weights || {}" :key="check">
+                <div class="p-3 bg-gray-700/30 rounded-lg">
+                    <p class="text-gray-400 text-xs" x-text="formatFeatureName(check)"></p>
+                    <p class="text-white font-medium" x-text="weight + 'x'"></p>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Confidence Sizing (Sniper only) -->
+    <div class="mt-6 bg-gray-800 rounded-xl p-6 border border-gray-700" x-show="settings.strategy === 'sniper' && settings.features?.confidence_sizing">
+        <h2 class="text-lg font-semibold text-white mb-4">Dynamic Position Sizing</h2>
+        <p class="text-gray-400 text-sm mb-4">Position size scales with AI confidence level</p>
+
+        <div class="grid grid-cols-3 gap-4">
+            <div class="p-4 bg-gray-700/30 rounded-lg text-center">
+                <p class="text-yellow-400 text-sm">85-89% Confidence</p>
+                <p class="text-white font-bold text-xl">50%</p>
+                <p class="text-gray-500 text-xs">of base size</p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg text-center">
+                <p class="text-orange-400 text-sm">90-94% Confidence</p>
+                <p class="text-white font-bold text-xl">75%</p>
+                <p class="text-gray-500 text-xs">of base size</p>
+            </div>
+            <div class="p-4 bg-green-500/20 rounded-lg text-center border border-green-500/30">
+                <p class="text-green-400 text-sm">95%+ Confidence</p>
+                <p class="text-white font-bold text-xl">100%</p>
+                <p class="text-gray-500 text-xs">full size</p>
             </div>
         </div>
     </div>
@@ -148,23 +268,24 @@
 function settingsData() {
     return {
         settings: {
+            strategy: 'ramf',
             paper_trading: true,
+            paper_balance: 1000,
             leverage: 3,
             min_confidence: 70,
             max_daily_trades: 6,
             assets: ['BTC', 'ETH', 'SOL'],
             stop_loss_pct: 1.0,
             take_profit_pct: 2.0,
-            features: {
-                adaptive_sl_tp: true,
-                time_windows: true,
-                mtf_confluence: true,
-                funding_divergence: true,
-                liquidation_clusters: true,
-            }
+            max_daily_loss_usd: 25,
+            max_daily_gain_usd: 25,
+            features: {},
+            checklist: {},
+            feature_params: {}
         },
         assetsInput: '',
         saving: false,
+        changedFeatures: {},
 
         init() {
             this.fetchSettings();
@@ -193,17 +314,46 @@ function settingsData() {
                 .map(a => a.trim().toUpperCase())
                 .filter(a => a);
 
+            // Build payload based on strategy
+            const payload = {
+                paper_trading: this.settings.paper_trading,
+                leverage: parseInt(this.settings.leverage),
+                min_confidence: parseInt(this.settings.min_confidence),
+                max_daily_trades: parseInt(this.settings.max_daily_trades),
+                assets: assetsArray.join(','),
+            };
+
+            // Add Sniper-specific feature toggles if changed
+            if (this.settings.strategy === 'sniper') {
+                if (this.changedFeatures.trailing_stop !== undefined) {
+                    payload.use_trailing_stop = this.settings.features.trailing_stop;
+                }
+                if (this.changedFeatures.regime_filter !== undefined) {
+                    payload.use_regime_filter = this.settings.features.regime_filter;
+                }
+                if (this.changedFeatures.correlation_sizing !== undefined) {
+                    payload.use_correlation_sizing = this.settings.features.correlation_sizing;
+                }
+                if (this.changedFeatures.funding_arbitrage !== undefined) {
+                    payload.enable_funding_arbitrage = this.settings.features.funding_arbitrage;
+                }
+                if (this.changedFeatures.weighted_scoring !== undefined) {
+                    payload.use_weighted_scoring = this.settings.features.weighted_scoring;
+                }
+                if (this.changedFeatures.confidence_sizing !== undefined) {
+                    payload.use_confidence_sizing = this.settings.features.confidence_sizing;
+                }
+                // Min weighted score
+                if (this.settings.feature_params?.min_weighted_score) {
+                    payload.min_weighted_score = parseFloat(this.settings.feature_params.min_weighted_score);
+                }
+            }
+
             try {
                 const res = await fetch('/api/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        paper_trading: this.settings.paper_trading,
-                        leverage: parseInt(this.settings.leverage),
-                        min_confidence: parseInt(this.settings.min_confidence),
-                        max_daily_trades: parseInt(this.settings.max_daily_trades),
-                        assets: assetsArray.join(','),
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 const data = await res.json();
@@ -211,6 +361,7 @@ function settingsData() {
                 if (res.ok) {
                     showToast('Settings saved! Restart strategy for changes to take effect.', 'success');
                     this.settings.assets = assetsArray;
+                    this.changedFeatures = {};  // Reset changed features
                 } else {
                     showToast(data.detail || 'Failed to save settings', 'error');
                 }
@@ -219,6 +370,10 @@ function settingsData() {
             } finally {
                 this.saving = false;
             }
+        },
+
+        featureToggled(feature) {
+            this.changedFeatures[feature] = true;
         },
 
         removeAsset(asset) {
@@ -230,6 +385,25 @@ function settingsData() {
             return feature
                 .replace(/_/g, ' ')
                 .replace(/\b\w/g, l => l.toUpperCase());
+        },
+
+        getFeatureDescription(feature) {
+            const descriptions = {
+                // RAMF features
+                'adaptive_sl_tp': 'Dynamic stop-loss and take-profit',
+                'time_windows': 'Trade during optimal sessions',
+                'mtf_confluence': 'Multi-timeframe agreement',
+                'funding_divergence': 'Use funding rate signals',
+                'liquidation_clusters': 'Detect liquidation zones',
+                // Sniper features
+                'trailing_stop': 'ATR-based trailing stop after +1% profit',
+                'regime_filter': 'Skip trades when ADX indicates trending',
+                'correlation_sizing': 'Reduce size for correlated positions',
+                'funding_arbitrage': 'Trade extreme funding opportunities',
+                'weighted_scoring': 'Use weighted checklist (8.5/10)',
+                'confidence_sizing': 'Scale position by AI confidence',
+            };
+            return descriptions[feature] || '';
         }
     };
 }
