@@ -20,12 +20,28 @@ import json
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import threading
+import time as time_module
 from termcolor import cprint
 from ta.volatility import AverageTrueRange, BollingerBands
-from ta.trend import EMAIndicator
+from ta.trend import EMAIndicator, ADXIndicator
 from ta.momentum import RSIIndicator
 
 from ..base_strategy import BaseStrategy
+
+# Default volatility thresholds (used as fallback)
+DEFAULT_VOLATILITY_THRESHOLDS = {
+    'BTC': {'move_threshold': 1.7, 'sigma': 0.68},
+    'ETH': {'move_threshold': 2.2, 'sigma': 0.89},
+    'SOL': {'move_threshold': 2.7, 'sigma': 1.07},
+    'XRP': {'move_threshold': 3.0, 'sigma': 1.20},
+    'DOGE': {'move_threshold': 3.4, 'sigma': 1.33},
+    'ADA': {'move_threshold': 3.2, 'sigma': 1.28},
+    'AVAX': {'move_threshold': 3.6, 'sigma': 1.42},
+    'LINK': {'move_threshold': 2.8, 'sigma': 1.10},
+    'DOT': {'move_threshold': 3.0, 'sigma': 1.20},
+    'MATIC': {'move_threshold': 3.5, 'sigma': 1.40},
+}
 
 # Import config with defaults
 try:
@@ -53,6 +69,24 @@ try:
         SNIPER_RSI_OVERBOUGHT,
         PAPER_TRADING,
         PAPER_TRADING_BALANCE,
+        # Advanced improvements
+        SNIPER_USE_TRAILING_STOP,
+        SNIPER_TRAILING_ATR_MULTIPLIER,
+        SNIPER_TRAILING_ACTIVATION_PCT,
+        SNIPER_USE_REGIME_FILTER,
+        SNIPER_ADX_TRENDING_THRESHOLD,
+        SNIPER_ADX_PERIOD,
+        SNIPER_USE_CORRELATION_SIZING,
+        SNIPER_CORRELATION_THRESHOLD,
+        SNIPER_CORRELATION_LOOKBACK_DAYS,
+        SNIPER_ENABLE_FUNDING_ARBITRAGE,
+        SNIPER_FUNDING_ARBITRAGE_THRESHOLD,
+        SNIPER_FUNDING_ARBITRAGE_STABILITY_PCT,
+        SNIPER_USE_WEIGHTED_SCORING,
+        SNIPER_MIN_WEIGHTED_SCORE,
+        SNIPER_WEIGHTS,
+        SNIPER_USE_CONFIDENCE_SIZING,
+        SNIPER_CONFIDENCE_SIZE_MAP,
     )
 except ImportError:
     # Default values
@@ -79,6 +113,27 @@ except ImportError:
     SNIPER_RSI_OVERBOUGHT = 75
     PAPER_TRADING = True
     PAPER_TRADING_BALANCE = 500
+    # Advanced improvements defaults
+    SNIPER_USE_TRAILING_STOP = True
+    SNIPER_TRAILING_ATR_MULTIPLIER = 2.0
+    SNIPER_TRAILING_ACTIVATION_PCT = 1.0
+    SNIPER_USE_REGIME_FILTER = True
+    SNIPER_ADX_TRENDING_THRESHOLD = 25
+    SNIPER_ADX_PERIOD = 14
+    SNIPER_USE_CORRELATION_SIZING = True
+    SNIPER_CORRELATION_THRESHOLD = 0.7
+    SNIPER_CORRELATION_LOOKBACK_DAYS = 30
+    SNIPER_ENABLE_FUNDING_ARBITRAGE = True
+    SNIPER_FUNDING_ARBITRAGE_THRESHOLD = 0.1
+    SNIPER_FUNDING_ARBITRAGE_STABILITY_PCT = 1.0
+    SNIPER_USE_WEIGHTED_SCORING = True
+    SNIPER_MIN_WEIGHTED_SCORE = 8.5
+    SNIPER_WEIGHTS = {
+        'extreme_move': 2.0, 'funding_divergence': 1.5, 'liquidation_cascade': 1.5,
+        'multi_tf': 1.0, 'volume_climax': 1.0, 'time_window': 0.5, 'ai_validation': 2.5
+    }
+    SNIPER_USE_CONFIDENCE_SIZING = True
+    SNIPER_CONFIDENCE_SIZE_MAP = {85: 0.5, 90: 0.75, 95: 1.0}
 
 
 # AI System Prompt for validation
@@ -167,8 +222,16 @@ class SniperAIStrategy(BaseStrategy):
         )
         os.makedirs(self.data_dir, exist_ok=True)
 
+        # Volatility thresholds (adaptive per asset)
+        self.volatility_thresholds = {}
+        self._last_calibration = None
+        self._load_volatility_thresholds()
+
         # Load existing state
         self._load_state_from_csv()
+
+        # Start nightly calibration thread
+        self._start_calibration_thread()
 
         cprint(f"[Sniper] Strategy initialized", "cyan")
         cprint(f"  - Assets: {self.assets}", "white")
@@ -176,6 +239,10 @@ class SniperAIStrategy(BaseStrategy):
         cprint(f"  - Paper Trading: {PAPER_TRADING}", "white")
         cprint(f"  - Loaded positions: {len(self.paper_positions)}", "white")
         cprint(f"  - Current balance: ${self.paper_balance:,.2f}", "white")
+        cprint(f"  - Adaptive thresholds:", "white")
+        for sym in self.assets[:5]:  # Show first 5
+            thresh = self.volatility_thresholds.get(sym, {}).get('move_threshold', '?')
+            cprint(f"      {sym}: {thresh}%", "white")
 
     def _reset_daily_counters(self):
         """Reset daily counters if new day."""
@@ -245,6 +312,406 @@ class SniperAIStrategy(BaseStrategy):
 
         except Exception as e:
             cprint(f"[Sniper] Warning: Could not load state from CSV: {e}", "yellow")
+
+    # =========================================================================
+    # ADAPTIVE VOLATILITY THRESHOLDS
+    # =========================================================================
+
+    def _load_volatility_thresholds(self):
+        """Load volatility thresholds from JSON file or use defaults."""
+        thresholds_file = os.path.join(self.data_dir, 'volatility_thresholds.json')
+
+        try:
+            if os.path.exists(thresholds_file):
+                with open(thresholds_file, 'r') as f:
+                    data = json.load(f)
+                    self.volatility_thresholds = data.get('thresholds', {})
+                    self._last_calibration = data.get('last_calibration', None)
+
+                    # Check if calibration is stale (>24h old)
+                    if self._last_calibration:
+                        last_cal_time = datetime.fromisoformat(self._last_calibration)
+                        hours_since = (datetime.now() - last_cal_time).total_seconds() / 3600
+                        if hours_since > 24:
+                            cprint(f"[Sniper] Volatility thresholds are {hours_since:.1f}h old - recalibrating...", "yellow")
+                            self._calibrate_volatility_thresholds()
+                        else:
+                            cprint(f"[Sniper] Loaded volatility thresholds (calibrated {hours_since:.1f}h ago)", "green")
+                    return
+
+        except Exception as e:
+            cprint(f"[Sniper] Error loading thresholds: {e}", "yellow")
+
+        # Use defaults and calibrate in background
+        self.volatility_thresholds = DEFAULT_VOLATILITY_THRESHOLDS.copy()
+        cprint("[Sniper] Using default volatility thresholds - will calibrate in background", "yellow")
+
+    def _save_volatility_thresholds(self):
+        """Save volatility thresholds to JSON file."""
+        thresholds_file = os.path.join(self.data_dir, 'volatility_thresholds.json')
+
+        try:
+            data = {
+                'last_calibration': datetime.now().isoformat(),
+                'thresholds': self.volatility_thresholds
+            }
+            with open(thresholds_file, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            cprint(f"[Sniper] Saved volatility thresholds for {len(self.volatility_thresholds)} assets", "green")
+
+        except Exception as e:
+            cprint(f"[Sniper] Error saving thresholds: {e}", "red")
+
+    def _calibrate_volatility_thresholds(self):
+        """
+        Calculate adaptive volatility thresholds for each asset.
+
+        Uses 30 days of 4h candles to compute:
+        - Standard deviation of returns (σ)
+        - Move threshold = 2.5 × σ (statistically extreme)
+        """
+        from hyperliquid.info import Info
+
+        cprint("[Sniper] Calibrating volatility thresholds...", "cyan")
+
+        try:
+            info = Info(skip_ws=True)
+            end_time = int(time_module.time() * 1000)
+            start_time = end_time - (30 * 24 * 60 * 60 * 1000)  # 30 days
+
+            for symbol in self.assets:
+                try:
+                    data = info.candles_snapshot(symbol, '4h', start_time, end_time)
+                    if not data or len(data) < 50:
+                        cprint(f"  {symbol}: Not enough data, using default", "yellow")
+                        if symbol not in self.volatility_thresholds:
+                            self.volatility_thresholds[symbol] = DEFAULT_VOLATILITY_THRESHOLDS.get(
+                                symbol, {'move_threshold': 3.0, 'sigma': 1.2}
+                            )
+                        continue
+
+                    df = pd.DataFrame(data)
+                    df['close'] = pd.to_numeric(df['c'], errors='coerce')
+
+                    # Calculate 4h returns
+                    df['return'] = df['close'].pct_change() * 100
+                    df = df.dropna()
+
+                    if len(df) < 30:
+                        continue
+
+                    # Calculate statistics
+                    sigma = df['return'].std()
+                    move_threshold = round(2.5 * sigma, 2)
+
+                    # Adaptive RSI thresholds based on volatility
+                    # Higher volatility = wider RSI thresholds
+                    # Base: 25/75, adjusted by volatility ratio vs BTC baseline (σ≈0.7%)
+                    btc_baseline_sigma = 0.7
+                    vol_ratio = sigma / btc_baseline_sigma
+                    # Clamp vol_ratio between 0.5 and 2.0
+                    vol_ratio = max(0.5, min(2.0, vol_ratio))
+                    # RSI oversold: 25 for low vol, 20 for high vol
+                    rsi_oversold = max(15, round(25 - (vol_ratio - 1) * 5))
+                    # RSI overbought: 75 for low vol, 80 for high vol
+                    rsi_overbought = min(85, round(75 + (vol_ratio - 1) * 5))
+
+                    # Store thresholds
+                    self.volatility_thresholds[symbol] = {
+                        'move_threshold': move_threshold,
+                        'sigma': round(sigma, 3),
+                        'samples': len(df),
+                        'max_drop': round(df['return'].min(), 2),
+                        'max_pump': round(df['return'].max(), 2),
+                        'rsi_oversold': rsi_oversold,
+                        'rsi_overbought': rsi_overbought,
+                    }
+
+                    cprint(f"  {symbol}: σ={sigma:.2f}% → threshold={move_threshold:.2f}%, RSI={rsi_oversold}/{rsi_overbought}", "white")
+
+                except Exception as e:
+                    cprint(f"  {symbol}: Error - {e}", "yellow")
+
+            self._last_calibration = datetime.now().isoformat()
+            self._save_volatility_thresholds()
+
+            cprint(f"[Sniper] Calibration complete for {len(self.volatility_thresholds)} assets", "green")
+
+        except Exception as e:
+            cprint(f"[Sniper] Calibration error: {e}", "red")
+
+    def _start_calibration_thread(self):
+        """Start background thread for nightly recalibration."""
+        def calibration_loop():
+            while True:
+                try:
+                    # Sleep until next calibration (midnight UTC)
+                    now = datetime.utcnow()
+                    next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    sleep_seconds = (next_midnight - now).total_seconds()
+
+                    cprint(f"[Sniper] Next volatility calibration in {sleep_seconds/3600:.1f}h", "white")
+                    time_module.sleep(sleep_seconds)
+
+                    # Perform calibration
+                    self._calibrate_volatility_thresholds()
+
+                except Exception as e:
+                    cprint(f"[Sniper] Calibration thread error: {e}", "red")
+                    time_module.sleep(3600)  # Retry in 1h
+
+        thread = threading.Thread(target=calibration_loop, daemon=True)
+        thread.start()
+
+    def get_move_threshold(self, symbol: str) -> float:
+        """Get the adaptive move threshold for a symbol."""
+        if symbol in self.volatility_thresholds:
+            return self.volatility_thresholds[symbol].get('move_threshold', 3.0)
+
+        # Fallback to default or config
+        if symbol in DEFAULT_VOLATILITY_THRESHOLDS:
+            return DEFAULT_VOLATILITY_THRESHOLDS[symbol]['move_threshold']
+
+        return SNIPER_CAPITULATION_MIN_DROP_PCT  # Last resort fallback
+
+    def get_rsi_thresholds(self, symbol: str) -> tuple:
+        """Get adaptive RSI thresholds for a symbol (oversold, overbought)."""
+        if symbol in self.volatility_thresholds:
+            oversold = self.volatility_thresholds[symbol].get('rsi_oversold', SNIPER_RSI_OVERSOLD)
+            overbought = self.volatility_thresholds[symbol].get('rsi_overbought', SNIPER_RSI_OVERBOUGHT)
+            return (oversold, overbought)
+        return (SNIPER_RSI_OVERSOLD, SNIPER_RSI_OVERBOUGHT)
+
+    # =========================================================================
+    # ADVANCED IMPROVEMENTS
+    # =========================================================================
+
+    def check_market_regime(self, df: pd.DataFrame) -> dict:
+        """
+        Check market regime using ADX indicator.
+        ADX > 25 = trending (skip mean-reversion setups)
+        ADX < 25 = ranging (good for mean-reversion)
+        """
+        if not SNIPER_USE_REGIME_FILTER:
+            return {'is_ranging': True, 'adx': 0, 'skip_reason': None}
+
+        try:
+            adx = ADXIndicator(df['high'], df['low'], df['close'], window=SNIPER_ADX_PERIOD)
+            adx_value = adx.adx().iloc[-1]
+
+            is_trending = adx_value > SNIPER_ADX_TRENDING_THRESHOLD
+            is_ranging = not is_trending
+
+            return {
+                'is_ranging': is_ranging,
+                'adx': round(adx_value, 1),
+                'skip_reason': f"Trending market (ADX={adx_value:.1f})" if is_trending else None
+            }
+        except Exception as e:
+            cprint(f"[Sniper] ADX calculation error: {e}", "yellow")
+            return {'is_ranging': True, 'adx': 0, 'skip_reason': None}
+
+    def calculate_correlation_factor(self, symbol: str) -> float:
+        """
+        Calculate position sizing factor based on correlation with open positions.
+        Returns: 1.0 = full size, 0.5 = half size (highly correlated)
+        """
+        if not SNIPER_USE_CORRELATION_SIZING or not self.paper_positions:
+            return 1.0
+
+        try:
+            open_symbols = [pos['symbol'] for pos in self.paper_positions.values()]
+            if not open_symbols or symbol in open_symbols:
+                return 1.0
+
+            # Fetch price data for correlation
+            from hyperliquid.info import Info
+            info = Info(skip_ws=True)
+            end_time = int(time_module.time() * 1000)
+            start_time = end_time - (SNIPER_CORRELATION_LOOKBACK_DAYS * 24 * 60 * 60 * 1000)
+
+            # Get new symbol data
+            new_data = info.candles_snapshot(symbol, '4h', start_time, end_time)
+            if not new_data or len(new_data) < 50:
+                return 1.0
+
+            new_df = pd.DataFrame(new_data)
+            new_df['close'] = pd.to_numeric(new_df['c'], errors='coerce')
+            new_returns = new_df['close'].pct_change().dropna()
+
+            max_correlation = 0.0
+            for open_symbol in open_symbols:
+                try:
+                    open_data = info.candles_snapshot(open_symbol, '4h', start_time, end_time)
+                    if not open_data:
+                        continue
+
+                    open_df = pd.DataFrame(open_data)
+                    open_df['close'] = pd.to_numeric(open_df['c'], errors='coerce')
+                    open_returns = open_df['close'].pct_change().dropna()
+
+                    # Align and calculate correlation
+                    min_len = min(len(new_returns), len(open_returns))
+                    if min_len < 30:
+                        continue
+
+                    corr = new_returns.iloc[-min_len:].corr(open_returns.iloc[-min_len:])
+                    max_correlation = max(max_correlation, abs(corr))
+
+                except Exception:
+                    continue
+
+            # Reduce size if highly correlated
+            if max_correlation > SNIPER_CORRELATION_THRESHOLD:
+                factor = 0.5  # Half size for correlated assets
+                cprint(f"[Sniper] {symbol} correlated ({max_correlation:.2f}) with open positions - reducing size to 50%", "yellow")
+                return factor
+
+            return 1.0
+
+        except Exception as e:
+            cprint(f"[Sniper] Correlation calculation error: {e}", "yellow")
+            return 1.0
+
+    def calculate_atr_trailing_stop(self, symbol: str, df: pd.DataFrame, direction: str, entry_price: float, current_price: float) -> dict:
+        """
+        Calculate ATR-based trailing stop.
+        Only activates after position is profitable by SNIPER_TRAILING_ACTIVATION_PCT.
+        """
+        if not SNIPER_USE_TRAILING_STOP:
+            return {'active': False, 'stop_price': None}
+
+        try:
+            # Calculate current profit %
+            if direction == 'BUY':
+                profit_pct = (current_price - entry_price) / entry_price * 100
+            else:
+                profit_pct = (entry_price - current_price) / entry_price * 100
+
+            # Only activate trailing if profitable enough
+            if profit_pct < SNIPER_TRAILING_ACTIVATION_PCT:
+                return {'active': False, 'stop_price': None, 'profit_pct': profit_pct}
+
+            # Calculate ATR
+            atr = AverageTrueRange(df['high'], df['low'], df['close'], window=14)
+            atr_value = atr.average_true_range().iloc[-1]
+            atr_pct = (atr_value / current_price) * 100
+
+            # Trailing stop = current price - (ATR * multiplier)
+            trail_distance = atr_pct * SNIPER_TRAILING_ATR_MULTIPLIER
+
+            if direction == 'BUY':
+                stop_price = current_price * (1 - trail_distance / 100)
+            else:
+                stop_price = current_price * (1 + trail_distance / 100)
+
+            return {
+                'active': True,
+                'stop_price': round(stop_price, 2),
+                'atr_pct': round(atr_pct, 2),
+                'trail_distance_pct': round(trail_distance, 2),
+                'profit_pct': round(profit_pct, 2)
+            }
+
+        except Exception as e:
+            cprint(f"[Sniper] ATR trailing stop error: {e}", "yellow")
+            return {'active': False, 'stop_price': None}
+
+    def detect_funding_arbitrage(self, symbol: str, df: pd.DataFrame) -> dict:
+        """
+        Detect funding arbitrage setup.
+        Conditions:
+        - Funding rate is extreme (> ±0.1%)
+        - Price is relatively stable (no big moves)
+        """
+        if not SNIPER_ENABLE_FUNDING_ARBITRAGE:
+            return {'detected': False, 'type': 'funding_arbitrage', 'direction': 'NEUTRAL'}
+
+        try:
+            from src.data_providers.market_data import MarketDataProvider
+            provider = MarketDataProvider()
+
+            # Get funding rate
+            funding_data = provider.get_funding_zscore(symbol)
+            funding_rate = funding_data.get('current_rate', 0)
+
+            # Check if funding is extreme
+            is_extreme = abs(funding_rate) >= SNIPER_FUNDING_ARBITRAGE_THRESHOLD
+
+            if not is_extreme:
+                return {'detected': False, 'type': 'funding_arbitrage', 'direction': 'NEUTRAL'}
+
+            # Check price stability (last 4h)
+            lookback = min(16, len(df))
+            price_4h_ago = df['close'].iloc[-lookback]
+            current_price = df['close'].iloc[-1]
+            price_change = abs((current_price - price_4h_ago) / price_4h_ago * 100)
+
+            is_stable = price_change <= SNIPER_FUNDING_ARBITRAGE_STABILITY_PCT
+
+            if not is_stable:
+                return {'detected': False, 'type': 'funding_arbitrage', 'direction': 'NEUTRAL', 'reason': 'Price not stable'}
+
+            # Direction: opposite to funding (collect funding)
+            direction = 'SELL' if funding_rate > 0 else 'BUY'
+
+            return {
+                'detected': True,
+                'type': 'funding_arbitrage',
+                'direction': direction,
+                'funding_rate': round(funding_rate * 100, 3),  # Convert to %
+                'price_change_4h': round(price_change, 2),
+                'current_price': float(current_price)
+            }
+
+        except Exception as e:
+            cprint(f"[Sniper] Funding arbitrage detection error: {e}", "yellow")
+            return {'detected': False, 'type': 'funding_arbitrage', 'direction': 'NEUTRAL'}
+
+    def calculate_weighted_score(self, checks: dict, ai_validation: dict) -> float:
+        """
+        Calculate weighted confidence score instead of binary 7/7.
+        Returns score out of 10.
+        """
+        if not SNIPER_USE_WEIGHTED_SCORING:
+            # Binary mode: 7/7 = 10, else = 0
+            passed = sum(1 for c in checks.values() if c.get('passed', False))
+            return 10.0 if passed == 6 and ai_validation.get('passed', False) else 0.0
+
+        score = 0.0
+        max_score = sum(SNIPER_WEIGHTS.values())
+
+        # Score each condition
+        if checks.get('extreme_move', {}).get('passed', False):
+            score += SNIPER_WEIGHTS['extreme_move']
+        if checks.get('funding_divergence', {}).get('passed', False):
+            score += SNIPER_WEIGHTS['funding_divergence']
+        if checks.get('liquidation_cascade', {}).get('passed', False):
+            score += SNIPER_WEIGHTS['liquidation_cascade']
+        if checks.get('multi_tf', {}).get('passed', False):
+            score += SNIPER_WEIGHTS['multi_tf']
+        if checks.get('volume_climax', {}).get('passed', False):
+            score += SNIPER_WEIGHTS['volume_climax']
+        if checks.get('time_window', {}).get('passed', False):
+            score += SNIPER_WEIGHTS['time_window']
+        if ai_validation.get('passed', False):
+            score += SNIPER_WEIGHTS['ai_validation']
+
+        # Normalize to 10
+        return round((score / max_score) * 10, 1)
+
+    def get_confidence_size_factor(self, ai_confidence: int) -> float:
+        """Get position size factor based on AI confidence level."""
+        if not SNIPER_USE_CONFIDENCE_SIZING:
+            return 1.0
+
+        # Find the appropriate size factor
+        for threshold in sorted(SNIPER_CONFIDENCE_SIZE_MAP.keys(), reverse=True):
+            if ai_confidence >= threshold:
+                return SNIPER_CONFIDENCE_SIZE_MAP[threshold]
+
+        return 0.5  # Default to 50% if below all thresholds
 
     def _fetch_candles(self, symbol: str, interval: str = '15m', candles: int = 300) -> pd.DataFrame:
         """Fetch candle data from HyperLiquid."""
@@ -715,12 +1182,26 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
         Detect capitulation fade setup (LONG entry).
 
         Conditions:
-        - Price drops >5% in <4h
-        - Funding very negative
-        - Liquidation spike (longs liquidated)
-        - RSI < 25
+        - Price drops more than adaptive threshold (2.5σ) in <4h
+        - RSI < adaptive oversold threshold
+        - Market is ranging (ADX < 25)
         """
         try:
+            # Get adaptive thresholds for this symbol
+            move_threshold = self.get_move_threshold(symbol)
+            rsi_oversold, _ = self.get_rsi_thresholds(symbol)
+
+            # Check market regime (skip if trending)
+            regime = self.check_market_regime(df)
+            if not regime['is_ranging']:
+                return {
+                    'detected': False,
+                    'type': 'capitulation_fade',
+                    'direction': 'BUY',
+                    'skip_reason': regime['skip_reason'],
+                    'adx': regime['adx']
+                }
+
             # Check 4h price drop
             lookback = min(16, len(df))
             price_4h_ago = df['close'].iloc[-lookback]
@@ -730,10 +1211,15 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             # Check RSI
             rsi = RSIIndicator(df['close'], window=14).rsi().iloc[-1]
 
+            # Adaptive detection with adaptive RSI threshold
             is_capitulation = (
-                price_change <= -SNIPER_CAPITULATION_MIN_DROP_PCT and
-                rsi <= SNIPER_RSI_OVERSOLD
+                price_change <= -move_threshold and
+                rsi <= rsi_oversold
             )
+
+            # Log near-misses for debugging
+            if not is_capitulation and (price_change <= -move_threshold * 0.7 or rsi <= rsi_oversold + 10):
+                cprint(f"  [{symbol}] Near-capitulation: {price_change:+.2f}% (need <-{move_threshold:.1f}%), RSI={rsi:.1f} (need <{rsi_oversold})", "yellow")
 
             return {
                 'detected': is_capitulation,
@@ -741,7 +1227,10 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                 'direction': 'BUY',
                 'price_change_4h': round(price_change, 2),
                 'rsi': round(rsi, 1),
-                'current_price': float(current_price)
+                'rsi_threshold': rsi_oversold,
+                'current_price': float(current_price),
+                'threshold_used': move_threshold,
+                'adx': regime['adx']
             }
 
         except Exception as e:
@@ -753,11 +1242,26 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
         Detect euphoria fade setup (SHORT entry).
 
         Conditions:
-        - Price rises >5% in <4h
-        - Funding very positive
-        - RSI > 75
+        - Price rises more than adaptive threshold (2.5σ) in <4h
+        - RSI > adaptive overbought threshold
+        - Market is ranging (ADX < 25)
         """
         try:
+            # Get adaptive thresholds for this symbol
+            move_threshold = self.get_move_threshold(symbol)
+            _, rsi_overbought = self.get_rsi_thresholds(symbol)
+
+            # Check market regime (skip if trending)
+            regime = self.check_market_regime(df)
+            if not regime['is_ranging']:
+                return {
+                    'detected': False,
+                    'type': 'euphoria_fade',
+                    'direction': 'SELL',
+                    'skip_reason': regime['skip_reason'],
+                    'adx': regime['adx']
+                }
+
             lookback = min(16, len(df))
             price_4h_ago = df['close'].iloc[-lookback]
             current_price = df['close'].iloc[-1]
@@ -765,10 +1269,15 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
 
             rsi = RSIIndicator(df['close'], window=14).rsi().iloc[-1]
 
+            # Adaptive detection with adaptive RSI threshold
             is_euphoria = (
-                price_change >= SNIPER_EUPHORIA_MIN_RISE_PCT and
-                rsi >= SNIPER_RSI_OVERBOUGHT
+                price_change >= move_threshold and
+                rsi >= rsi_overbought
             )
+
+            # Log near-misses for debugging
+            if not is_euphoria and (price_change >= move_threshold * 0.7 or rsi >= rsi_overbought - 10):
+                cprint(f"  [{symbol}] Near-euphoria: {price_change:+.2f}% (need >+{move_threshold:.1f}%), RSI={rsi:.1f} (need >{rsi_overbought})", "yellow")
 
             return {
                 'detected': is_euphoria,
@@ -776,7 +1285,10 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                 'direction': 'SELL',
                 'price_change_4h': round(price_change, 2),
                 'rsi': round(rsi, 1),
-                'current_price': float(current_price)
+                'rsi_threshold': rsi_overbought,
+                'current_price': float(current_price),
+                'threshold_used': move_threshold,
+                'adx': regime['adx']
             }
 
         except Exception as e:
@@ -830,11 +1342,27 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
         cprint(f"  {status(volume_climax['passed'])} 5. Volume Climax: peak={volume_climax['peak_ratio']}x", color(volume_climax['passed']))
         cprint(f"  {status(time_window['passed'])} 6. Time Window: {time_window['session']}", color(time_window['passed']))
 
-        # Only run AI validation if first 6 pass
-        ai_validation = {'passed': False, 'confidence': 0, 'reasoning': 'First 6 conditions not met'}
+        # Calculate pre-AI weighted score
+        checks = {
+            'extreme_move': extreme_move,
+            'funding_divergence': funding_divergence,
+            'liquidation_cascade': liquidation_cascade,
+            'multi_tf': multi_tf,
+            'volume_climax': volume_climax,
+            'time_window': time_window
+        }
 
-        if passed_count == 6:
-            cprint(f"\n  All 6 conditions passed! Running AI validation...", "cyan")
+        # Run AI validation if enough conditions pass (weighted mode: score >= 5.0, binary mode: 6/6)
+        ai_validation = {'passed': False, 'confidence': 0, 'reasoning': 'Preliminary conditions not met'}
+        pre_ai_score = self.calculate_weighted_score(checks, {'passed': False})
+
+        # In weighted mode, run AI if pre-score >= 5.0 (about half)
+        # In binary mode, only run if all 6 pass
+        min_for_ai = 5.0 if SNIPER_USE_WEIGHTED_SCORING else 6.0
+        run_ai = (SNIPER_USE_WEIGHTED_SCORING and pre_ai_score >= min_for_ai) or (not SNIPER_USE_WEIGHTED_SCORING and passed_count == 6)
+
+        if run_ai:
+            cprint(f"\n  Pre-AI score: {pre_ai_score}/10 - Running AI validation...", "cyan")
             rsi = RSIIndicator(df['close'], window=14).rsi().iloc[-1]
 
             setup = {
@@ -854,15 +1382,23 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             cprint(f"  {status(ai_validation['passed'])} 7. AI Validation: {ai_validation['confidence']}% confidence", color(ai_validation['passed']))
             cprint(f"     Reasoning: {ai_validation['reasoning'][:100]}...", "white")
         else:
-            cprint(f"\n  Only {passed_count}/6 conditions passed - skipping AI validation", "yellow")
+            cprint(f"\n  Pre-AI score: {pre_ai_score}/10 - skipping AI validation (need >= {min_for_ai})", "yellow")
 
-        # Final result
-        all_passed = passed_count == 6 and ai_validation['passed']
+        # Calculate final weighted score
+        weighted_score = self.calculate_weighted_score(checks, ai_validation)
+
+        # Final result - use weighted scoring if enabled
+        if SNIPER_USE_WEIGHTED_SCORING:
+            all_passed = weighted_score >= SNIPER_MIN_WEIGHTED_SCORE
+            cprint(f"\n  Final weighted score: {weighted_score}/10 (threshold: {SNIPER_MIN_WEIGHTED_SCORE})", "cyan" if all_passed else "yellow")
+        else:
+            all_passed = passed_count == 6 and ai_validation['passed']
 
         return {
             'all_passed': all_passed,
             'passed_count': passed_count + (1 if ai_validation['passed'] else 0),
             'total': 7,
+            'weighted_score': weighted_score,
             'type': setup_type,
             'direction': direction,
             'current_price': float(df['close'].iloc[-1]),
@@ -966,6 +1502,7 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             # First, detect potential setups
             capitulation = self.detect_capitulation_fade(symbol, df)
             euphoria = self.detect_euphoria_fade(symbol, df)
+            funding_arb = self.detect_funding_arbitrage(symbol, df)
 
             # Check for capitulation fade (LONG)
             if capitulation['detected']:
@@ -983,9 +1520,23 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                 if result['all_passed']:
                     return self._build_signal(symbol, result)
 
+            # Check for funding arbitrage (Setup #3)
+            if funding_arb['detected']:
+                cprint(f"[Sniper] Funding arbitrage detected! Funding={funding_arb.get('funding_rate', 0)}%", "magenta")
+                result = self.run_checklist(symbol, df, 'funding_arbitrage', funding_arb['direction'])
+
+                if result['all_passed']:
+                    return self._build_signal(symbol, result)
+
             # No valid setup
-            if not capitulation['detected'] and not euphoria['detected']:
-                cprint(f"[Sniper] No setup detected for {symbol}", "white")
+            if not capitulation['detected'] and not euphoria['detected'] and not funding_arb['detected']:
+                # Log skip reasons if any
+                if capitulation.get('skip_reason'):
+                    cprint(f"  [{symbol}] Skipped: {capitulation['skip_reason']}", "yellow")
+                elif euphoria.get('skip_reason'):
+                    cprint(f"  [{symbol}] Skipped: {euphoria['skip_reason']}", "yellow")
+                else:
+                    cprint(f"[Sniper] No setup detected for {symbol}", "white")
 
             return {
                 'token': symbol,
@@ -1116,6 +1667,19 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             max_position = available_margin * 0.9 * SNIPER_LEVERAGE
             position_size = min(position_size, max_position)
 
+            # Apply confidence-based sizing (7. Dynamic position sizing)
+            ai_confidence = metadata.get('ai_confidence', 85)
+            confidence_factor = self.get_confidence_size_factor(ai_confidence)
+            position_size *= confidence_factor
+
+            # Apply correlation-based sizing (4. Correlation filter)
+            correlation_factor = self.calculate_correlation_factor(symbol)
+            position_size *= correlation_factor
+
+            # Log sizing adjustments
+            if confidence_factor < 1.0 or correlation_factor < 1.0:
+                cprint(f"[Sniper] Position size adjusted: confidence={confidence_factor:.0%}, correlation={correlation_factor:.0%}", "yellow")
+
             if position_size < 10:
                 cprint(f"[Sniper] Insufficient margin", "red")
                 return None
@@ -1176,20 +1740,24 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             return None
 
     def monitor_paper_positions(self) -> list:
-        """Monitor all open paper positions and close those that hit SL/TP."""
+        """Monitor all open paper positions and close those that hit SL/TP (with ATR trailing)."""
         if not PAPER_TRADING or not self.paper_positions:
             return []
 
         closed = []
 
         symbols_to_check = set(pos['symbol'] for pos in self.paper_positions.values())
-        current_prices = {}
+        symbol_data = {}  # Store both price and df for trailing stop calculation
 
         for symbol in symbols_to_check:
             try:
-                df = self._fetch_candles(symbol, interval='15m', candles=5)
+                # Fetch more candles for ATR calculation
+                df = self._fetch_candles(symbol, interval='15m', candles=50)
                 if df is not None and len(df) > 0:
-                    current_prices[symbol] = float(df['close'].iloc[-1])
+                    symbol_data[symbol] = {
+                        'price': float(df['close'].iloc[-1]),
+                        'df': df
+                    }
             except Exception as e:
                 cprint(f"[Sniper] Could not fetch price for {symbol}: {e}", "yellow")
 
@@ -1197,24 +1765,39 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
 
         for position_id, trade in self.paper_positions.items():
             symbol = trade['symbol']
-            if symbol not in current_prices:
+            if symbol not in symbol_data:
                 continue
 
-            current_price = current_prices[symbol]
+            current_price = symbol_data[symbol]['price']
+            df = symbol_data[symbol]['df']
             direction = trade['direction']
+            entry_price = trade['entry_price']
             stop_loss = trade['stop_loss']
             take_profit = trade['take_profit']
+
+            # Calculate ATR trailing stop (1. Trailing Stop-Loss based on ATR)
+            trailing = self.calculate_atr_trailing_stop(symbol, df, direction, entry_price, current_price)
+
+            # Update stop loss if trailing is active and provides better protection
+            effective_stop = stop_loss
+            if trailing['active'] and trailing['stop_price'] is not None:
+                if direction == 'BUY' and trailing['stop_price'] > stop_loss:
+                    effective_stop = trailing['stop_price']
+                    cprint(f"  [{symbol}] Trailing SL activated: ${stop_loss:.2f} → ${effective_stop:.2f} (profit: {trailing['profit_pct']:.1f}%)", "cyan")
+                elif direction == 'SELL' and trailing['stop_price'] < stop_loss:
+                    effective_stop = trailing['stop_price']
+                    cprint(f"  [{symbol}] Trailing SL activated: ${stop_loss:.2f} → ${effective_stop:.2f} (profit: {trailing['profit_pct']:.1f}%)", "cyan")
 
             close_reason = None
 
             if direction == 'BUY':
-                if current_price <= stop_loss:
-                    close_reason = 'STOP_LOSS'
+                if current_price <= effective_stop:
+                    close_reason = 'TRAILING_STOP' if effective_stop != stop_loss else 'STOP_LOSS'
                 elif current_price >= take_profit:
                     close_reason = 'TAKE_PROFIT'
             else:
-                if current_price >= stop_loss:
-                    close_reason = 'STOP_LOSS'
+                if current_price >= effective_stop:
+                    close_reason = 'TRAILING_STOP' if effective_stop != stop_loss else 'STOP_LOSS'
                 elif current_price <= take_profit:
                     close_reason = 'TAKE_PROFIT'
 

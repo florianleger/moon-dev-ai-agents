@@ -274,6 +274,49 @@ SNIPER_EUPHORIA_MIN_RISE_PCT = 5.0      # Min 5% rise for euphoria fade
 SNIPER_RSI_OVERSOLD = 25                # RSI < 25 for capitulation
 SNIPER_RSI_OVERBOUGHT = 75              # RSI > 75 for euphoria
 
+# === ADVANCED IMPROVEMENTS ===
+
+# 1. ATR-based trailing stop (replaces fixed SL when position is profitable)
+SNIPER_USE_TRAILING_STOP = True         # Enable ATR-based trailing stop
+SNIPER_TRAILING_ATR_MULTIPLIER = 2.0    # Trailing stop = 2 × ATR(14)
+SNIPER_TRAILING_ACTIVATION_PCT = 1.0    # Activate trailing after +1% profit
+
+# 2. Market regime filter (ADX)
+SNIPER_USE_REGIME_FILTER = True         # Enable market regime detection
+SNIPER_ADX_TRENDING_THRESHOLD = 25      # ADX > 25 = trending market (skip mean-reversion)
+SNIPER_ADX_PERIOD = 14                  # ADX calculation period
+
+# 3. Correlation filter (for position sizing)
+SNIPER_USE_CORRELATION_SIZING = True    # Reduce size if correlated positions open
+SNIPER_CORRELATION_THRESHOLD = 0.7      # High correlation threshold
+SNIPER_CORRELATION_LOOKBACK_DAYS = 30   # Days of data for correlation calc
+
+# 4. Funding Arbitrage setup
+SNIPER_ENABLE_FUNDING_ARBITRAGE = True  # Enable funding arbitrage setup
+SNIPER_FUNDING_ARBITRAGE_THRESHOLD = 0.1  # Funding > ±0.1% = extreme
+SNIPER_FUNDING_ARBITRAGE_STABILITY_PCT = 1.0  # Max price move for "stable"
+
+# 5. Weighted scoring (instead of binary 7/7)
+SNIPER_USE_WEIGHTED_SCORING = True      # Enable weighted confidence scoring
+SNIPER_MIN_WEIGHTED_SCORE = 8.5         # Minimum score out of 10
+SNIPER_WEIGHTS = {
+    'extreme_move': 2.0,
+    'funding_divergence': 1.5,
+    'liquidation_cascade': 1.5,
+    'multi_tf': 1.0,
+    'volume_climax': 1.0,
+    'time_window': 0.5,
+    'ai_validation': 2.5,
+}
+
+# 6. Dynamic position sizing based on AI confidence
+SNIPER_USE_CONFIDENCE_SIZING = True     # Scale position with confidence
+SNIPER_CONFIDENCE_SIZE_MAP = {
+    85: 0.5,   # 85-89% confidence = 50% size
+    90: 0.75,  # 90-94% confidence = 75% size
+    95: 1.0,   # 95%+ confidence = 100% size
+}
+
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3
 USDC_SIZE = 1
