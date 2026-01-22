@@ -632,12 +632,18 @@ class SniperAIStrategy(BaseStrategy):
             from src.data_providers.market_data import MarketDataProvider
             provider = MarketDataProvider()
 
-            # Get funding rate
-            funding_data = provider.get_funding_zscore(symbol)
-            funding_rate = funding_data.get('current_rate', 0)
+            # Get funding rate (returns dict with 'funding_rate' as hourly decimal)
+            funding_data = provider.get_funding_rate(symbol)
+            if not funding_data or 'funding_rate' not in funding_data:
+                return {'detected': False, 'type': 'funding_arbitrage', 'direction': 'NEUTRAL'}
 
-            # Check if funding is extreme
-            is_extreme = abs(funding_rate) >= SNIPER_FUNDING_ARBITRAGE_THRESHOLD
+            # HyperLiquid returns hourly rate as decimal, convert to 8h percentage
+            # e.g., 0.0001 hourly = 0.0008 per 8h = 0.08%
+            hourly_rate = funding_data['funding_rate']
+            funding_rate_8h_pct = hourly_rate * 8 * 100  # Convert to 8h percentage
+
+            # Check if funding is extreme (threshold is in %, e.g., 0.1 = 0.1%)
+            is_extreme = abs(funding_rate_8h_pct) >= SNIPER_FUNDING_ARBITRAGE_THRESHOLD
 
             if not is_extreme:
                 return {'detected': False, 'type': 'funding_arbitrage', 'direction': 'NEUTRAL'}
@@ -654,13 +660,13 @@ class SniperAIStrategy(BaseStrategy):
                 return {'detected': False, 'type': 'funding_arbitrage', 'direction': 'NEUTRAL', 'reason': 'Price not stable'}
 
             # Direction: opposite to funding (collect funding)
-            direction = 'SELL' if funding_rate > 0 else 'BUY'
+            direction = 'SELL' if funding_rate_8h_pct > 0 else 'BUY'
 
             return {
                 'detected': True,
                 'type': 'funding_arbitrage',
                 'direction': direction,
-                'funding_rate': round(funding_rate * 100, 3),  # Convert to %
+                'funding_rate_8h_pct': round(funding_rate_8h_pct, 4),
                 'price_change_4h': round(price_change, 2),
                 'current_price': float(current_price)
             }
