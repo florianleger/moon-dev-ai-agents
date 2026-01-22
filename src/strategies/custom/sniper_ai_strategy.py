@@ -1510,10 +1510,16 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             euphoria = self.detect_euphoria_fade(symbol, df)
             funding_arb = self.detect_funding_arbitrage(symbol, df)
 
+            # Track checklist results for partial data in NEUTRAL signals
+            last_checklist_result = None
+            detected_setup = None
+
             # Check for capitulation fade (LONG)
             if capitulation['detected']:
                 cprint(f"[Sniper] Capitulation fade detected! Running full checklist...", "green")
                 result = self.run_checklist(symbol, df, 'capitulation_fade', 'BUY')
+                last_checklist_result = result
+                detected_setup = 'capitulation_fade'
 
                 if result['all_passed']:
                     return self._build_signal(symbol, result)
@@ -1522,6 +1528,8 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             if euphoria['detected']:
                 cprint(f"[Sniper] Euphoria fade detected! Running full checklist...", "red")
                 result = self.run_checklist(symbol, df, 'euphoria_fade', 'SELL')
+                last_checklist_result = result
+                detected_setup = 'euphoria_fade'
 
                 if result['all_passed']:
                     return self._build_signal(symbol, result)
@@ -1530,11 +1538,13 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             if funding_arb['detected']:
                 cprint(f"[Sniper] Funding arbitrage detected! Funding={funding_arb.get('funding_rate', 0)}%", "magenta")
                 result = self.run_checklist(symbol, df, 'funding_arbitrage', funding_arb['direction'])
+                last_checklist_result = result
+                detected_setup = 'funding_arbitrage'
 
                 if result['all_passed']:
                     return self._build_signal(symbol, result)
 
-            # No valid setup
+            # No valid setup detected
             if not capitulation['detected'] and not euphoria['detected'] and not funding_arb['detected']:
                 # Log skip reasons if any
                 if capitulation.get('skip_reason'):
@@ -1544,13 +1554,39 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                 else:
                     cprint(f"[Sniper] No setup detected for {symbol}", "white")
 
+            # Build NEUTRAL signal with partial checklist data if available
+            current_price = float(df['close'].iloc[-1]) if df is not None and len(df) > 0 else 0
+
+            # If we ran a checklist but it didn't pass, include partial data
+            if last_checklist_result:
+                checklist_details = self._build_checklist_details(last_checklist_result)
+                ai_val = last_checklist_result.get('ai_validation', {})
+                return {
+                    'token': symbol,
+                    'signal': round(ai_val.get('confidence', 0) / 100, 3),
+                    'direction': 'NEUTRAL',
+                    'metadata': {
+                        'strategy_type': 'sniper_ai',
+                        'setup_type': detected_setup,
+                        'current_price': last_checklist_result.get('current_price', current_price),
+                        'checklist_score': f"{last_checklist_result['passed_count']}/{last_checklist_result['total']}",
+                        'weighted_score': round(last_checklist_result.get('weighted_score', 0), 1),
+                        'ai_confidence': ai_val.get('confidence', 0),
+                        'ai_reasoning': ai_val.get('reasoning', 'Checklist threshold not met'),
+                        'reason': f"Score {last_checklist_result.get('weighted_score', 0):.1f}/10 < {SNIPER_MIN_WEIGHTED_SCORE} threshold",
+                        'checklist_details': checklist_details,
+                    }
+                }
+
+            # No setup detected - minimal signal
             return {
                 'token': symbol,
                 'signal': 0.0,
                 'direction': 'NEUTRAL',
                 'metadata': {
                     'strategy_type': 'sniper_ai',
-                    'reason': 'No valid setup or checklist not passed'
+                    'current_price': current_price,
+                    'reason': 'No setup detected'
                 }
             }
 
@@ -1565,39 +1601,7 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
         ai_val = result.get('ai_validation', {})
 
         # Build detailed checklist for frontend display
-        checklist_details = {
-            'extreme_move': {
-                'passed': result['extreme_move'].get('passed', False),
-                'sigma': result['extreme_move'].get('sigma', 0),
-                'threshold': result['extreme_move'].get('threshold', SNIPER_SIGMA_THRESHOLD),
-            },
-            'funding_divergence': {
-                'passed': result['funding_divergence'].get('passed', False),
-                'zscore': result['funding_divergence'].get('funding_zscore', 0),
-                'is_contrarian': result['funding_divergence'].get('is_contrarian', False),
-            },
-            'liquidation_cascade': {
-                'passed': result.get('liquidation_cascade', {}).get('passed', False),
-                'ratio': result.get('liquidation_cascade', {}).get('ratio', 0),
-            },
-            'multi_tf': {
-                'passed': result.get('multi_tf', {}).get('passed', False),
-                'agreement': result.get('multi_tf', {}).get('agreement_pct', 0),
-            },
-            'volume_climax': {
-                'passed': result.get('volume_climax', {}).get('passed', False),
-                'ratio': result.get('volume_climax', {}).get('volume_ratio', 0),
-            },
-            'time_window': {
-                'passed': result['time_window'].get('passed', False),
-                'hour_utc': result['time_window'].get('current_hour', 0),
-            },
-            'ai_validation': {
-                'passed': ai_val.get('passed', False),
-                'confidence': ai_val.get('confidence', 0),
-                'reasoning': ai_val.get('reasoning', ''),
-            },
-        }
+        checklist_details = self._build_checklist_details(result)
 
         signal = {
             'token': symbol,
@@ -1663,6 +1667,43 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
 
         except Exception as e:
             cprint(f"[Sniper] Error logging signal: {e}", "yellow")
+
+    def _build_checklist_details(self, result: dict) -> dict:
+        """Build checklist details dict from checklist result for frontend display."""
+        ai_val = result.get('ai_validation', {})
+        return {
+            'extreme_move': {
+                'passed': result.get('extreme_move', {}).get('passed', False),
+                'sigma': round(result.get('extreme_move', {}).get('sigma', 0), 2),
+                'threshold': result.get('extreme_move', {}).get('threshold', SNIPER_SIGMA_THRESHOLD),
+            },
+            'funding_divergence': {
+                'passed': result.get('funding_divergence', {}).get('passed', False),
+                'zscore': round(result.get('funding_divergence', {}).get('funding_zscore', 0), 2),
+                'is_contrarian': result.get('funding_divergence', {}).get('is_contrarian', False),
+            },
+            'liquidation_cascade': {
+                'passed': result.get('liquidation_cascade', {}).get('passed', False),
+                'ratio': round(result.get('liquidation_cascade', {}).get('ratio', 0), 2),
+            },
+            'multi_tf': {
+                'passed': result.get('multi_tf', {}).get('passed', False),
+                'agreement': result.get('multi_tf', {}).get('agreement_pct', 0),
+            },
+            'volume_climax': {
+                'passed': result.get('volume_climax', {}).get('passed', False),
+                'ratio': round(result.get('volume_climax', {}).get('volume_ratio', 0), 2),
+            },
+            'time_window': {
+                'passed': result.get('time_window', {}).get('passed', False),
+                'hour_utc': result.get('time_window', {}).get('current_hour', 0),
+            },
+            'ai_validation': {
+                'passed': ai_val.get('passed', False),
+                'confidence': ai_val.get('confidence', 0),
+                'reasoning': ai_val.get('reasoning', ''),
+            },
+        }
 
     # =========================================================================
     # PAPER TRADING
