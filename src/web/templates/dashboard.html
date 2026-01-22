@@ -283,8 +283,18 @@ function dashboardData() {
 
         async fetchSignals() {
             try {
+                // Preserve expanded state before refresh
+                const expandedKeys = new Set(
+                    this.signals.filter(s => s.expanded).map(s => s.timestamp + s.symbol)
+                );
+
                 const data = await apiFetch('/api/strategy/signals?limit=10');
-                this.signals = (data.signals || []).map(s => this.mapSignal(s));
+                this.signals = (data.signals || []).map(s => {
+                    const mapped = this.mapSignal(s);
+                    // Restore expanded state if was expanded before
+                    mapped.expanded = expandedKeys.has(mapped.timestamp + mapped.symbol);
+                    return mapped;
+                });
             } catch (e) {
                 console.error('Failed to fetch signals:', e);
             }
@@ -306,7 +316,7 @@ function dashboardData() {
                 current_price: s.current_price,
                 approved: s.approved,
                 reason: s.reason,
-                expanded: false,  // For expandable UI
+                expanded: false,
             };
         },
 
@@ -433,8 +443,16 @@ function dashboardData() {
                 });
 
                 eventSource.addEventListener('signals', (e) => {
+                    // Preserve expanded state
+                    const expandedKeys = new Set(
+                        this.signals.filter(s => s.expanded).map(s => s.timestamp + s.symbol)
+                    );
                     const rawSignals = JSON.parse(e.data);
-                    this.signals = (rawSignals || []).map(s => this.mapSignal(s));
+                    this.signals = (rawSignals || []).map(s => {
+                        const mapped = this.mapSignal(s);
+                        mapped.expanded = expandedKeys.has(mapped.timestamp + mapped.symbol);
+                        return mapped;
+                    });
                 });
 
                 eventSource.onerror = () => {
