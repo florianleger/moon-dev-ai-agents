@@ -1564,6 +1564,41 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
         """Build the signal dict from checklist result."""
         ai_val = result.get('ai_validation', {})
 
+        # Build detailed checklist for frontend display
+        checklist_details = {
+            'extreme_move': {
+                'passed': result['extreme_move'].get('passed', False),
+                'sigma': result['extreme_move'].get('sigma', 0),
+                'threshold': result['extreme_move'].get('threshold', SNIPER_SIGMA_THRESHOLD),
+            },
+            'funding_divergence': {
+                'passed': result['funding_divergence'].get('passed', False),
+                'zscore': result['funding_divergence'].get('funding_zscore', 0),
+                'is_contrarian': result['funding_divergence'].get('is_contrarian', False),
+            },
+            'liquidation_cascade': {
+                'passed': result.get('liquidation_cascade', {}).get('passed', False),
+                'ratio': result.get('liquidation_cascade', {}).get('ratio', 0),
+            },
+            'multi_tf': {
+                'passed': result.get('multi_tf', {}).get('passed', False),
+                'agreement': result.get('multi_tf', {}).get('agreement_pct', 0),
+            },
+            'volume_climax': {
+                'passed': result.get('volume_climax', {}).get('passed', False),
+                'ratio': result.get('volume_climax', {}).get('volume_ratio', 0),
+            },
+            'time_window': {
+                'passed': result['time_window'].get('passed', False),
+                'hour_utc': result['time_window'].get('current_hour', 0),
+            },
+            'ai_validation': {
+                'passed': ai_val.get('passed', False),
+                'confidence': ai_val.get('confidence', 0),
+                'reasoning': ai_val.get('reasoning', ''),
+            },
+        }
+
         signal = {
             'token': symbol,
             'signal': round(ai_val.get('confidence', 85) / 100, 3),
@@ -1573,6 +1608,7 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                 'setup_type': result['type'],
                 'current_price': result['current_price'],
                 'checklist_score': f"{result['passed_count']}/{result['total']}",
+                'weighted_score': round(result.get('weighted_score', 0), 1),
                 'ai_confidence': ai_val.get('confidence', 0),
                 'ai_reasoning': ai_val.get('reasoning', ''),
                 'stop_loss_pct': ai_val.get('suggested_sl_pct', SNIPER_STOP_LOSS_PCT),
@@ -1580,7 +1616,8 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                 'leverage': SNIPER_LEVERAGE,
                 'extreme_move': result['extreme_move'],
                 'funding_divergence': result['funding_divergence'],
-                'time_window': result['time_window']
+                'time_window': result['time_window'],
+                'checklist_details': checklist_details,
             }
         }
 

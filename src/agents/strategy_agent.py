@@ -288,13 +288,21 @@ class StrategyAgent:
                         # Log signal to web dashboard
                         if WEB_STATE_AVAILABLE:
                             try:
+                                metadata = signal.get('metadata', {})
                                 web_add_signal({
                                     'token': signal.get('token', token),
                                     'direction': signal['direction'],
                                     'confidence': round(float(signal['signal']) * 100, 1),
                                     'strategy': signal['strategy_name'],
                                     'approved': approved,
-                                    'reason': decision if not approved else 'LLM approved'
+                                    'reason': decision if not approved else 'LLM approved',
+                                    # Extended metadata for Sniper AI
+                                    'weighted_score': metadata.get('weighted_score'),
+                                    'checklist_score': metadata.get('checklist_score'),
+                                    'setup_type': metadata.get('setup_type'),
+                                    'ai_reasoning': metadata.get('ai_reasoning'),
+                                    'checklist_details': metadata.get('checklist_details'),
+                                    'current_price': metadata.get('current_price'),
                                 })
                             except:
                                 pass
@@ -312,13 +320,21 @@ class StrategyAgent:
                         # Log approved signal to web dashboard
                         if WEB_STATE_AVAILABLE:
                             try:
+                                metadata = signal.get('metadata', {})
                                 web_add_signal({
                                     'token': signal.get('token', token),
                                     'direction': signal['direction'],
                                     'confidence': round(float(signal['signal']) * 100, 1),
                                     'strategy': signal['strategy_name'],
                                     'approved': True,
-                                    'reason': 'Auto-approved (high confidence)'
+                                    'reason': 'Auto-approved (high confidence)',
+                                    # Extended metadata for Sniper AI
+                                    'weighted_score': metadata.get('weighted_score'),
+                                    'checklist_score': metadata.get('checklist_score'),
+                                    'setup_type': metadata.get('setup_type'),
+                                    'ai_reasoning': metadata.get('ai_reasoning'),
+                                    'checklist_details': metadata.get('checklist_details'),
+                                    'current_price': metadata.get('current_price'),
                                 })
                             except:
                                 pass
