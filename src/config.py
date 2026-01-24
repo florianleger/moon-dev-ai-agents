@@ -321,6 +321,14 @@ SNIPER_CONFIDENCE_SIZE_MAP = {
     95: 1.0,   # 95%+ confidence = 100% size
 }
 
+# 7. Dynamic threshold adaptation (volatility-based)
+SNIPER_USE_DYNAMIC_THRESHOLDS = True    # Enable adaptive thresholds based on market conditions
+SNIPER_VOL_RATIO_HIGH = 1.3             # Recent vol > 1.3x historical = high volatility regime
+SNIPER_VOL_RATIO_LOW = 0.7              # Recent vol < 0.7x historical = low volatility regime
+SNIPER_MAX_THRESHOLD_ADJUSTMENT = 0.25  # Max threshold adjustment ±25%
+SNIPER_ADX_RANGING_THRESHOLD = 20       # ADX < 20 = ranging market (mean-reversion friendly)
+SNIPER_RECALIBRATION_HOURS = 4          # Recalibrate thresholds every N hours (0 = nightly only)
+
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3
 USDC_SIZE = 1

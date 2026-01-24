@@ -87,6 +87,13 @@ try:
         SNIPER_WEIGHTS,
         SNIPER_USE_CONFIDENCE_SIZING,
         SNIPER_CONFIDENCE_SIZE_MAP,
+        # Dynamic threshold parameters
+        SNIPER_USE_DYNAMIC_THRESHOLDS,
+        SNIPER_VOL_RATIO_HIGH,
+        SNIPER_VOL_RATIO_LOW,
+        SNIPER_MAX_THRESHOLD_ADJUSTMENT,
+        SNIPER_ADX_RANGING_THRESHOLD,
+        SNIPER_RECALIBRATION_HOURS,
     )
 except ImportError:
     # Default values
@@ -134,6 +141,13 @@ except ImportError:
     }
     SNIPER_USE_CONFIDENCE_SIZING = True
     SNIPER_CONFIDENCE_SIZE_MAP = {85: 0.5, 90: 0.75, 95: 1.0}
+    # Dynamic threshold defaults
+    SNIPER_USE_DYNAMIC_THRESHOLDS = True
+    SNIPER_VOL_RATIO_HIGH = 1.3
+    SNIPER_VOL_RATIO_LOW = 0.7
+    SNIPER_MAX_THRESHOLD_ADJUSTMENT = 0.25
+    SNIPER_ADX_RANGING_THRESHOLD = 20
+    SNIPER_RECALIBRATION_HOURS = 4
 
 
 # AI System Prompt for validation
@@ -368,8 +382,10 @@ class SniperAIStrategy(BaseStrategy):
         Calculate adaptive volatility thresholds for each asset.
 
         Uses 30 days of 4h candles to compute:
-        - Standard deviation of returns (σ)
-        - Move threshold = 2.5 × σ (statistically extreme)
+        - Standard deviation of returns (σ) for 30d and 7d
+        - Volatility ratio (7d/30d) to detect regime changes
+        - Dynamic threshold multiplier based on current market conditions
+        - Move threshold = 2.5 × σ × multiplier
         """
         from hyperliquid.info import Info
 
@@ -387,7 +403,7 @@ class SniperAIStrategy(BaseStrategy):
                         cprint(f"  {symbol}: Not enough data, using default", "yellow")
                         if symbol not in self.volatility_thresholds:
                             self.volatility_thresholds[symbol] = DEFAULT_VOLATILITY_THRESHOLDS.get(
-                                symbol, {'move_threshold': 3.0, 'sigma': 1.2}
+                                symbol, {'move_threshold': 3.0, 'sigma': 1.2, 'threshold_multiplier': 1.0}
                             )
                         continue
 
@@ -401,26 +417,38 @@ class SniperAIStrategy(BaseStrategy):
                     if len(df) < 30:
                         continue
 
-                    # Calculate statistics
-                    sigma = df['return'].std()
-                    move_threshold = round(2.5 * sigma, 2)
+                    # Calculate 30-day statistics (full dataset)
+                    sigma_30d = df['return'].std()
+
+                    # Calculate 7-day statistics (recent ~42 candles = 7 days × 6 candles/day)
+                    recent_candles = min(42, len(df))
+                    sigma_7d = df['return'].tail(recent_candles).std()
+
+                    # Calculate volatility ratio (recent vs historical)
+                    vol_ratio_7d_30d = sigma_7d / sigma_30d if sigma_30d > 0 else 1.0
+
+                    # Calculate dynamic threshold multiplier
+                    threshold_multiplier = self._calculate_threshold_multiplier(vol_ratio_7d_30d)
+
+                    # Apply multiplier to move threshold
+                    base_move_threshold = 2.5 * sigma_30d
+                    adjusted_move_threshold = round(base_move_threshold * threshold_multiplier, 2)
 
                     # Adaptive RSI thresholds based on volatility
-                    # Higher volatility = wider RSI thresholds
-                    # Base: 25/75, adjusted by volatility ratio vs BTC baseline (σ≈0.7%)
                     btc_baseline_sigma = 0.7
-                    vol_ratio = sigma / btc_baseline_sigma
-                    # Clamp vol_ratio between 0.5 and 2.0
-                    vol_ratio = max(0.5, min(2.0, vol_ratio))
-                    # RSI oversold: 25 for low vol, 20 for high vol
-                    rsi_oversold = max(15, round(25 - (vol_ratio - 1) * 5))
-                    # RSI overbought: 75 for low vol, 80 for high vol
-                    rsi_overbought = min(85, round(75 + (vol_ratio - 1) * 5))
+                    vol_ratio_btc = sigma_30d / btc_baseline_sigma
+                    vol_ratio_btc = max(0.5, min(2.0, vol_ratio_btc))
+                    rsi_oversold = max(15, round(25 - (vol_ratio_btc - 1) * 5))
+                    rsi_overbought = min(85, round(75 + (vol_ratio_btc - 1) * 5))
 
-                    # Store thresholds
+                    # Store thresholds with new dynamic fields
                     self.volatility_thresholds[symbol] = {
-                        'move_threshold': move_threshold,
-                        'sigma': round(sigma, 3),
+                        'move_threshold': adjusted_move_threshold,
+                        'base_move_threshold': round(base_move_threshold, 2),
+                        'sigma_30d': round(sigma_30d, 3),
+                        'sigma_7d': round(sigma_7d, 3),
+                        'vol_ratio_7d_30d': round(vol_ratio_7d_30d, 3),
+                        'threshold_multiplier': round(threshold_multiplier, 3),
                         'samples': len(df),
                         'max_drop': round(df['return'].min(), 2),
                         'max_pump': round(df['return'].max(), 2),
@@ -428,7 +456,10 @@ class SniperAIStrategy(BaseStrategy):
                         'rsi_overbought': rsi_overbought,
                     }
 
-                    cprint(f"  {symbol}: σ={sigma:.2f}% → threshold={move_threshold:.2f}%, RSI={rsi_oversold}/{rsi_overbought}", "white")
+                    # Enhanced logging with dynamic threshold info
+                    regime = "HIGH_VOL" if vol_ratio_7d_30d > SNIPER_VOL_RATIO_HIGH else \
+                             "LOW_VOL" if vol_ratio_7d_30d < SNIPER_VOL_RATIO_LOW else "NORMAL"
+                    cprint(f"  {symbol}: σ30d={sigma_30d:.2f}% σ7d={sigma_7d:.2f}% ratio={vol_ratio_7d_30d:.2f} [{regime}] → multiplier={threshold_multiplier:.2f} threshold={adjusted_move_threshold:.2f}%", "white")
 
                 except Exception as e:
                     cprint(f"  {symbol}: Error - {e}", "yellow")
@@ -440,6 +471,123 @@ class SniperAIStrategy(BaseStrategy):
 
         except Exception as e:
             cprint(f"[Sniper] Calibration error: {e}", "red")
+
+    def _calculate_threshold_multiplier(self, vol_ratio: float) -> float:
+        """
+        Calculate dynamic threshold multiplier based on volatility ratio (7d/30d).
+
+        Logic:
+        - vol_ratio > 1.3: Market more volatile than usual → LOOSEN thresholds (multiplier < 1)
+          Extreme moves are more frequent, so we lower the bar to catch them
+        - vol_ratio < 0.7: Market calmer than usual → TIGHTEN thresholds (multiplier > 1)
+          Moves are rarer, so we require more extreme conditions
+        - 0.7-1.3: Normal conditions → no adjustment (multiplier = 1)
+
+        Returns: multiplier between (1 - MAX_ADJUSTMENT) and (1 + MAX_ADJUSTMENT)
+        """
+        if not SNIPER_USE_DYNAMIC_THRESHOLDS:
+            return 1.0
+
+        max_adj = SNIPER_MAX_THRESHOLD_ADJUSTMENT
+
+        if vol_ratio > SNIPER_VOL_RATIO_HIGH:
+            # High volatility: loosen thresholds (multiplier < 1)
+            # More volatility = easier to trigger signals
+            adjustment = min(max_adj, (vol_ratio - SNIPER_VOL_RATIO_HIGH) * 0.3)
+            return max(1.0 - max_adj, 1.0 - adjustment)
+
+        elif vol_ratio < SNIPER_VOL_RATIO_LOW:
+            # Low volatility: tighten thresholds (multiplier > 1)
+            # Less volatility = require more extreme moves
+            adjustment = min(max_adj, (SNIPER_VOL_RATIO_LOW - vol_ratio) * 0.2)
+            return min(1.0 + max_adj, 1.0 + adjustment)
+
+        else:
+            # Normal volatility: no adjustment
+            return 1.0
+
+    def _get_regime_adjustment(self, df: pd.DataFrame) -> float:
+        """
+        Calculate regime adjustment based on ADX (trending vs ranging market).
+
+        Logic:
+        - ADX > 25: Trending market → mean-reversion less effective
+          Increase thresholds by 10% (require more extreme conditions)
+        - ADX < 20: Ranging market → mean-reversion more effective
+          Decrease thresholds by 5% (easier to trigger signals)
+        - 20-25: Neutral zone → no adjustment
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns: adjustment multiplier (0.95 - 1.10)
+        """
+        if not SNIPER_USE_DYNAMIC_THRESHOLDS or not SNIPER_USE_REGIME_FILTER:
+            return 1.0
+
+        try:
+            if len(df) < 20:
+                return 1.0
+
+            # Calculate ADX
+            adx_indicator = ADXIndicator(
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                window=SNIPER_ADX_PERIOD
+            )
+            adx_value = adx_indicator.adx().iloc[-1]
+
+            if pd.isna(adx_value):
+                return 1.0
+
+            if adx_value > SNIPER_ADX_TRENDING_THRESHOLD:
+                # Trending market: tighten thresholds (mean-reversion less reliable)
+                return 1.10
+            elif adx_value < SNIPER_ADX_RANGING_THRESHOLD:
+                # Ranging market: loosen thresholds (mean-reversion more reliable)
+                return 0.95
+            else:
+                return 1.0
+
+        except Exception as e:
+            cprint(f"[Sniper] Error calculating ADX regime: {e}", "yellow")
+            return 1.0
+
+    def get_dynamic_threshold(self, symbol: str, base_threshold: float, df: pd.DataFrame = None) -> float:
+        """
+        Get the final adjusted threshold combining:
+        1. Volatility-based multiplier (7d/30d ratio from calibration)
+        2. Regime-based adjustment (ADX trending vs ranging)
+
+        Args:
+            symbol: Trading symbol (e.g., 'BTC')
+            base_threshold: The base threshold from config (e.g., SNIPER_SIGMA_THRESHOLD)
+            df: Optional DataFrame for ADX calculation
+
+        Returns: Adjusted threshold value
+        """
+        if not SNIPER_USE_DYNAMIC_THRESHOLDS:
+            return base_threshold
+
+        # Get volatility multiplier from calibration
+        vol_multiplier = self.volatility_thresholds.get(symbol, {}).get('threshold_multiplier', 1.0)
+
+        # Get regime adjustment if DataFrame provided
+        regime_multiplier = 1.0
+        if df is not None:
+            regime_multiplier = self._get_regime_adjustment(df)
+
+        # Combine multipliers
+        final_multiplier = vol_multiplier * regime_multiplier
+
+        # Clamp to max adjustment (±25%)
+        max_adj = SNIPER_MAX_THRESHOLD_ADJUSTMENT
+        final_multiplier = max(1.0 - max_adj, min(1.0 + max_adj, final_multiplier))
+
+        adjusted_threshold = base_threshold * final_multiplier
+
+        return round(adjusted_threshold, 3)
 
     def _start_calibration_thread(self):
         """Start background thread for nightly recalibration."""
@@ -768,9 +916,10 @@ class SniperAIStrategy(BaseStrategy):
     def check_extreme_move(self, symbol: str, df: pd.DataFrame) -> dict:
         """
         Check condition 1: >2.5 sigma deviation from mean.
+        Uses dynamic threshold adjusted for current market conditions.
 
         Returns:
-            dict: {passed, sigma, direction, price_change_pct, threshold}
+            dict: {passed, sigma, direction, price_change_pct, threshold, base_threshold, multiplier}
         """
         try:
             window = 20
@@ -793,7 +942,11 @@ class SniperAIStrategy(BaseStrategy):
             price_4h_ago = df['close'].iloc[-lookback_4h]
             price_change_pct = (current_price - price_4h_ago) / price_4h_ago * 100
 
-            passed = abs(z_score) >= SNIPER_SIGMA_THRESHOLD
+            # Get dynamic threshold adjusted for volatility and regime
+            dynamic_threshold = self.get_dynamic_threshold(symbol, SNIPER_SIGMA_THRESHOLD, df)
+            vol_multiplier = self.volatility_thresholds.get(symbol, {}).get('threshold_multiplier', 1.0)
+
+            passed = abs(z_score) >= dynamic_threshold
             direction = 'oversold' if z_score < 0 else 'overbought'
 
             return {
@@ -801,26 +954,29 @@ class SniperAIStrategy(BaseStrategy):
                 'sigma': round(z_score, 2),
                 'direction': direction,
                 'price_change_pct': round(price_change_pct, 2),
-                'threshold': SNIPER_SIGMA_THRESHOLD
+                'threshold': round(dynamic_threshold, 2),
+                'base_threshold': SNIPER_SIGMA_THRESHOLD,
+                'multiplier': round(vol_multiplier, 2)
             }
 
         except Exception as e:
             cprint(f"[Sniper] Error checking extreme move: {e}", "yellow")
-            return {'passed': False, 'sigma': 0, 'direction': 'neutral', 'price_change_pct': 0, 'threshold': SNIPER_SIGMA_THRESHOLD}
+            return {'passed': False, 'sigma': 0, 'direction': 'neutral', 'price_change_pct': 0, 'threshold': SNIPER_SIGMA_THRESHOLD, 'base_threshold': SNIPER_SIGMA_THRESHOLD, 'multiplier': 1.0}
 
     def check_funding_divergence(self, symbol: str, direction: str) -> dict:
         """
         Check condition 2: Contrarian funding signal.
+        Uses dynamic threshold adjusted for current market conditions.
 
         For LONG: Funding should be very negative (shorts paying longs)
         For SHORT: Funding should be very positive (longs paying shorts)
 
         Returns:
-            dict: {passed, funding_rate, funding_zscore, is_contrarian}
+            dict: {passed, funding_rate, funding_zscore, is_contrarian, threshold, base_threshold}
         """
         try:
             if self._market_data is None:
-                return {'passed': False, 'funding_rate': 0, 'funding_zscore': 0, 'is_contrarian': False}
+                return {'passed': False, 'funding_rate': 0, 'funding_zscore': 0, 'is_contrarian': False, 'threshold': SNIPER_FUNDING_EXTREME_THRESHOLD}
 
             funding_zscore = self._market_data.get_funding_zscore(symbol)
             funding_data = self._market_data.get_funding_rate(symbol)
@@ -828,8 +984,11 @@ class SniperAIStrategy(BaseStrategy):
             funding_rate = funding_data['funding_rate'] if funding_data else 0
             annual_rate = funding_rate * 24 * 365 * 100 if funding_data else 0
 
-            is_extreme_negative = funding_zscore < -SNIPER_FUNDING_EXTREME_THRESHOLD
-            is_extreme_positive = funding_zscore > SNIPER_FUNDING_EXTREME_THRESHOLD
+            # Get dynamic threshold (volatility-adjusted, no df available here)
+            dynamic_threshold = self.get_dynamic_threshold(symbol, SNIPER_FUNDING_EXTREME_THRESHOLD, None)
+
+            is_extreme_negative = funding_zscore < -dynamic_threshold
+            is_extreme_positive = funding_zscore > dynamic_threshold
 
             # Contrarian logic
             if direction == 'BUY':
@@ -844,12 +1003,14 @@ class SniperAIStrategy(BaseStrategy):
                 'funding_rate': round(funding_rate * 100, 6),
                 'funding_zscore': round(funding_zscore, 2),
                 'annual_rate_pct': round(annual_rate, 2),
-                'is_contrarian': is_contrarian
+                'is_contrarian': is_contrarian,
+                'threshold': round(dynamic_threshold, 2),
+                'base_threshold': SNIPER_FUNDING_EXTREME_THRESHOLD
             }
 
         except Exception as e:
             cprint(f"[Sniper] Error checking funding divergence: {e}", "yellow")
-            return {'passed': False, 'funding_rate': 0, 'funding_zscore': 0, 'is_contrarian': False}
+            return {'passed': False, 'funding_rate': 0, 'funding_zscore': 0, 'is_contrarian': False, 'threshold': SNIPER_FUNDING_EXTREME_THRESHOLD}
 
     def check_liquidation_cascade(self, direction: str) -> dict:
         """
@@ -957,14 +1118,15 @@ class SniperAIStrategy(BaseStrategy):
             cprint(f"[Sniper] Error checking multi-TF agreement: {e}", "yellow")
             return {'passed': False, 'agreements': 0, 'total': 4, 'details': {}, 'all_aligned': False}
 
-    def check_volume_climax(self, df: pd.DataFrame) -> dict:
+    def check_volume_climax(self, symbol: str, df: pd.DataFrame) -> dict:
         """
         Check condition 5: Volume exhaustion spike detected.
+        Uses dynamic threshold adjusted for current market conditions.
 
-        Looking for: Recent spike > 3x average, now declining.
+        Looking for: Recent spike > Nx average (dynamic), now declining.
 
         Returns:
-            dict: {passed, current_ratio, peak_ratio, is_climax, is_declining}
+            dict: {passed, current_ratio, peak_ratio, is_climax, is_declining, threshold, base_threshold}
         """
         try:
             volume = df['volume'].tail(50)
@@ -977,8 +1139,11 @@ class SniperAIStrategy(BaseStrategy):
             peak_volume = recent_volume.max()
             peak_ratio = peak_volume / avg_volume if avg_volume > 0 else 1.0
 
+            # Get dynamic threshold adjusted for volatility and regime
+            dynamic_threshold = self.get_dynamic_threshold(symbol, SNIPER_VOLUME_SPIKE_THRESHOLD, df)
+
             is_declining = current_volume < peak_volume * 0.7
-            is_climax = peak_ratio >= SNIPER_VOLUME_SPIKE_THRESHOLD
+            is_climax = peak_ratio >= dynamic_threshold
 
             passed = is_climax and is_declining
 
@@ -988,12 +1153,13 @@ class SniperAIStrategy(BaseStrategy):
                 'peak_ratio': round(peak_ratio, 2),
                 'is_climax': is_climax,
                 'is_declining': is_declining,
-                'threshold': SNIPER_VOLUME_SPIKE_THRESHOLD
+                'threshold': round(dynamic_threshold, 2),
+                'base_threshold': SNIPER_VOLUME_SPIKE_THRESHOLD
             }
 
         except Exception as e:
             cprint(f"[Sniper] Error checking volume climax: {e}", "yellow")
-            return {'passed': False, 'current_ratio': 0, 'peak_ratio': 0, 'is_climax': False, 'is_declining': False}
+            return {'passed': False, 'current_ratio': 0, 'peak_ratio': 0, 'is_climax': False, 'is_declining': False, 'threshold': SNIPER_VOLUME_SPIKE_THRESHOLD}
 
     def check_time_window(self) -> dict:
         """
@@ -1314,7 +1480,7 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
         funding_divergence = self.check_funding_divergence(symbol, direction)
         liquidation_cascade = self.check_liquidation_cascade(direction)
         multi_tf = self.check_multi_tf_agreement(symbol, direction)
-        volume_climax = self.check_volume_climax(df)
+        volume_climax = self.check_volume_climax(symbol, df)
         time_window = self.check_time_window()
 
         # Count passed conditions (first 6)
@@ -1397,6 +1563,15 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
         if SNIPER_USE_WEIGHTED_SCORING:
             all_passed = weighted_score >= SNIPER_MIN_WEIGHTED_SCORE
             cprint(f"\n  Final weighted score: {weighted_score}/10 (threshold: {SNIPER_MIN_WEIGHTED_SCORE})", "cyan" if all_passed else "yellow")
+
+            # Log near-misses for monitoring (scores between 6.0 and threshold)
+            near_miss_threshold = 6.0
+            if near_miss_threshold <= weighted_score < SNIPER_MIN_WEIGHTED_SCORE:
+                vol_info = self.volatility_thresholds.get(symbol, {})
+                vol_ratio = vol_info.get('vol_ratio_7d_30d', 1.0)
+                multiplier = vol_info.get('threshold_multiplier', 1.0)
+                cprint(f"\n  [NEAR-MISS] {symbol} {direction}: {weighted_score:.1f}/10 (needs {SNIPER_MIN_WEIGHTED_SCORE})", "yellow")
+                cprint(f"    Vol ratio: {vol_ratio:.2f} | Multiplier: {multiplier:.2f} | Extreme: {extreme_move['sigma']:.1f}σ | Funding: {funding_divergence['funding_zscore']:.1f}", "yellow")
         else:
             all_passed = passed_count == 6 and ai_validation['passed']
 
