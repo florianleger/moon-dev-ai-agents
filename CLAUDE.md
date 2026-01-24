@@ -250,3 +250,37 @@ This is an **experimental, educational project** demonstrating AI agent patterns
 - No token associated with project (avoid scams)
 
 The goal is to democratize AI agent development and show practical multi-agent orchestration patterns that can be applied beyond trading.
+
+## RAMF Strategy Tuning Learnings
+
+### Signal Generation Bottlenecks
+
+The RAMF strategy has several configurable parameters that affect signal frequency:
+
+| Parameter | Location | Default | Impact |
+|-----------|----------|---------|--------|
+| `RAMF_VOLATILITY_HIGH_PERCENTILE` | config.py | 55 | ATR above this = HIGH regime (mean-reversion) |
+| `RAMF_VOLATILITY_LOW_PERCENTILE` | config.py | 45 | ATR below this = LOW regime (trend-following) |
+| `RAMF_MIN_CONFIDENCE` | config.py | 60 | Minimum score to generate BUY/SELL signal |
+| `RAMF_ATR_EXTENSION_THRESHOLD` | config.py | 1.5 | ATRs from VWAP for exhaustion detection |
+| `RAMF_CONSECUTIVE_BAR_THRESHOLD` | config.py | 3 | Bars in same direction for exhaustion |
+
+**Key insight**: The "dead zone" between HIGH and LOW percentiles produces NEUTRAL signals immediately without checking any conditions. Keep this zone small (10% or less) to maximize opportunities.
+
+### Signal Debugging
+
+If no signals are being generated:
+
+1. **Check volatility regime distribution**: Run the strategy and observe console output for "High volatility mode" vs "Low volatility mode" vs "Normal volatility"
+2. **Look for near-misses**: Signals with 40-59% confidence are logged as near-misses
+3. **Verify exhaustion conditions**: In HIGH vol mode, requires both VWAP distance AND consecutive bars
+
+### Configuration Trade-offs
+
+| Change | More Signals | Higher Precision |
+|--------|--------------|------------------|
+| Lower `MIN_CONFIDENCE` | ✅ | ❌ |
+| Widen volatility bands (e.g., 45/55) | ✅ | ↔ |
+| Lower `ATR_EXTENSION_THRESHOLD` | ✅ | ❌ |
+| Lower `CONSECUTIVE_BAR_THRESHOLD` | ✅ | ❌ |
+| Enable more assets in `RAMF_ASSETS` | ✅ | ↔ |
