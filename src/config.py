@@ -230,7 +230,92 @@ PAPER_TRADING_BALANCE = 500          # Simulated starting balance in USD
 # ============================================================================
 # Choose which strategy to run (only one should be active at a time)
 
-ACTIVE_STRATEGY = 'ramf'             # Options: 'multifactor', 'ramf', 'example'
+ACTIVE_STRATEGY = 'sniper'           # Options: 'multifactor', 'ramf', 'sniper', 'example'
+
+# ============================================================================
+# SNIPER AI Strategy Settings
+# ============================================================================
+# A precision trading strategy requiring ALL 7 checklist conditions to align.
+# Target: 1-2 trades/day with 80%+ win rate.
+# Philosophy: "Fewer trades, but quasi-certain trades"
+
+# Assets to trade (start conservative with majors)
+SNIPER_ASSETS = ['BTC', 'ETH', 'SOL']
+
+# Position sizing
+SNIPER_LEVERAGE = 3                    # Conservative leverage
+SNIPER_STOP_LOSS_PCT = 1.5             # Base SL (AI may adjust)
+SNIPER_TAKE_PROFIT_PCT = 3.0           # Base TP (2:1 minimum R:R)
+
+# Daily limits (strict - sniper means few trades)
+SNIPER_MAX_DAILY_TRADES = 2            # Max 2 trades per day
+SNIPER_MAX_DAILY_LOSS_USD = 30         # ~6% of $500
+SNIPER_MAX_DAILY_GAIN_USD = 60         # ~12% of $500
+
+# Checklist thresholds
+SNIPER_SIGMA_THRESHOLD = 2.5           # Condition 1: Extreme move sigma
+SNIPER_FUNDING_EXTREME_THRESHOLD = 2.0 # Condition 2: Funding Z-score
+SNIPER_LIQ_RATIO_THRESHOLD = 1.5       # Condition 3: Liquidation ratio
+SNIPER_VOLUME_SPIKE_THRESHOLD = 3.0    # Condition 5: Volume climax multiplier
+
+# Time window settings (UTC hours)
+SNIPER_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 16]  # London + NY open
+SNIPER_ALLOW_NORMAL_HOURS = False      # Strict: only trade optimal hours
+
+# AI Validation settings
+SNIPER_AI_MIN_CONFIDENCE = 85          # Minimum AI confidence to execute
+SNIPER_AI_MODEL = 'claude-3-5-sonnet-latest'  # Use capable model for reasoning
+SNIPER_AI_TEMPERATURE = 0.3            # Low temp for analytical responses
+SNIPER_AI_MAX_TOKENS = 1024
+
+# Setup-specific thresholds
+SNIPER_CAPITULATION_MIN_DROP_PCT = 5.0  # Min 5% drop for capitulation fade
+SNIPER_EUPHORIA_MIN_RISE_PCT = 5.0      # Min 5% rise for euphoria fade
+SNIPER_RSI_OVERSOLD = 25                # RSI < 25 for capitulation
+SNIPER_RSI_OVERBOUGHT = 75              # RSI > 75 for euphoria
+
+# === ADVANCED IMPROVEMENTS ===
+
+# 1. ATR-based trailing stop (replaces fixed SL when position is profitable)
+SNIPER_USE_TRAILING_STOP = True         # Enable ATR-based trailing stop
+SNIPER_TRAILING_ATR_MULTIPLIER = 2.0    # Trailing stop = 2 × ATR(14)
+SNIPER_TRAILING_ACTIVATION_PCT = 1.0    # Activate trailing after +1% profit
+
+# 2. Market regime filter (ADX)
+SNIPER_USE_REGIME_FILTER = True         # Enable market regime detection
+SNIPER_ADX_TRENDING_THRESHOLD = 25      # ADX > 25 = trending market (skip mean-reversion)
+SNIPER_ADX_PERIOD = 14                  # ADX calculation period
+
+# 3. Correlation filter (for position sizing)
+SNIPER_USE_CORRELATION_SIZING = True    # Reduce size if correlated positions open
+SNIPER_CORRELATION_THRESHOLD = 0.7      # High correlation threshold
+SNIPER_CORRELATION_LOOKBACK_DAYS = 30   # Days of data for correlation calc
+
+# 4. Funding Arbitrage setup
+SNIPER_ENABLE_FUNDING_ARBITRAGE = True  # Enable funding arbitrage setup
+SNIPER_FUNDING_ARBITRAGE_THRESHOLD = 0.1  # Funding > ±0.1% = extreme
+SNIPER_FUNDING_ARBITRAGE_STABILITY_PCT = 1.0  # Max price move for "stable"
+
+# 5. Weighted scoring (instead of binary 7/7)
+SNIPER_USE_WEIGHTED_SCORING = True      # Enable weighted confidence scoring
+SNIPER_MIN_WEIGHTED_SCORE = 8.5         # Minimum score out of 10
+SNIPER_WEIGHTS = {
+    'extreme_move': 2.0,
+    'funding_divergence': 1.5,
+    'liquidation_cascade': 1.5,
+    'multi_tf': 1.0,
+    'volume_climax': 1.0,
+    'time_window': 0.5,
+    'ai_validation': 2.5,
+}
+
+# 6. Dynamic position sizing based on AI confidence
+SNIPER_USE_CONFIDENCE_SIZING = True     # Scale position with confidence
+SNIPER_CONFIDENCE_SIZE_MAP = {
+    85: 0.5,   # 85-89% confidence = 50% size
+    90: 0.75,  # 90-94% confidence = 75% size
+    95: 1.0,   # 95%+ confidence = 100% size
+}
 
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3
