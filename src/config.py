@@ -162,7 +162,7 @@ RAMF_ASSETS = [
 RAMF_LEVERAGE = 3                    # Conservative leverage for small accounts (1-5 recommended)
 RAMF_STOP_LOSS_PCT = 1.0             # Base stop-loss percentage (dynamically adjusted by ATR)
 RAMF_TAKE_PROFIT_PCT = 2.0           # Base take-profit percentage (dynamically adjusted by ATR)
-RAMF_MIN_CONFIDENCE = 70             # Minimum confidence score to trade (0-100)
+RAMF_MIN_CONFIDENCE = 60             # Minimum confidence score to trade (0-100) - lowered from 70 for more signals
 RAMF_MAX_DAILY_TRADES = 15           # Maximum trades per day (increased for paper trading)
 RAMF_MAX_DAILY_LOSS_USD = 50         # Daily loss limit in USD (~10% of $500)
 RAMF_MAX_DAILY_GAIN_USD = 75         # Daily gain limit in USD (~15% of $500)
@@ -172,8 +172,12 @@ RAMF_MAX_DAILY_GAIN_USD = 75         # Daily gain limit in USD (~15% of $500)
 # ATR percentile > HIGH threshold = mean-reversion mode (fade exhaustion)
 # ATR percentile < LOW threshold = trend-following mode
 # Between these thresholds = NORMAL (no trade) - widen bands for more signals
-RAMF_VOLATILITY_HIGH_PERCENTILE = 60  # Top 40% of ATR = "high" volatility (default was 75)
-RAMF_VOLATILITY_LOW_PERCENTILE = 40   # Bottom 40% of ATR = "low" volatility (default was 25)
+RAMF_VOLATILITY_HIGH_PERCENTILE = 55  # Top 45% of ATR = "high" volatility (reduced from 60 to minimize dead zone)
+RAMF_VOLATILITY_LOW_PERCENTILE = 45   # Bottom 45% of ATR = "low" volatility (increased from 40 to minimize dead zone)
+
+# Momentum Exhaustion Settings (for HIGH volatility regime)
+RAMF_ATR_EXTENSION_THRESHOLD = 1.5    # ATRs from VWAP for exhaustion detection (reduced from 2.0)
+RAMF_CONSECUTIVE_BAR_THRESHOLD = 3    # Consecutive bars in same direction for exhaustion (reduced from 5)
 
 # RAMF Advanced Settings (v2.0 improvements)
 RAMF_USE_ADAPTIVE_SL_TP = True       # Dynamic SL/TP based on ATR
