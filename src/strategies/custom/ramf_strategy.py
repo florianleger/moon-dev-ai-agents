@@ -59,7 +59,10 @@ try:
         RAMF_LIQ_CLUSTER_BONUS,
         # Volatility regime thresholds
         RAMF_VOLATILITY_HIGH_PERCENTILE,
-        RAMF_VOLATILITY_LOW_PERCENTILE
+        RAMF_VOLATILITY_LOW_PERCENTILE,
+        # Momentum exhaustion thresholds
+        RAMF_ATR_EXTENSION_THRESHOLD,
+        RAMF_CONSECUTIVE_BAR_THRESHOLD
     )
 except ImportError:
     # Default values
@@ -67,7 +70,7 @@ except ImportError:
     RAMF_LEVERAGE = 3
     RAMF_STOP_LOSS_PCT = 1.0
     RAMF_TAKE_PROFIT_PCT = 2.0
-    RAMF_MIN_CONFIDENCE = 70
+    RAMF_MIN_CONFIDENCE = 60
     RAMF_MAX_DAILY_TRADES = 6
     RAMF_MAX_DAILY_LOSS_USD = 25
     RAMF_MAX_DAILY_GAIN_USD = 25
@@ -96,8 +99,11 @@ except ImportError:
     RAMF_LIQ_CLUSTER_THRESHOLD = 2.0
     RAMF_LIQ_CLUSTER_BONUS = 15
     # Volatility regime defaults (widened for more signals)
-    RAMF_VOLATILITY_HIGH_PERCENTILE = 60
-    RAMF_VOLATILITY_LOW_PERCENTILE = 40
+    RAMF_VOLATILITY_HIGH_PERCENTILE = 55
+    RAMF_VOLATILITY_LOW_PERCENTILE = 45
+    # Momentum exhaustion defaults (relaxed for more signals)
+    RAMF_ATR_EXTENSION_THRESHOLD = 1.5
+    RAMF_CONSECUTIVE_BAR_THRESHOLD = 3
 
 # Lower confidence threshold for low volatility regime (0.7x multiplier makes 70 impossible)
 RAMF_MIN_CONFIDENCE_LOW_VOL = 35
@@ -131,9 +137,9 @@ class RAMFStrategy(BaseStrategy):
         self.volatility_high_percentile = RAMF_VOLATILITY_HIGH_PERCENTILE
         self.volatility_low_percentile = RAMF_VOLATILITY_LOW_PERCENTILE
 
-        # Momentum exhaustion parameters
-        self.atr_extension_threshold = 2.0  # ATRs from VWAP for exhaustion
-        self.consecutive_bar_threshold = 5  # Consecutive bars in same direction
+        # Momentum exhaustion parameters (now configurable)
+        self.atr_extension_threshold = RAMF_ATR_EXTENSION_THRESHOLD  # ATRs from VWAP for exhaustion
+        self.consecutive_bar_threshold = RAMF_CONSECUTIVE_BAR_THRESHOLD  # Consecutive bars in same direction
 
         # Volume spike threshold
         self.volume_spike_threshold = 2.0  # 2x average volume
@@ -1164,6 +1170,14 @@ class RAMFStrategy(BaseStrategy):
             else:
                 direction = 'NEUTRAL'
                 signal_strength = 0.0
+
+                # Log near-misses for monitoring (scores between 40 and threshold)
+                max_score = max(long_score, short_score)
+                if 40 <= max_score < effective_min_confidence:
+                    near_miss_dir = 'LONG' if long_score > short_score else 'SHORT'
+                    cprint(f"[RAMF] {symbol}: Near-miss {near_miss_dir} ({max_score}%) - "
+                           f"regime={regime['regime']}, exhaustion={exhaustion['oversold_exhaustion'] or exhaustion['overbought_exhaustion']}, "
+                           f"funding={funding_zscore:.2f}, liq_ratio={liq_ratio:.2f}", "yellow")
 
             # =========================================================================
             # v2.0: Calculate adaptive SL/TP
