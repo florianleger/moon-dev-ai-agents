@@ -1,0 +1,2 @@
+timestamp,symbol,direction,confidence,price,regime,funding_zscore,rsi,long_score,short_score,sl_pct,tp_pct,atr_pct,funding_div_signal,funding_div_score,time_session,time_modifier,mtf_agreements,mtf_total,near_liq_cluster,paper_trading
+2026-01-24T15:54:10.190997,BTC,SELL,0.69,89409.0,low,-0.7,38.8,15,69,0.5,0.23,0.08,neutral,0.0,ny_open,15,4,4,False,True
