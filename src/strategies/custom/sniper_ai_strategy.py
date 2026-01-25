@@ -29,7 +29,8 @@ from ta.momentum import RSIIndicator
 
 from ..base_strategy import BaseStrategy
 
-# Default volatility thresholds (used as fallback)
+# Default volatility thresholds (used as fallback if dynamic calibration fails)
+# These are conservative estimates; the strategy will calculate actual values from 30d data
 DEFAULT_VOLATILITY_THRESHOLDS = {
     'BTC': {'move_threshold': 1.7, 'sigma': 0.68},
     'ETH': {'move_threshold': 2.2, 'sigma': 0.89},
@@ -41,6 +42,16 @@ DEFAULT_VOLATILITY_THRESHOLDS = {
     'LINK': {'move_threshold': 2.8, 'sigma': 1.10},
     'DOT': {'move_threshold': 3.0, 'sigma': 1.20},
     'MATIC': {'move_threshold': 3.5, 'sigma': 1.40},
+    # L2 tokens (typically more volatile)
+    'ARB': {'move_threshold': 3.8, 'sigma': 1.50},
+    'OP': {'move_threshold': 3.5, 'sigma': 1.40},
+    # AI tokens (high volatility)
+    'RENDER': {'move_threshold': 4.0, 'sigma': 1.60},
+    # DeFi blue chips
+    'AAVE': {'move_threshold': 3.5, 'sigma': 1.40},
+    'CRV': {'move_threshold': 4.2, 'sigma': 1.65},
+    # Infrastructure
+    'FIL': {'move_threshold': 3.8, 'sigma': 1.50},
 }
 
 # Import config with defaults
@@ -1665,6 +1676,10 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             return None
 
         # Generate signal for specific symbol
+        # Skip if symbol is not in our tracked assets
+        if symbol not in self.assets:
+            return None
+
         if df is None:
             df = self._fetch_candles(symbol, interval='15m', candles=300)
 

@@ -964,6 +964,10 @@ class RAMFStrategy(BaseStrategy):
             return None
 
         # Generate signal for specific symbol
+        # Skip if symbol is not in our tracked assets
+        if symbol not in self.assets:
+            return None
+
         if df is None:
             df = self._fetch_candles(symbol, interval='15m', candles=300)
 
