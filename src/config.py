@@ -243,16 +243,29 @@ ACTIVE_STRATEGY = 'sniper'           # Options: 'multifactor', 'ramf', 'sniper',
 # Target: 1-2 trades/day with 80%+ win rate.
 # Philosophy: "Fewer trades, but quasi-certain trades"
 
-# Assets to trade (start conservative with majors)
-SNIPER_ASSETS = ['BTC', 'ETH', 'SOL']
+# Assets to trade (expanded set with dynamic threshold calibration)
+SNIPER_ASSETS = [
+    # Majors (battle-tested)
+    'BTC', 'ETH', 'SOL',
+    # L1 établis avec bonne liquidité HyperLiquid
+    'AVAX', 'LINK', 'DOT', 'ADA',
+    # L2 populaires
+    'ARB', 'OP',
+    # AI tokens
+    'RENDER',
+    # DeFi blue chips
+    'AAVE', 'CRV',
+    # Infrastructure
+    'FIL',
+]
 
 # Position sizing
 SNIPER_LEVERAGE = 3                    # Conservative leverage
 SNIPER_STOP_LOSS_PCT = 1.5             # Base SL (AI may adjust)
 SNIPER_TAKE_PROFIT_PCT = 3.0           # Base TP (2:1 minimum R:R)
 
-# Daily limits (strict - sniper means few trades)
-SNIPER_MAX_DAILY_TRADES = 2            # Max 2 trades per day
+# Daily limits (adjusted for 13 assets)
+SNIPER_MAX_DAILY_TRADES = 5            # Max 5 trades per day (more opportunities with 13 assets)
 SNIPER_MAX_DAILY_LOSS_USD = 30         # ~6% of $500
 SNIPER_MAX_DAILY_GAIN_USD = 60         # ~12% of $500
 
