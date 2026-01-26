@@ -1793,20 +1793,20 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
 
             # Collect diagnostic info for NEUTRAL signals
             current_price = float(df['close'].iloc[-1]) if df is not None and len(df) > 0 else 0
-            skip_reasons = []
+            skip_reasons_set = set()  # Use set to avoid duplicates
             market_state = {}
 
-            # Collect all skip reasons and market state info
+            # Collect all skip reasons and market state info (deduplicated)
             if capitulation.get('skip_reason'):
-                skip_reasons.append(capitulation['skip_reason'])
+                skip_reasons_set.add(capitulation['skip_reason'])
             if euphoria.get('skip_reason'):
-                skip_reasons.append(euphoria['skip_reason'])
+                skip_reasons_set.add(euphoria['skip_reason'])
 
             # Add near-miss info if available
             if capitulation.get('near_miss'):
-                skip_reasons.append(f"Near-capitulation: {capitulation.get('near_miss')}")
+                skip_reasons_set.add(f"Near-capitulation: {capitulation.get('near_miss')}")
             if euphoria.get('near_miss'):
-                skip_reasons.append(f"Near-euphoria: {euphoria.get('near_miss')}")
+                skip_reasons_set.add(f"Near-euphoria: {euphoria.get('near_miss')}")
 
             # Get current market indicators for diagnostics
             try:
@@ -1828,6 +1828,9 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                     market_state['price_change_24h'] = round(price_change_24h, 2)
             except Exception:
                 pass
+
+            # Convert set to list for output
+            skip_reasons = list(skip_reasons_set)
 
             # No valid setup detected - log and build detailed reason
             if not capitulation['detected'] and not euphoria['detected'] and not funding_arb['detected']:
