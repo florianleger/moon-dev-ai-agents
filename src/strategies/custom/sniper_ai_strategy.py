@@ -445,12 +445,39 @@ class SniperAIStrategy(BaseStrategy):
                     base_move_threshold = 2.5 * sigma_30d
                     adjusted_move_threshold = round(base_move_threshold * threshold_multiplier, 2)
 
-                    # Adaptive RSI thresholds based on volatility
-                    btc_baseline_sigma = 0.7
-                    vol_ratio_btc = sigma_30d / btc_baseline_sigma
-                    vol_ratio_btc = max(0.5, min(2.0, vol_ratio_btc))
-                    rsi_oversold = max(15, round(25 - (vol_ratio_btc - 1) * 5))
-                    rsi_overbought = min(85, round(75 + (vol_ratio_btc - 1) * 5))
+                    # Adaptive RSI thresholds based on historical percentiles
+                    # Calculate RSI for the entire period
+                    rsi_series = RSIIndicator(df['close'], window=14).rsi().dropna()
+                    if len(rsi_series) > 20:
+                        rsi_oversold = max(15, round(rsi_series.quantile(0.15)))  # 15th percentile
+                        rsi_overbought = min(85, round(rsi_series.quantile(0.85)))  # 85th percentile
+                    else:
+                        # Fallback to volatility-based calculation
+                        btc_baseline_sigma = 0.7
+                        vol_ratio_btc = sigma_30d / btc_baseline_sigma
+                        vol_ratio_btc = max(0.5, min(2.0, vol_ratio_btc))
+                        rsi_oversold = max(15, round(25 - (vol_ratio_btc - 1) * 5))
+                        rsi_overbought = min(85, round(75 + (vol_ratio_btc - 1) * 5))
+
+                    # Adaptive ADX threshold based on historical percentiles
+                    # Calculate ADX for the entire period and use 70th percentile as "trending" threshold
+                    try:
+                        df['high'] = pd.to_numeric(df['h'], errors='coerce')
+                        df['low'] = pd.to_numeric(df['l'], errors='coerce')
+                        adx_indicator = ADXIndicator(df['high'], df['low'], df['close'], window=14)
+                        adx_series = adx_indicator.adx().dropna()
+                        if len(adx_series) > 20:
+                            # Use 70th percentile as adaptive trending threshold
+                            # This means "trending" is relative to this asset's own behavior
+                            adx_trending_threshold = round(adx_series.quantile(0.70), 1)
+                            adx_median = round(adx_series.median(), 1)
+                        else:
+                            adx_trending_threshold = SNIPER_ADX_TRENDING_THRESHOLD  # Fallback to static
+                            adx_median = 25.0
+                    except Exception as adx_err:
+                        cprint(f"  {symbol}: ADX calculation error - {adx_err}", "yellow")
+                        adx_trending_threshold = SNIPER_ADX_TRENDING_THRESHOLD
+                        adx_median = 25.0
 
                     # Store thresholds with new dynamic fields
                     self.volatility_thresholds[symbol] = {
@@ -465,12 +492,14 @@ class SniperAIStrategy(BaseStrategy):
                         'max_pump': round(df['return'].max(), 2),
                         'rsi_oversold': rsi_oversold,
                         'rsi_overbought': rsi_overbought,
+                        'adx_trending_threshold': adx_trending_threshold,
+                        'adx_median': adx_median,
                     }
 
                     # Enhanced logging with dynamic threshold info
                     regime = "HIGH_VOL" if vol_ratio_7d_30d > SNIPER_VOL_RATIO_HIGH else \
                              "LOW_VOL" if vol_ratio_7d_30d < SNIPER_VOL_RATIO_LOW else "NORMAL"
-                    cprint(f"  {symbol}: σ30d={sigma_30d:.2f}% σ7d={sigma_7d:.2f}% ratio={vol_ratio_7d_30d:.2f} [{regime}] → multiplier={threshold_multiplier:.2f} threshold={adjusted_move_threshold:.2f}%", "white")
+                    cprint(f"  {symbol}: σ={sigma_30d:.2f}% move={adjusted_move_threshold:.1f}% RSI={rsi_oversold}/{rsi_overbought} ADX_thresh={adx_trending_threshold} [{regime}]", "white")
 
                 except Exception as e:
                     cprint(f"  {symbol}: Error - {e}", "yellow")
@@ -646,30 +675,41 @@ class SniperAIStrategy(BaseStrategy):
     # ADVANCED IMPROVEMENTS
     # =========================================================================
 
-    def check_market_regime(self, df: pd.DataFrame) -> dict:
+    def check_market_regime(self, df: pd.DataFrame, symbol: str = None) -> dict:
         """
-        Check market regime using ADX indicator.
-        ADX > 25 = trending (skip mean-reversion setups)
-        ADX < 25 = ranging (good for mean-reversion)
+        Check market regime using ADX indicator with adaptive thresholds.
+        Uses per-asset ADX threshold based on historical percentile (70th).
+
+        Args:
+            df: DataFrame with OHLCV data
+            symbol: Asset symbol for adaptive threshold lookup
         """
         if not SNIPER_USE_REGIME_FILTER:
-            return {'is_ranging': True, 'adx': 0, 'skip_reason': None}
+            return {'is_ranging': True, 'adx': 0, 'skip_reason': None, 'threshold': 0}
 
         try:
             adx = ADXIndicator(df['high'], df['low'], df['close'], window=SNIPER_ADX_PERIOD)
             adx_value = adx.adx().iloc[-1]
 
-            is_trending = adx_value > SNIPER_ADX_TRENDING_THRESHOLD
+            # Get adaptive ADX threshold for this symbol (fallback to static if not available)
+            adaptive_threshold = SNIPER_ADX_TRENDING_THRESHOLD  # Default
+            if symbol and symbol in self.volatility_thresholds:
+                adaptive_threshold = self.volatility_thresholds[symbol].get(
+                    'adx_trending_threshold', SNIPER_ADX_TRENDING_THRESHOLD
+                )
+
+            is_trending = adx_value > adaptive_threshold
             is_ranging = not is_trending
 
             return {
                 'is_ranging': is_ranging,
                 'adx': round(adx_value, 1),
-                'skip_reason': f"Trending market (ADX={adx_value:.1f})" if is_trending else None
+                'threshold': adaptive_threshold,
+                'skip_reason': f"Trending market (ADX={adx_value:.1f} > {adaptive_threshold})" if is_trending else None
             }
         except Exception as e:
             cprint(f"[Sniper] ADX calculation error: {e}", "yellow")
-            return {'is_ranging': True, 'adx': 0, 'skip_reason': None}
+            return {'is_ranging': True, 'adx': 0, 'skip_reason': None, 'threshold': 0}
 
     def calculate_correlation_factor(self, symbol: str) -> float:
         """
@@ -1374,15 +1414,16 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             move_threshold = self.get_move_threshold(symbol)
             rsi_oversold, _ = self.get_rsi_thresholds(symbol)
 
-            # Check market regime (skip if trending)
-            regime = self.check_market_regime(df)
+            # Check market regime (skip if trending) - uses adaptive ADX threshold
+            regime = self.check_market_regime(df, symbol)
             if not regime['is_ranging']:
                 return {
                     'detected': False,
                     'type': 'capitulation_fade',
                     'direction': 'BUY',
                     'skip_reason': regime['skip_reason'],
-                    'adx': regime['adx']
+                    'adx': regime['adx'],
+                    'adx_threshold': regime.get('threshold', SNIPER_ADX_TRENDING_THRESHOLD)
                 }
 
             # Check 4h price drop
@@ -1434,15 +1475,16 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             move_threshold = self.get_move_threshold(symbol)
             _, rsi_overbought = self.get_rsi_thresholds(symbol)
 
-            # Check market regime (skip if trending)
-            regime = self.check_market_regime(df)
+            # Check market regime (skip if trending) - uses adaptive ADX threshold
+            regime = self.check_market_regime(df, symbol)
             if not regime['is_ranging']:
                 return {
                     'detected': False,
                     'type': 'euphoria_fade',
                     'direction': 'SELL',
                     'skip_reason': regime['skip_reason'],
-                    'adx': regime['adx']
+                    'adx': regime['adx'],
+                    'adx_threshold': regime.get('threshold', SNIPER_ADX_TRENDING_THRESHOLD)
                 }
 
             lookback = min(16, len(df))

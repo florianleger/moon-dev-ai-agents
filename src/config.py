@@ -25,8 +25,11 @@ MONITORED_TOKENS = [
 tokens_to_trade = MONITORED_TOKENS  # Using the same list for trading
 
 # ⚡ HyperLiquid Configuration
-# Uses MULTIFACTOR_ASSETS defined below for consistency
-HYPERLIQUID_SYMBOLS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'DOT', 'MATIC']
+# Extended to include all SNIPER_ASSETS for the Sniper strategy
+HYPERLIQUID_SYMBOLS = [
+    'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'DOT', 'MATIC',
+    'ARB', 'OP', 'RENDER', 'AAVE', 'CRV', 'FIL',  # Added for Sniper strategy
+]
 HYPERLIQUID_LEVERAGE = 5  # Default leverage for HyperLiquid trades (1-50)
 
 # 🔄 Exchange-Specific Token Lists
