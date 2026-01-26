@@ -279,8 +279,8 @@ SNIPER_LIQ_RATIO_THRESHOLD = 1.5       # Condition 3: Liquidation ratio
 SNIPER_VOLUME_SPIKE_THRESHOLD = 3.0    # Condition 5: Volume climax multiplier
 
 # Time window settings (UTC hours)
-SNIPER_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 16]  # London + NY open
-SNIPER_ALLOW_NORMAL_HOURS = False      # Strict: only trade optimal hours
+SNIPER_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 16]  # London + NY open (still used for scoring bonus)
+SNIPER_ALLOW_NORMAL_HOURS = True       # 24/7 trading enabled - all hours allowed
 
 # AI Validation settings
 SNIPER_AI_MIN_CONFIDENCE = 85          # Minimum AI confidence to execute
