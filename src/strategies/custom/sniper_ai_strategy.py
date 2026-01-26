@@ -31,27 +31,28 @@ from ..base_strategy import BaseStrategy
 
 # Default volatility thresholds (used as fallback if dynamic calibration fails)
 # These are conservative estimates; the strategy will calculate actual values from 30d data
+# adx_trending_threshold: percentile-based default, higher = allows more trending markets
 DEFAULT_VOLATILITY_THRESHOLDS = {
-    'BTC': {'move_threshold': 1.7, 'sigma': 0.68},
-    'ETH': {'move_threshold': 2.2, 'sigma': 0.89},
-    'SOL': {'move_threshold': 2.7, 'sigma': 1.07},
-    'XRP': {'move_threshold': 3.0, 'sigma': 1.20},
-    'DOGE': {'move_threshold': 3.4, 'sigma': 1.33},
-    'ADA': {'move_threshold': 3.2, 'sigma': 1.28},
-    'AVAX': {'move_threshold': 3.6, 'sigma': 1.42},
-    'LINK': {'move_threshold': 2.8, 'sigma': 1.10},
-    'DOT': {'move_threshold': 3.0, 'sigma': 1.20},
-    'MATIC': {'move_threshold': 3.5, 'sigma': 1.40},
-    # L2 tokens (typically more volatile)
-    'ARB': {'move_threshold': 3.8, 'sigma': 1.50},
-    'OP': {'move_threshold': 3.5, 'sigma': 1.40},
-    # AI tokens (high volatility)
-    'RENDER': {'move_threshold': 4.0, 'sigma': 1.60},
+    'BTC': {'move_threshold': 1.7, 'sigma': 0.68, 'adx_trending_threshold': 32, 'rsi_oversold': 28, 'rsi_overbought': 72},
+    'ETH': {'move_threshold': 2.2, 'sigma': 0.89, 'adx_trending_threshold': 34, 'rsi_oversold': 26, 'rsi_overbought': 74},
+    'SOL': {'move_threshold': 2.7, 'sigma': 1.07, 'adx_trending_threshold': 30, 'rsi_oversold': 24, 'rsi_overbought': 76},
+    'XRP': {'move_threshold': 3.0, 'sigma': 1.20, 'adx_trending_threshold': 28, 'rsi_oversold': 25, 'rsi_overbought': 75},
+    'DOGE': {'move_threshold': 3.4, 'sigma': 1.33, 'adx_trending_threshold': 28, 'rsi_oversold': 22, 'rsi_overbought': 78},
+    'ADA': {'move_threshold': 3.2, 'sigma': 1.28, 'adx_trending_threshold': 30, 'rsi_oversold': 25, 'rsi_overbought': 75},
+    'AVAX': {'move_threshold': 3.6, 'sigma': 1.42, 'adx_trending_threshold': 32, 'rsi_oversold': 24, 'rsi_overbought': 76},
+    'LINK': {'move_threshold': 2.8, 'sigma': 1.10, 'adx_trending_threshold': 32, 'rsi_oversold': 26, 'rsi_overbought': 74},
+    'DOT': {'move_threshold': 3.0, 'sigma': 1.20, 'adx_trending_threshold': 30, 'rsi_oversold': 25, 'rsi_overbought': 75},
+    'MATIC': {'move_threshold': 3.5, 'sigma': 1.40, 'adx_trending_threshold': 28, 'rsi_oversold': 24, 'rsi_overbought': 76},
+    # L2 tokens (typically more volatile, trend strongly)
+    'ARB': {'move_threshold': 3.8, 'sigma': 1.50, 'adx_trending_threshold': 35, 'rsi_oversold': 22, 'rsi_overbought': 78},
+    'OP': {'move_threshold': 3.5, 'sigma': 1.40, 'adx_trending_threshold': 34, 'rsi_oversold': 23, 'rsi_overbought': 77},
+    # AI tokens (high volatility, strong trends)
+    'RENDER': {'move_threshold': 4.0, 'sigma': 1.60, 'adx_trending_threshold': 36, 'rsi_oversold': 20, 'rsi_overbought': 80},
     # DeFi blue chips
-    'AAVE': {'move_threshold': 3.5, 'sigma': 1.40},
-    'CRV': {'move_threshold': 4.2, 'sigma': 1.65},
+    'AAVE': {'move_threshold': 3.5, 'sigma': 1.40, 'adx_trending_threshold': 33, 'rsi_oversold': 25, 'rsi_overbought': 75},
+    'CRV': {'move_threshold': 4.2, 'sigma': 1.65, 'adx_trending_threshold': 35, 'rsi_oversold': 22, 'rsi_overbought': 78},
     # Infrastructure
-    'FIL': {'move_threshold': 3.8, 'sigma': 1.50},
+    'FIL': {'move_threshold': 3.8, 'sigma': 1.50, 'adx_trending_threshold': 34, 'rsi_oversold': 23, 'rsi_overbought': 77},
 }
 
 # Import config with defaults
@@ -265,9 +266,13 @@ class SniperAIStrategy(BaseStrategy):
         cprint(f"  - Loaded positions: {len(self.paper_positions)}", "white")
         cprint(f"  - Current balance: ${self.paper_balance:,.2f}", "white")
         cprint(f"  - Adaptive thresholds:", "white")
-        for sym in self.assets[:5]:  # Show first 5
-            thresh = self.volatility_thresholds.get(sym, {}).get('move_threshold', '?')
-            cprint(f"      {sym}: {thresh}%", "white")
+        for sym in self.assets[:6]:  # Show first 6
+            data = self.volatility_thresholds.get(sym, {})
+            move = data.get('move_threshold', '?')
+            adx = data.get('adx_trending_threshold', SNIPER_ADX_TRENDING_THRESHOLD)
+            rsi_low = data.get('rsi_oversold', SNIPER_RSI_OVERSOLD)
+            rsi_high = data.get('rsi_overbought', SNIPER_RSI_OVERBOUGHT)
+            cprint(f"      {sym}: move={move}% ADX>{adx} RSI={rsi_low}/{rsi_high}", "white")
 
     def _reset_daily_counters(self):
         """Reset daily counters if new day."""
@@ -367,9 +372,19 @@ class SniperAIStrategy(BaseStrategy):
         except Exception as e:
             cprint(f"[Sniper] Error loading thresholds: {e}", "yellow")
 
-        # Use defaults and calibrate in background
+        # Use defaults with ADX thresholds included, and trigger immediate calibration
         self.volatility_thresholds = DEFAULT_VOLATILITY_THRESHOLDS.copy()
-        cprint("[Sniper] Using default volatility thresholds - will calibrate in background", "yellow")
+        cprint("[Sniper] Using default volatility thresholds (includes ADX/RSI defaults)", "yellow")
+        cprint("[Sniper] Triggering immediate calibration in background...", "cyan")
+
+        # Start immediate calibration in a background thread
+        def run_startup_calibration():
+            import time
+            time.sleep(5)  # Brief delay to let main loop start
+            self._calibrate_volatility_thresholds()
+
+        startup_thread = threading.Thread(target=run_startup_calibration, daemon=True)
+        startup_thread.start()
 
     def _save_volatility_thresholds(self):
         """Save volatility thresholds to JSON file."""
