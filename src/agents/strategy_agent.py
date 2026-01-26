@@ -289,13 +289,17 @@ class StrategyAgent:
                         if WEB_STATE_AVAILABLE:
                             try:
                                 metadata = signal.get('metadata', {})
+                                # Use strategy's reason for context, LLM decision for approval status
+                                strategy_reason = metadata.get('reason', 'No reason provided')
+                                display_reason = f"{strategy_reason}" if not approved else 'LLM approved'
+
                                 web_add_signal({
                                     'token': signal.get('token', token),
                                     'direction': signal['direction'],
                                     'confidence': round(float(signal['signal']) * 100, 1),
                                     'strategy': signal['strategy_name'],
                                     'approved': approved,
-                                    'reason': decision if not approved else 'LLM approved',
+                                    'reason': display_reason,
                                     # Extended metadata for Sniper AI
                                     'weighted_score': metadata.get('weighted_score'),
                                     'checklist_score': metadata.get('checklist_score'),
@@ -303,6 +307,9 @@ class StrategyAgent:
                                     'ai_reasoning': metadata.get('ai_reasoning'),
                                     'checklist_details': metadata.get('checklist_details'),
                                     'current_price': metadata.get('current_price'),
+                                    # New diagnostic fields
+                                    'market_state': metadata.get('market_state'),
+                                    'skip_reasons': metadata.get('skip_reasons'),
                                 })
                             except:
                                 pass

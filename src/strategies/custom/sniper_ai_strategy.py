@@ -1791,20 +1791,54 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                 if result['all_passed']:
                     return self._build_signal(symbol, result)
 
-            # No valid setup detected
+            # Collect diagnostic info for NEUTRAL signals
+            current_price = float(df['close'].iloc[-1]) if df is not None and len(df) > 0 else 0
+            skip_reasons = []
+            market_state = {}
+
+            # Collect all skip reasons and market state info
+            if capitulation.get('skip_reason'):
+                skip_reasons.append(capitulation['skip_reason'])
+            if euphoria.get('skip_reason'):
+                skip_reasons.append(euphoria['skip_reason'])
+
+            # Add near-miss info if available
+            if capitulation.get('near_miss'):
+                skip_reasons.append(f"Near-capitulation: {capitulation.get('near_miss')}")
+            if euphoria.get('near_miss'):
+                skip_reasons.append(f"Near-euphoria: {euphoria.get('near_miss')}")
+
+            # Get current market indicators for diagnostics
+            try:
+                regime = self.check_market_regime(df, symbol)
+                market_state['adx'] = regime.get('adx', 0)
+                market_state['adx_threshold'] = regime.get('threshold', SNIPER_ADX_TRENDING_THRESHOLD)
+                market_state['is_trending'] = not regime.get('is_ranging', True)
+
+                # Get RSI
+                rsi = RSIIndicator(df['close'], window=14).rsi().iloc[-1]
+                market_state['rsi'] = round(rsi, 1)
+                rsi_low, rsi_high = self.get_rsi_thresholds(symbol)
+                market_state['rsi_oversold'] = rsi_low
+                market_state['rsi_overbought'] = rsi_high
+
+                # Get price change (24h approx with 15m candles = 96 bars)
+                if len(df) >= 96:
+                    price_change_24h = ((df['close'].iloc[-1] / df['close'].iloc[-96]) - 1) * 100
+                    market_state['price_change_24h'] = round(price_change_24h, 2)
+            except Exception:
+                pass
+
+            # No valid setup detected - log and build detailed reason
             if not capitulation['detected'] and not euphoria['detected'] and not funding_arb['detected']:
-                # Log skip reasons if any
-                if capitulation.get('skip_reason'):
-                    cprint(f"  [{symbol}] Skipped: {capitulation['skip_reason']}", "yellow")
-                elif euphoria.get('skip_reason'):
-                    cprint(f"  [{symbol}] Skipped: {euphoria['skip_reason']}", "yellow")
+                if skip_reasons:
+                    cprint(f"  [{symbol}] Skipped: {skip_reasons[0]}", "yellow")
                 else:
+                    skip_reasons.append("No capitulation or euphoria pattern detected")
                     cprint(f"[Sniper] No setup detected for {symbol}", "white")
 
-            # Build NEUTRAL signal with partial checklist data if available
-            current_price = float(df['close'].iloc[-1]) if df is not None and len(df) > 0 else 0
-
-            # If we ran a checklist but it didn't pass, include partial data
+            # Build detailed NEUTRAL signal
+            # If we ran a checklist but it didn't pass, include that data
             if last_checklist_result:
                 checklist_details = self._build_checklist_details(last_checklist_result)
                 ai_val = last_checklist_result.get('ai_validation', {})
@@ -1822,10 +1856,12 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                         'ai_reasoning': ai_val.get('reasoning', 'Checklist threshold not met'),
                         'reason': f"Score {last_checklist_result.get('weighted_score', 0):.1f}/10 < {SNIPER_MIN_WEIGHTED_SCORE} threshold",
                         'checklist_details': checklist_details,
+                        'market_state': market_state,
                     }
                 }
 
-            # No setup detected - minimal signal
+            # No setup detected - include diagnostic info
+            reason = skip_reasons[0] if skip_reasons else "No setup detected"
             return {
                 'token': symbol,
                 'signal': 0.0,
@@ -1833,7 +1869,12 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                 'metadata': {
                     'strategy_type': 'sniper_ai',
                     'current_price': current_price,
-                    'reason': 'No setup detected'
+                    'reason': reason,
+                    'skip_reasons': skip_reasons,
+                    'market_state': market_state,
+                    'setup_type': None,
+                    'checklist_score': '0/7',
+                    'weighted_score': 0,
                 }
             }
 
