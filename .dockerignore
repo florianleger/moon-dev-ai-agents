@@ -47,6 +47,9 @@ config.private.py
 
 # Data directories (mounted as volumes)
 src/data/
+# But include essential code files from data directory
+!src/data/__init__.py
+!src/data/ohlcv_collector.py
 temp_data/
 trading_history/
 logs/
