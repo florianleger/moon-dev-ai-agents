@@ -17,6 +17,7 @@ groq>=0.4.0
 pandas>=2.0.0
 numpy>=1.24.0
 ta>=0.10.0
+pandas-ta>=0.3.14b0
 scipy>=1.10.0
 
 # HTTP/Networking
