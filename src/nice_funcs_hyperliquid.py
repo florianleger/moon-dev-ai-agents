@@ -17,10 +17,10 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-try:
-    import pandas_ta as ta
-except ImportError:
-    ta = None  # pandas_ta not available, some features disabled
+# Technical Analysis library (ta) - provides indicators like SMA, RSI, MACD, etc.
+from ta.trend import SMAIndicator, EMAIndicator, MACD, ADXIndicator
+from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.volatility import BollingerBands, AverageTrueRange
 import datetime
 from datetime import timedelta
 from termcolor import colored, cprint
@@ -619,7 +619,7 @@ def _process_data_to_df(snapshot_data):
     return pd.DataFrame()
 
 def add_technical_indicators(df):
-    """Add technical indicators to the dataframe"""
+    """Add technical indicators to the dataframe using ta library"""
     if df.empty:
         return df
 
@@ -630,18 +630,24 @@ def add_technical_indicators(df):
         numeric_cols = ['open', 'high', 'low', 'close', 'volume']
         df[numeric_cols] = df[numeric_cols].astype('float64')
 
-        # Add basic indicators
-        df['sma_20'] = ta.sma(df['close'], length=20)
-        df['sma_50'] = ta.sma(df['close'], length=50)
-        df['rsi'] = ta.rsi(df['close'], length=14)
+        # Add SMA indicators
+        df['sma_20'] = SMAIndicator(df['close'], window=20).sma_indicator()
+        df['sma_50'] = SMAIndicator(df['close'], window=50).sma_indicator()
+
+        # Add RSI
+        df['rsi'] = RSIIndicator(df['close'], window=14).rsi()
 
         # Add MACD
-        macd = ta.macd(df['close'])
-        df = pd.concat([df, macd], axis=1)
+        macd_indicator = MACD(df['close'])
+        df['MACD_12_26_9'] = macd_indicator.macd()
+        df['MACDh_12_26_9'] = macd_indicator.macd_diff()
+        df['MACDs_12_26_9'] = macd_indicator.macd_signal()
 
         # Add Bollinger Bands
-        bbands = ta.bbands(df['close'])
-        df = pd.concat([df, bbands], axis=1)
+        bb = BollingerBands(df['close'], window=20, window_dev=2)
+        df['BBL_20_2.0'] = bb.bollinger_lband()
+        df['BBM_20_2.0'] = bb.bollinger_mavg()
+        df['BBU_20_2.0'] = bb.bollinger_hband()
 
         print("✅ Technical indicators added successfully")
         return df
