@@ -262,7 +262,10 @@ class StrategyAgent:
             market_data = None
             try:
                 from src.data.ohlcv_collector import collect_token_data
-                market_data = collect_token_data(token)
+                from src.config import EXCHANGE
+                # Use HYPERLIQUID exchange for market data (uppercase for ohlcv_collector)
+                exchange = EXCHANGE.upper() if EXCHANGE else "HYPERLIQUID"
+                market_data = collect_token_data(token, exchange=exchange)
             except Exception as e:
                 print(f"⚠️ Could not get market data: {e}")
 
