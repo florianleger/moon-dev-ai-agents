@@ -148,6 +148,18 @@ class StrategyAgent:
             # Format signals for prompt (use NumpyEncoder for numpy types)
             signals_str = json.dumps(signals, indent=2, cls=NumpyEncoder)
 
+            # Format market data for prompt (handle DataFrame properly)
+            market_data_str = "No market data available"
+            if market_data is not None:
+                try:
+                    if hasattr(market_data, 'tail'):  # It's a DataFrame
+                        # Get summary stats for LLM context
+                        market_data_str = f"Latest {len(market_data)} candles. Last 5:\n{market_data.tail().to_string()}"
+                    else:
+                        market_data_str = str(market_data)
+                except Exception:
+                    market_data_str = "Market data available but could not be formatted"
+
             message = self.client.messages.create(
                 model=AI_MODEL,
                 max_tokens=AI_MAX_TOKENS,
@@ -156,7 +168,7 @@ class StrategyAgent:
                     "role": "user",
                     "content": STRATEGY_EVAL_PROMPT.format(
                         strategy_signals=signals_str,
-                        market_data=market_data if market_data else "No market data available"
+                        market_data=market_data_str
                     )
                 }]
             )
