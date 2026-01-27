@@ -5,8 +5,16 @@ Built with love by Moon Dev 🚀
 """
 
 from src.config import *
-from src import nice_funcs as n
 from src import nice_funcs_hyperliquid as hl
+
+# Solana nice_funcs import is optional - requires solders library
+try:
+    from src import nice_funcs as n
+    SOLANA_AVAILABLE = True
+except (ImportError, SystemExit) as e:
+    n = None
+    SOLANA_AVAILABLE = False
+
 # Aster import is optional - only used if EXCHANGE == 'aster'
 try:
     from src import nice_funcs_aster as aster
@@ -64,6 +72,9 @@ def collect_token_data(token, days_back=DAYSBACK_4_DATA, timeframe=DATA_TIMEFRAM
             data = hl.get_data(symbol=token, timeframe=hl_timeframe, bars=bars_needed, add_indicators=True)
         else:
             # Default: Use Solana/Birdeye API
+            if not SOLANA_AVAILABLE:
+                cprint(f"❌ Solana API not available (solders not installed). Use exchange='HYPERLIQUID' instead.", "red")
+                return None
             cprint(f"🏦 Using Solana/Birdeye API for {token}", "cyan")
             data = n.get_data(token, days_back, timeframe)
 
