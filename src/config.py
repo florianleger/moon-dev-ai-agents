@@ -272,8 +272,8 @@ SNIPER_MAX_DAILY_TRADES = 5            # Max 5 trades per day (more opportunitie
 SNIPER_MAX_DAILY_LOSS_USD = 30         # ~6% of $500
 SNIPER_MAX_DAILY_GAIN_USD = 60         # ~12% of $500
 
-# Checklist thresholds
-SNIPER_SIGMA_THRESHOLD = 2.5           # Condition 1: Extreme move sigma
+# Checklist thresholds (Option A - modérément ajusté pour plus d'opportunités)
+SNIPER_SIGMA_THRESHOLD = 1.8           # Condition 1: Extreme move sigma (was 2.5 - too strict)
 SNIPER_FUNDING_EXTREME_THRESHOLD = 2.0 # Condition 2: Funding Z-score
 SNIPER_LIQ_RATIO_THRESHOLD = 1.5       # Condition 3: Liquidation ratio
 SNIPER_VOLUME_SPIKE_THRESHOLD = 3.0    # Condition 5: Volume climax multiplier
@@ -288,11 +288,11 @@ SNIPER_AI_MODEL = 'claude-3-5-sonnet-latest'  # Use capable model for reasoning
 SNIPER_AI_TEMPERATURE = 0.3            # Low temp for analytical responses
 SNIPER_AI_MAX_TOKENS = 1024
 
-# Setup-specific thresholds
+# Setup-specific thresholds (Option A - relaxed RSI for more opportunities)
 SNIPER_CAPITULATION_MIN_DROP_PCT = 5.0  # Min 5% drop for capitulation fade
 SNIPER_EUPHORIA_MIN_RISE_PCT = 5.0      # Min 5% rise for euphoria fade
-SNIPER_RSI_OVERSOLD = 25                # RSI < 25 for capitulation
-SNIPER_RSI_OVERBOUGHT = 75              # RSI > 75 for euphoria
+SNIPER_RSI_OVERSOLD = 32                # RSI < 32 for capitulation (was 25 - too strict)
+SNIPER_RSI_OVERBOUGHT = 68              # RSI > 68 for euphoria (was 75 - too strict)
 
 # === ADVANCED IMPROVEMENTS ===
 
@@ -318,7 +318,7 @@ SNIPER_FUNDING_ARBITRAGE_STABILITY_PCT = 1.0  # Max price move for "stable"
 
 # 5. Weighted scoring (instead of binary 7/7)
 SNIPER_USE_WEIGHTED_SCORING = True      # Enable weighted confidence scoring
-SNIPER_MIN_WEIGHTED_SCORE = 8.5         # Minimum score out of 10
+SNIPER_MIN_WEIGHTED_SCORE = 7.0         # Minimum score out of 10 (was 8.5 - too strict)
 SNIPER_WEIGHTS = {
     'extreme_move': 2.0,
     'funding_divergence': 1.5,
