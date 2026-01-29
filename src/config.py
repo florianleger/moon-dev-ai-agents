@@ -294,6 +294,9 @@ SNIPER_EUPHORIA_MIN_RISE_PCT = 5.0      # Min 5% rise for euphoria fade
 SNIPER_RSI_OVERSOLD = 32                # RSI < 32 for capitulation (was 25 - too strict)
 SNIPER_RSI_OVERBOUGHT = 68              # RSI > 68 for euphoria (was 75 - too strict)
 
+# Lookback window for price change detection (Option 1 - extended for slower moves)
+SNIPER_LOOKBACK_HOURS = 8               # Hours to look back for price moves (was 4h - too short)
+
 # === ADVANCED IMPROVEMENTS ===
 
 # 1. ATR-based trailing stop (replaces fixed SL when position is profitable)

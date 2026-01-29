@@ -80,6 +80,7 @@ try:
         SNIPER_EUPHORIA_MIN_RISE_PCT,
         SNIPER_RSI_OVERSOLD,
         SNIPER_RSI_OVERBOUGHT,
+        SNIPER_LOOKBACK_HOURS,
         PAPER_TRADING,
         PAPER_TRADING_BALANCE,
         # Advanced improvements
@@ -131,6 +132,7 @@ except ImportError:
     SNIPER_EUPHORIA_MIN_RISE_PCT = 5.0
     SNIPER_RSI_OVERSOLD = 25
     SNIPER_RSI_OVERBOUGHT = 75
+    SNIPER_LOOKBACK_HOURS = 8
     PAPER_TRADING = True
     PAPER_TRADING_BALANCE = 500
     # Advanced improvements defaults
@@ -863,11 +865,11 @@ class SniperAIStrategy(BaseStrategy):
             if not is_extreme:
                 return {'detected': False, 'type': 'funding_arbitrage', 'direction': 'NEUTRAL'}
 
-            # Check price stability (last 4h)
-            lookback = min(16, len(df))
-            price_4h_ago = df['close'].iloc[-lookback]
+            # Check price stability (last 4h - shorter window for stability check)
+            stability_lookback = min(16, len(df))  # 4h fixed for stability check
+            price_start = df['close'].iloc[-stability_lookback]
             current_price = df['close'].iloc[-1]
-            price_change = abs((current_price - price_4h_ago) / price_4h_ago * 100)
+            price_change = abs((current_price - price_start) / price_start * 100)
 
             is_stable = price_change <= SNIPER_FUNDING_ARBITRAGE_STABILITY_PCT
 
@@ -1442,11 +1444,12 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                     'adx_threshold': regime.get('threshold', SNIPER_ADX_TRENDING_THRESHOLD)
                 }
 
-            # Check 4h price drop
-            lookback = min(16, len(df))
-            price_4h_ago = df['close'].iloc[-lookback]
+            # Check price drop over lookback window (configurable, default 8h)
+            lookback_bars = SNIPER_LOOKBACK_HOURS * 4  # 4 bars per hour with 15m candles
+            lookback = min(lookback_bars, len(df))
+            price_start = df['close'].iloc[-lookback]
             current_price = df['close'].iloc[-1]
-            price_change = (current_price - price_4h_ago) / price_4h_ago * 100
+            price_change = (current_price - price_start) / price_start * 100
 
             # Check RSI
             rsi = RSIIndicator(df['close'], window=14).rsi().iloc[-1]
@@ -1459,13 +1462,13 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
 
             # Log near-misses for debugging
             if not is_capitulation and (price_change <= -move_threshold * 0.7 or rsi <= rsi_oversold + 10):
-                cprint(f"  [{symbol}] Near-capitulation: {price_change:+.2f}% (need <-{move_threshold:.1f}%), RSI={rsi:.1f} (need <{rsi_oversold})", "yellow")
+                cprint(f"  [{symbol}] Near-capitulation: {price_change:+.2f}% in {SNIPER_LOOKBACK_HOURS}h (need <-{move_threshold:.1f}%), RSI={rsi:.1f} (need <{rsi_oversold})", "yellow")
 
             return {
                 'detected': is_capitulation,
                 'type': 'capitulation_fade',
                 'direction': 'BUY',
-                'price_change_4h': round(price_change, 2),
+                'price_change': round(price_change, 2),
                 'rsi': round(rsi, 1),
                 'rsi_threshold': rsi_oversold,
                 'current_price': float(current_price),
@@ -1503,10 +1506,12 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                     'adx_threshold': regime.get('threshold', SNIPER_ADX_TRENDING_THRESHOLD)
                 }
 
-            lookback = min(16, len(df))
-            price_4h_ago = df['close'].iloc[-lookback]
+            # Check price rise over lookback window (configurable, default 8h)
+            lookback_bars = SNIPER_LOOKBACK_HOURS * 4  # 4 bars per hour with 15m candles
+            lookback = min(lookback_bars, len(df))
+            price_start = df['close'].iloc[-lookback]
             current_price = df['close'].iloc[-1]
-            price_change = (current_price - price_4h_ago) / price_4h_ago * 100
+            price_change = (current_price - price_start) / price_start * 100
 
             rsi = RSIIndicator(df['close'], window=14).rsi().iloc[-1]
 
@@ -1518,13 +1523,13 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
 
             # Log near-misses for debugging
             if not is_euphoria and (price_change >= move_threshold * 0.7 or rsi >= rsi_overbought - 10):
-                cprint(f"  [{symbol}] Near-euphoria: {price_change:+.2f}% (need >+{move_threshold:.1f}%), RSI={rsi:.1f} (need >{rsi_overbought})", "yellow")
+                cprint(f"  [{symbol}] Near-euphoria: {price_change:+.2f}% in {SNIPER_LOOKBACK_HOURS}h (need >+{move_threshold:.1f}%), RSI={rsi:.1f} (need >{rsi_overbought})", "yellow")
 
             return {
                 'detected': is_euphoria,
                 'type': 'euphoria_fade',
                 'direction': 'SELL',
-                'price_change_4h': round(price_change, 2),
+                'price_change': round(price_change, 2),
                 'rsi': round(rsi, 1),
                 'rsi_threshold': rsi_overbought,
                 'current_price': float(current_price),
