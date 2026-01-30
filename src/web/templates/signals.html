@@ -313,11 +313,13 @@ function signalsData() {
         formatDateTime(timestamp) {
             if (!timestamp) return '-';
             const date = new Date(timestamp);
-            return date.toLocaleString('en-US', {
+            // Use browser's locale for local timezone display
+            return date.toLocaleString(undefined, {
                 month: 'short',
                 day: 'numeric',
                 hour: '2-digit',
-                minute: '2-digit'
+                minute: '2-digit',
+                hour12: false  // 24h format
             });
         },
 
