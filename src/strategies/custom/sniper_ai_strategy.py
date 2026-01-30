@@ -485,9 +485,9 @@ class SniperAIStrategy(BaseStrategy):
                         adx_indicator = ADXIndicator(df['high'], df['low'], df['close'], window=14)
                         adx_series = adx_indicator.adx().dropna()
                         if len(adx_series) > 20:
-                            # Use 70th percentile as adaptive trending threshold
-                            # This means "trending" is relative to this asset's own behavior
-                            adx_trending_threshold = round(adx_series.quantile(0.70), 1)
+                            # Use 85th percentile as adaptive trending threshold (+30% from 70th)
+                            # Higher percentile = only skip very strong trends, allow moderate ones
+                            adx_trending_threshold = round(adx_series.quantile(0.85), 1)
                             adx_median = round(adx_series.median(), 1)
                         else:
                             adx_trending_threshold = SNIPER_ADX_TRENDING_THRESHOLD  # Fallback to static
