@@ -304,9 +304,9 @@ SNIPER_USE_TRAILING_STOP = True         # Enable ATR-based trailing stop
 SNIPER_TRAILING_ATR_MULTIPLIER = 2.0    # Trailing stop = 2 × ATR(14)
 SNIPER_TRAILING_ACTIVATION_PCT = 1.0    # Activate trailing after +1% profit
 
-# 2. Market regime filter (ADX)
+# 2. Market regime filter (ADX) - thresholds raised +30% to allow moderate trends
 SNIPER_USE_REGIME_FILTER = True         # Enable market regime detection
-SNIPER_ADX_TRENDING_THRESHOLD = 25      # ADX > 25 = trending market (skip mean-reversion)
+SNIPER_ADX_TRENDING_THRESHOLD = 40      # ADX > 40 = trending market (was 25 - too strict)
 SNIPER_ADX_PERIOD = 14                  # ADX calculation period
 
 # 3. Correlation filter (for position sizing)

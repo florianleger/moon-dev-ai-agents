@@ -32,28 +32,28 @@ from ..base_strategy import BaseStrategy
 # Default volatility thresholds (used as fallback if dynamic calibration fails)
 # These are conservative estimates; the strategy will calculate actual values from 30d data
 # adx_trending_threshold: percentile-based default, higher = allows more trending markets
-# Option A adjustments: RSI thresholds relaxed by ~7 points for more opportunities
+# Option A adjustments: RSI thresholds relaxed, ADX thresholds +30% to allow moderate trends
 DEFAULT_VOLATILITY_THRESHOLDS = {
-    'BTC': {'move_threshold': 1.4, 'sigma': 0.55, 'adx_trending_threshold': 32, 'rsi_oversold': 35, 'rsi_overbought': 65},
-    'ETH': {'move_threshold': 1.8, 'sigma': 0.72, 'adx_trending_threshold': 34, 'rsi_oversold': 33, 'rsi_overbought': 67},
-    'SOL': {'move_threshold': 2.2, 'sigma': 0.86, 'adx_trending_threshold': 30, 'rsi_oversold': 31, 'rsi_overbought': 69},
-    'XRP': {'move_threshold': 2.4, 'sigma': 0.96, 'adx_trending_threshold': 28, 'rsi_oversold': 32, 'rsi_overbought': 68},
-    'DOGE': {'move_threshold': 2.7, 'sigma': 1.06, 'adx_trending_threshold': 28, 'rsi_oversold': 29, 'rsi_overbought': 71},
-    'ADA': {'move_threshold': 2.6, 'sigma': 1.02, 'adx_trending_threshold': 30, 'rsi_oversold': 32, 'rsi_overbought': 68},
-    'AVAX': {'move_threshold': 2.9, 'sigma': 1.14, 'adx_trending_threshold': 32, 'rsi_oversold': 31, 'rsi_overbought': 69},
-    'LINK': {'move_threshold': 2.2, 'sigma': 0.88, 'adx_trending_threshold': 32, 'rsi_oversold': 33, 'rsi_overbought': 67},
-    'DOT': {'move_threshold': 2.4, 'sigma': 0.96, 'adx_trending_threshold': 30, 'rsi_oversold': 32, 'rsi_overbought': 68},
-    'MATIC': {'move_threshold': 2.8, 'sigma': 1.12, 'adx_trending_threshold': 28, 'rsi_oversold': 31, 'rsi_overbought': 69},
+    'BTC': {'move_threshold': 1.4, 'sigma': 0.55, 'adx_trending_threshold': 42, 'rsi_oversold': 35, 'rsi_overbought': 65},
+    'ETH': {'move_threshold': 1.8, 'sigma': 0.72, 'adx_trending_threshold': 44, 'rsi_oversold': 33, 'rsi_overbought': 67},
+    'SOL': {'move_threshold': 2.2, 'sigma': 0.86, 'adx_trending_threshold': 39, 'rsi_oversold': 31, 'rsi_overbought': 69},
+    'XRP': {'move_threshold': 2.4, 'sigma': 0.96, 'adx_trending_threshold': 36, 'rsi_oversold': 32, 'rsi_overbought': 68},
+    'DOGE': {'move_threshold': 2.7, 'sigma': 1.06, 'adx_trending_threshold': 36, 'rsi_oversold': 29, 'rsi_overbought': 71},
+    'ADA': {'move_threshold': 2.6, 'sigma': 1.02, 'adx_trending_threshold': 39, 'rsi_oversold': 32, 'rsi_overbought': 68},
+    'AVAX': {'move_threshold': 2.9, 'sigma': 1.14, 'adx_trending_threshold': 42, 'rsi_oversold': 31, 'rsi_overbought': 69},
+    'LINK': {'move_threshold': 2.2, 'sigma': 0.88, 'adx_trending_threshold': 42, 'rsi_oversold': 33, 'rsi_overbought': 67},
+    'DOT': {'move_threshold': 2.4, 'sigma': 0.96, 'adx_trending_threshold': 39, 'rsi_oversold': 32, 'rsi_overbought': 68},
+    'MATIC': {'move_threshold': 2.8, 'sigma': 1.12, 'adx_trending_threshold': 36, 'rsi_oversold': 31, 'rsi_overbought': 69},
     # L2 tokens (typically more volatile, trend strongly)
-    'ARB': {'move_threshold': 3.0, 'sigma': 1.20, 'adx_trending_threshold': 35, 'rsi_oversold': 29, 'rsi_overbought': 71},
-    'OP': {'move_threshold': 2.8, 'sigma': 1.12, 'adx_trending_threshold': 34, 'rsi_oversold': 30, 'rsi_overbought': 70},
+    'ARB': {'move_threshold': 3.0, 'sigma': 1.20, 'adx_trending_threshold': 46, 'rsi_oversold': 29, 'rsi_overbought': 71},
+    'OP': {'move_threshold': 2.8, 'sigma': 1.12, 'adx_trending_threshold': 44, 'rsi_oversold': 30, 'rsi_overbought': 70},
     # AI tokens (high volatility, strong trends)
-    'RENDER': {'move_threshold': 3.2, 'sigma': 1.28, 'adx_trending_threshold': 36, 'rsi_oversold': 27, 'rsi_overbought': 73},
+    'RENDER': {'move_threshold': 3.2, 'sigma': 1.28, 'adx_trending_threshold': 47, 'rsi_oversold': 27, 'rsi_overbought': 73},
     # DeFi blue chips
-    'AAVE': {'move_threshold': 2.8, 'sigma': 1.12, 'adx_trending_threshold': 33, 'rsi_oversold': 32, 'rsi_overbought': 68},
-    'CRV': {'move_threshold': 3.4, 'sigma': 1.32, 'adx_trending_threshold': 35, 'rsi_oversold': 29, 'rsi_overbought': 71},
+    'AAVE': {'move_threshold': 2.8, 'sigma': 1.12, 'adx_trending_threshold': 43, 'rsi_oversold': 32, 'rsi_overbought': 68},
+    'CRV': {'move_threshold': 3.4, 'sigma': 1.32, 'adx_trending_threshold': 46, 'rsi_oversold': 29, 'rsi_overbought': 71},
     # Infrastructure
-    'FIL': {'move_threshold': 3.0, 'sigma': 1.20, 'adx_trending_threshold': 34, 'rsi_oversold': 30, 'rsi_overbought': 70},
+    'FIL': {'move_threshold': 3.0, 'sigma': 1.20, 'adx_trending_threshold': 44, 'rsi_oversold': 30, 'rsi_overbought': 70},
 }
 
 # Import config with defaults
