@@ -1838,12 +1838,68 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
             # Convert set to list for output
             skip_reasons = list(skip_reasons_set)
 
+            # Build detailed diagnostic for why no pattern was detected
+            diagnostic = {}
+
+            # Capitulation check details
+            if capitulation.get('price_change') is not None:
+                price_chg = capitulation.get('price_change', 0)
+                price_thresh = capitulation.get('threshold_used', 0)
+                rsi_val = capitulation.get('rsi', 50)
+                rsi_thresh = capitulation.get('rsi_threshold', 35)
+                diagnostic['capitulation'] = {
+                    'price_change': f"{price_chg:+.1f}%",
+                    'price_needed': f"<{-price_thresh:.1f}%",
+                    'price_met': price_chg <= -price_thresh,
+                    'rsi': rsi_val,
+                    'rsi_needed': f"<{rsi_thresh}",
+                    'rsi_met': rsi_val <= rsi_thresh,
+                }
+
+            # Euphoria check details
+            if euphoria.get('price_change') is not None:
+                price_chg = euphoria.get('price_change', 0)
+                price_thresh = euphoria.get('threshold_used', 0)
+                rsi_val = euphoria.get('rsi', 50)
+                rsi_thresh = euphoria.get('rsi_threshold', 65)
+                diagnostic['euphoria'] = {
+                    'price_change': f"{price_chg:+.1f}%",
+                    'price_needed': f">{+price_thresh:.1f}%",
+                    'price_met': price_chg >= price_thresh,
+                    'rsi': rsi_val,
+                    'rsi_needed': f">{rsi_thresh}",
+                    'rsi_met': rsi_val >= rsi_thresh,
+                }
+
+            # Build human-readable explanation
+            explanations = []
+            if diagnostic.get('capitulation'):
+                cap = diagnostic['capitulation']
+                if not cap['price_met'] and not cap['rsi_met']:
+                    explanations.append(f"LONG: Prix {cap['price_change']} (besoin {cap['price_needed']}) + RSI {cap['rsi']} (besoin {cap['rsi_needed']})")
+                elif not cap['price_met']:
+                    explanations.append(f"LONG: Prix {cap['price_change']} pas assez bas (besoin {cap['price_needed']})")
+                elif not cap['rsi_met']:
+                    explanations.append(f"LONG: RSI {cap['rsi']} pas assez oversold (besoin {cap['rsi_needed']})")
+
+            if diagnostic.get('euphoria'):
+                euph = diagnostic['euphoria']
+                if not euph['price_met'] and not euph['rsi_met']:
+                    explanations.append(f"SHORT: Prix {euph['price_change']} (besoin {euph['price_needed']}) + RSI {euph['rsi']} (besoin {euph['rsi_needed']})")
+                elif not euph['price_met']:
+                    explanations.append(f"SHORT: Prix {euph['price_change']} pas assez haut (besoin {euph['price_needed']})")
+                elif not euph['rsi_met']:
+                    explanations.append(f"SHORT: RSI {euph['rsi']} pas assez overbought (besoin {euph['rsi_needed']})")
+
             # No valid setup detected - log and build detailed reason
             if not capitulation['detected'] and not euphoria['detected'] and not funding_arb['detected']:
                 if skip_reasons:
                     cprint(f"  [{symbol}] Skipped: {skip_reasons[0]}", "yellow")
                 else:
-                    skip_reasons.append("No capitulation or euphoria pattern detected")
+                    if explanations:
+                        skip_reasons.append(" | ".join(explanations))
+                    else:
+                        skip_reasons.append("No capitulation or euphoria pattern detected")
                     cprint(f"[Sniper] No setup detected for {symbol}", "white")
 
             # Build detailed NEUTRAL signal
@@ -1881,6 +1937,7 @@ Remember: 85%+ confidence required for EXECUTE. When in doubt, SKIP.
                     'reason': reason,
                     'skip_reasons': skip_reasons,
                     'market_state': market_state,
+                    'diagnostic': diagnostic,  # Detailed breakdown of why each setup failed
                     'setup_type': None,
                     'checklist_score': '0/7',
                     'weighted_score': 0,
