@@ -293,7 +293,12 @@ class StrategyAgent:
                 for i, signal in enumerate(signals):
                     if i < len(evaluation['decisions']):
                         decision = evaluation['decisions'][i]
-                        approved = "EXECUTE" in decision.upper()
+                        llm_says_execute = "EXECUTE" in decision.upper()
+
+                        # NEVER approve NEUTRAL signals, even if LLM says EXECUTE
+                        is_neutral = signal['direction'] == 'NEUTRAL'
+                        approved = llm_says_execute and not is_neutral
+
                         if approved:
                             cprint(f"✅ LLM approved {signal['strategy_name']}'s {signal['direction']} signal", "green")
                             approved_signals.append(signal)
@@ -322,9 +327,10 @@ class StrategyAgent:
                                     'ai_reasoning': metadata.get('ai_reasoning'),
                                     'checklist_details': metadata.get('checklist_details'),
                                     'current_price': metadata.get('current_price'),
-                                    # New diagnostic fields
+                                    # Diagnostic fields for understanding why no pattern detected
                                     'market_state': metadata.get('market_state'),
                                     'skip_reasons': metadata.get('skip_reasons'),
+                                    'diagnostic': metadata.get('diagnostic'),
                                 })
                             except:
                                 pass
