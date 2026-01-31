@@ -325,6 +325,7 @@ function signalsData() {
 
         formatCheckName(name) {
             const names = {
+                // Sniper AI checklist
                 'extreme_move': 'Extreme Move',
                 'funding_divergence': 'Funding Divergence',
                 'liquidation_cascade': 'Liquidation Cascade',
@@ -332,6 +333,11 @@ function signalsData() {
                 'volume_climax': 'Volume Climax',
                 'time_window': 'Time Window',
                 'ai_validation': 'AI Validation',
+                // Trend Rider checklist
+                'trend_alignment': 'Trend Alignment',
+                'pullback_quality': 'Pullback Quality',
+                'momentum_confirmation': 'Momentum Confirmation',
+                'htf_agreement': 'Higher TF Agreement',
             };
             return names[name] || name;
         },
@@ -358,6 +364,19 @@ function signalsData() {
             }
             if (name === 'ai_validation' && check.confidence !== undefined) {
                 return `${check.confidence}% confidence`;
+            }
+            // Trend Rider checklist
+            if (name === 'trend_alignment' && check.adx !== undefined) {
+                return `ADX: ${check.adx} (${check.ema_status || ''})`;
+            }
+            if (name === 'pullback_quality' && check.rsi !== undefined) {
+                return `RSI: ${check.rsi}, EMA dist: ${check.dist_ema20?.toFixed(1) || 0}%`;
+            }
+            if (name === 'momentum_confirmation' && check.volume_ratio !== undefined) {
+                return `Vol: ${check.volume_ratio?.toFixed(1) || 0}x, Body: ${check.body_pct?.toFixed(0) || 0}%`;
+            }
+            if (name === 'htf_agreement' && check.macd !== undefined) {
+                return `MACD ${check.aligned ? 'aligned' : 'not aligned'}`;
             }
             return '';
         }

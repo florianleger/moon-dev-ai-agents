@@ -120,6 +120,10 @@ class StrategyAgent:
                     from src.strategies.custom.sniper_ai_strategy import SniperAIStrategy
                     self.enabled_strategies.append(SniperAIStrategy())
                     cprint(f"✅ Loaded Sniper AI Strategy (Paper Trading: {self.paper_trading})", "green")
+                elif self.active_strategy == 'hybrid':
+                    from src.strategies.custom.hybrid_strategy import HybridStrategy
+                    self.enabled_strategies.append(HybridStrategy())
+                    cprint(f"✅ Loaded Hybrid Strategy (Sniper + Trend Rider) (Paper Trading: {self.paper_trading})", "green")
                 else:
                     # Load all strategies if unknown
                     from src.strategies.custom.example_strategy import ExampleStrategy

@@ -237,7 +237,7 @@ PAPER_TRADING_BALANCE = 500          # Simulated starting balance in USD
 # ============================================================================
 # Choose which strategy to run (only one should be active at a time)
 
-ACTIVE_STRATEGY = 'sniper'           # Options: 'multifactor', 'ramf', 'sniper', 'example'
+ACTIVE_STRATEGY = 'hybrid'           # Options: 'multifactor', 'ramf', 'sniper', 'hybrid', 'example'
 
 # ============================================================================
 # SNIPER AI Strategy Settings
@@ -347,6 +347,63 @@ SNIPER_VOL_RATIO_LOW = 0.7              # Recent vol < 0.7x historical = low vol
 SNIPER_MAX_THRESHOLD_ADJUSTMENT = 0.25  # Max threshold adjustment ±25%
 SNIPER_ADX_RANGING_THRESHOLD = 20       # ADX < 20 = ranging market (mean-reversion friendly)
 SNIPER_RECALIBRATION_HOURS = 4          # Recalibrate thresholds every N hours (0 = nightly only)
+
+# ============================================================================
+# TREND RIDER Strategy Settings (Trend-Following Pullback)
+# ============================================================================
+# Complements Sniper AI by trading WITH the trend instead of fading it
+# Activates when market is trending (ADX > 35) and EMAs are aligned
+
+TREND_RIDER_ENABLED = True
+TREND_RIDER_ASSETS = ['BTC', 'ETH', 'SOL', 'LINK', 'AVAX']  # Liquid assets only
+
+# Trend Detection
+TREND_RIDER_ADX_MIN = 35                   # Minimum ADX for valid trend
+TREND_RIDER_EMA_PERIODS = [20, 50, 200]    # EMAs for alignment check
+
+# Pullback Conditions
+TREND_RIDER_RSI_PULLBACK_LONG = (30, 45)   # RSI zone for long pullback
+TREND_RIDER_RSI_PULLBACK_SHORT = (55, 70)  # RSI zone for short pullback
+TREND_RIDER_VOLUME_DECLINE_RATIO = 0.8     # Volume < 80% avg during pullback
+
+# Confirmation
+TREND_RIDER_VOLUME_SPIKE_RATIO = 1.2       # Volume > 120% avg on confirmation
+TREND_RIDER_MIN_CANDLE_BODY_PCT = 50       # Candle body > 50% of range
+
+# Risk Management
+TREND_RIDER_LEVERAGE = 2                    # Conservative leverage
+TREND_RIDER_ATR_SL_MULT = 1.5              # Stop loss = 1.5 ATR
+TREND_RIDER_ATR_TP_MULT = 2.0              # Take profit = 2.0 ATR
+TREND_RIDER_TRAILING_ATR_MULT = 2.0        # Trailing stop = 2 ATR
+
+# Daily Limits
+TREND_RIDER_MAX_DAILY_TRADES = 3
+TREND_RIDER_MAX_DAILY_LOSS_USD = 25
+
+# AI Validation
+TREND_RIDER_AI_MODEL = 'claude-3-5-sonnet-latest'
+TREND_RIDER_AI_MIN_CONFIDENCE = 70
+TREND_RIDER_AI_TEMPERATURE = 0.3
+
+# Scoring System
+TREND_RIDER_MIN_SCORE = 7.0                # Minimum score to trade (out of 10)
+TREND_RIDER_WEIGHTS = {
+    'trend_alignment': 2.5,                # EMA stack properly aligned
+    'pullback_quality': 2.0,               # RSI in zone + price near EMA
+    'momentum_confirmation': 2.0,          # Confirmation candle + volume
+    'htf_agreement': 1.5,                  # Higher timeframe agrees
+    'ai_validation': 2.0,                  # LLM confidence >= 70%
+}
+
+# ============================================================================
+# HYBRID Mode Settings (Sniper + Trend Rider)
+# ============================================================================
+# Enables both strategies to work together based on market regime
+
+HYBRID_MODE_ENABLED = True
+HYBRID_PREFER_SNIPER = True                # Sniper takes priority over Trend Rider
+HYBRID_MAX_CONCURRENT_POSITIONS = 2        # Max positions across both strategies
+HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3
