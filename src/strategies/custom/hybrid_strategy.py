@@ -228,18 +228,23 @@ class HybridStrategy(BaseStrategy):
         return None
 
     def get_paper_status(self) -> dict:
-        """Get combined paper trading status"""
+        """Get combined paper trading status (must match expected format)"""
         sniper_status = self.sniper.get_paper_status() if hasattr(self.sniper, 'get_paper_status') else {}
 
+        # Return flat structure expected by main.py and web API
         return {
-            'sniper': sniper_status,
-            'trend_rider': {
-                'daily_trades': self.trend_rider.daily_trades if hasattr(self.trend_rider, 'daily_trades') else 0,
-                'daily_pnl': self.trend_rider.daily_pnl if hasattr(self.trend_rider, 'daily_pnl') else 0,
-            },
-            'combined': {
-                'total_positions': sniper_status.get('open_positions', 0),
-            }
+            'open_positions': sniper_status.get('open_positions', 0),
+            'total_closed': sniper_status.get('total_closed', 0),
+            'paper_balance': sniper_status.get('paper_balance', 500),
+            'initial_balance': sniper_status.get('initial_balance', 500),
+            'daily_pnl': sniper_status.get('daily_pnl', 0) + (self.trend_rider.daily_pnl if hasattr(self.trend_rider, 'daily_pnl') else 0),
+            'total_pnl': sniper_status.get('total_pnl', 0),
+            'daily_trades': sniper_status.get('daily_trades', 0) + (self.trend_rider.daily_trades if hasattr(self.trend_rider, 'daily_trades') else 0),
+            'positions': sniper_status.get('positions', []),
+            # Extra info for debugging
+            'strategy_source': 'hybrid',
+            'sniper_positions': sniper_status.get('open_positions', 0),
+            'trend_rider_trades': self.trend_rider.daily_trades if hasattr(self.trend_rider, 'daily_trades') else 0,
         }
 
     def monitor_paper_positions(self):
