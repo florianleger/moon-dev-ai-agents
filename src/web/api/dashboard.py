@@ -129,8 +129,9 @@ def _get_stats_from_csv() -> Dict:
 
             # Daily PnL (trades closed today)
             today = datetime.now().strftime('%Y-%m-%d')
-            if 'exit_time' in closed_positions.columns:
-                today_closed = closed_positions[closed_positions['exit_time'].str.startswith(today, na=False)]
+            time_col = 'exit_time' if 'exit_time' in closed_positions.columns else 'close_timestamp' if 'close_timestamp' in closed_positions.columns else None
+            if time_col:
+                today_closed = closed_positions[closed_positions[time_col].str.startswith(today, na=False)]
                 if not today_closed.empty:
                     daily_realized_pnl = today_closed['pnl'].sum()
 
@@ -213,22 +214,45 @@ async def get_pnl_history(
     """Get PnL history for chart."""
     pnl_by_date = {}
 
-    # Try to read from CSV file first (dynamic path based on active strategy)
+    # Try to read from paper_trades.csv first (dynamic path based on active strategy)
+    strategy_folder = os.path.join(DATA_BASE_PATH, _get_strategy_folder())
     paper_trades_csv = _get_paper_trades_csv()
     if os.path.exists(paper_trades_csv):
         try:
             df = pd.read_csv(paper_trades_csv)
             closed = df[df['status'] != 'OPEN']
-            if not closed.empty and 'pnl' in closed.columns and 'exit_time' in closed.columns:
-                for _, row in closed.iterrows():
-                    exit_time = str(row.get('exit_time', ''))
-                    if exit_time and len(exit_time) >= 10:
-                        date = exit_time[:10]
-                        if date not in pnl_by_date:
-                            pnl_by_date[date] = 0.0
-                        pnl_by_date[date] += float(row.get('pnl', 0))
+            if not closed.empty and 'pnl' in closed.columns:
+                # Try exit_time first, fall back to close_timestamp
+                time_col = 'exit_time' if 'exit_time' in closed.columns else 'close_timestamp' if 'close_timestamp' in closed.columns else None
+                if time_col:
+                    for _, row in closed.iterrows():
+                        exit_time = str(row.get(time_col, ''))
+                        if exit_time and len(exit_time) >= 10:
+                            date = exit_time[:10]
+                            if date not in pnl_by_date:
+                                pnl_by_date[date] = 0.0
+                            pnl_by_date[date] += float(row.get('pnl', 0))
         except Exception:
             pass
+
+    # Also check closed_trades.csv (separate log of closed trades)
+    if not pnl_by_date:
+        closed_trades_csv = os.path.join(strategy_folder, 'closed_trades.csv')
+        if os.path.exists(closed_trades_csv):
+            try:
+                df = pd.read_csv(closed_trades_csv)
+                if not df.empty and 'pnl' in df.columns:
+                    time_col = 'exit_time' if 'exit_time' in df.columns else 'close_timestamp' if 'close_timestamp' in df.columns else None
+                    if time_col:
+                        for _, row in df.iterrows():
+                            exit_time = str(row.get(time_col, ''))
+                            if exit_time and len(exit_time) >= 10:
+                                date = exit_time[:10]
+                                if date not in pnl_by_date:
+                                    pnl_by_date[date] = 0.0
+                                pnl_by_date[date] += float(row.get('pnl', 0))
+            except Exception:
+                pass
 
     # Fallback to signals history
     if not pnl_by_date:

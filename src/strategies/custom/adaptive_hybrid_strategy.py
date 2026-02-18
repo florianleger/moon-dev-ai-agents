@@ -1023,7 +1023,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
         pnl = position_size * price_change_pct
 
         trade['close_price'] = close_price
-        trade['close_timestamp'] = datetime.now().isoformat()
+        trade['exit_price'] = close_price
+        trade['exit_time'] = datetime.now().isoformat()
         trade['close_reason'] = reason
         trade['pnl'] = round(pnl, 2)
         trade['pnl_pct'] = round(price_change_pct * 100, 2)
@@ -1048,7 +1049,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         return trade
 
     def _update_position_status_in_csv(self, position_id: str, trade: dict):
-        """Update a position's status in paper_trades.csv when closed."""
+        """Update a position's status and exit data in paper_trades.csv when closed."""
         try:
             paper_trades_file = os.path.join(self.data_dir, 'paper_trades.csv')
             if not os.path.exists(paper_trades_file):
@@ -1059,6 +1060,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
             mask = df['position_id'] == position_id
             if mask.any():
                 df.loc[mask, 'status'] = trade.get('status', 'CLOSED')
+                df.loc[mask, 'exit_price'] = trade.get('exit_price', trade.get('close_price', 0))
+                df.loc[mask, 'exit_time'] = trade.get('exit_time', '')
+                df.loc[mask, 'pnl'] = trade.get('pnl', 0)
+                df.loc[mask, 'close_reason'] = trade.get('close_reason', '')
                 df.to_csv(paper_trades_file, index=False)
         except Exception as e:
             cprint(f"[AdaptiveHybrid] Warning: Could not update CSV: {e}", "yellow")

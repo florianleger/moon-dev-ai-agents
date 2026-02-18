@@ -14,13 +14,26 @@ from src.web.state import get_paper_positions
 
 router = APIRouter()
 
-# Path to paper trades CSV file
-PAPER_TRADES_CSV = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'ramf', 'paper_trades.csv')
+# Base path for strategy data
+DATA_BASE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
+
+
+def _get_paper_trades_csv() -> str:
+    """Get the correct paper trades CSV path based on active strategy."""
+    from src.config import ACTIVE_STRATEGY
+    folder_map = {
+        'sniper': 'sniper',
+        'adaptive_hybrid': 'adaptive_hybrid',
+        'hybrid': 'sniper',
+    }
+    folder = folder_map.get(ACTIVE_STRATEGY, 'ramf')
+    return os.path.join(DATA_BASE_PATH, folder, 'paper_trades.csv')
 
 
 def _get_positions_from_csv() -> List[Dict]:
     """Read open positions from paper_trades.csv file with real-time PnL."""
     positions = []
+    PAPER_TRADES_CSV = _get_paper_trades_csv()
 
     if not os.path.exists(PAPER_TRADES_CSV):
         return positions
@@ -87,6 +100,7 @@ def _get_positions_from_csv() -> List[Dict]:
 
 def _close_position_in_csv(symbol: str, exit_price: float) -> Optional[Dict]:
     """Close a position directly in the CSV file. Returns closed position info or None."""
+    PAPER_TRADES_CSV = _get_paper_trades_csv()
     if not os.path.exists(PAPER_TRADES_CSV):
         return None
 
@@ -138,6 +152,7 @@ def _close_position_in_csv(symbol: str, exit_price: float) -> Optional[Dict]:
 def _close_all_positions_in_csv() -> List[Dict]:
     """Close all open positions directly in the CSV file. Returns list of closed positions."""
     closed = []
+    PAPER_TRADES_CSV = _get_paper_trades_csv()
 
     if not os.path.exists(PAPER_TRADES_CSV):
         return closed
