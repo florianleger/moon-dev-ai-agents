@@ -124,6 +124,10 @@ class StrategyAgent:
                     from src.strategies.custom.hybrid_strategy import HybridStrategy
                     self.enabled_strategies.append(HybridStrategy())
                     cprint(f"✅ Loaded Hybrid Strategy (Sniper + Trend Rider) (Paper Trading: {self.paper_trading})", "green")
+                elif self.active_strategy == 'adaptive_hybrid':
+                    from src.strategies.custom.adaptive_hybrid_strategy import AdaptiveHybridStrategy
+                    self.enabled_strategies.append(AdaptiveHybridStrategy())
+                    cprint(f"✅ Loaded Adaptive Hybrid Strategy (Paper Trading: {self.paper_trading})", "green")
                 else:
                     # Load all strategies if unknown
                     from src.strategies.custom.example_strategy import ExampleStrategy
@@ -285,71 +289,27 @@ class StrategyAgent:
             except Exception as e:
                 print(f"⚠️ Could not get market data: {e}")
 
-            # 3. Try LLM evaluation (but don't fail if unavailable)
-            print("\n🤖 Getting LLM evaluation of signals...")
-            evaluation = self.evaluate_signals(signals, market_data)
+            # 3. Check if strategy opts out of LLM evaluation
+            skip_llm = False
+            try:
+                from src.config import ADAPTIVE_HYBRID_SKIP_LLM
+                if self.active_strategy == 'adaptive_hybrid' and ADAPTIVE_HYBRID_SKIP_LLM:
+                    skip_llm = True
+            except ImportError:
+                pass
 
-            # 4. Filter signals based on LLM decisions OR use high-confidence signals directly
+            # 4. Filter signals based on LLM decisions OR auto-approve
             approved_signals = []
 
-            if evaluation:
-                # LLM evaluation available - use it
-                for i, signal in enumerate(signals):
-                    if i < len(evaluation['decisions']):
-                        decision = evaluation['decisions'][i]
-                        llm_says_execute = "EXECUTE" in decision.upper()
-
-                        # NEVER approve NEUTRAL signals, even if LLM says EXECUTE
-                        is_neutral = signal['direction'] == 'NEUTRAL'
-                        approved = llm_says_execute and not is_neutral
-
-                        if approved:
-                            cprint(f"✅ LLM approved {signal['strategy_name']}'s {signal['direction']} signal", "green")
-                            approved_signals.append(signal)
-                        else:
-                            cprint(f"❌ LLM rejected {signal['strategy_name']}'s {signal['direction']} signal", "red")
-
-                        # Log signal to web dashboard
-                        if WEB_STATE_AVAILABLE:
-                            try:
-                                metadata = signal.get('metadata', {})
-                                # Use strategy's reason for context, LLM decision for approval status
-                                strategy_reason = metadata.get('reason', 'No reason provided')
-                                display_reason = f"{strategy_reason}" if not approved else 'LLM approved'
-
-                                web_add_signal({
-                                    'token': signal.get('token', token),
-                                    'direction': signal['direction'],
-                                    'confidence': round(float(signal['signal']) * 100, 1),
-                                    'strategy': signal['strategy_name'],
-                                    'approved': approved,
-                                    'reason': display_reason,
-                                    # Extended metadata for Sniper AI
-                                    'weighted_score': metadata.get('weighted_score'),
-                                    'checklist_score': metadata.get('checklist_score'),
-                                    'setup_type': metadata.get('setup_type'),
-                                    'ai_reasoning': metadata.get('ai_reasoning'),
-                                    'checklist_details': metadata.get('checklist_details'),
-                                    'current_price': metadata.get('current_price'),
-                                    # Diagnostic fields for understanding why no pattern detected
-                                    'market_state': metadata.get('market_state'),
-                                    'skip_reasons': metadata.get('skip_reasons'),
-                                    'diagnostic': metadata.get('diagnostic'),
-                                })
-                            except:
-                                pass
-                    else:
-                        cprint(f"⚠️ No LLM decision for signal {i}, defaulting to REJECT", "yellow")
-            else:
-                # LLM unavailable - fallback to using high-confidence signals directly
-                cprint("⚠️ LLM evaluation unavailable - using signal confidence fallback", "yellow")
+            if skip_llm:
+                # Auto-approve non-NEUTRAL signals (strategy has its own multi-module filtering)
+                cprint("🔄 LLM skip enabled for Adaptive Hybrid - using strategy scoring", "cyan")
                 for signal in signals:
-                    # Only auto-approve signals with direction != NEUTRAL and confidence >= 0.7
-                    if signal['direction'] != 'NEUTRAL' and signal['signal'] >= 0.7:
-                        cprint(f"✅ Auto-approved high-confidence signal: {signal['strategy_name']} {signal['direction']} ({signal['signal']})", "green")
+                    if signal['direction'] != 'NEUTRAL' and signal['signal'] >= 0.5:
+                        cprint(f"✅ Auto-approved: {signal['strategy_name']} {signal['direction']} ({signal['signal']:.0%})", "green")
                         approved_signals.append(signal)
 
-                        # Log approved signal to web dashboard
+                        # Log to web dashboard
                         if WEB_STATE_AVAILABLE:
                             try:
                                 metadata = signal.get('metadata', {})
@@ -359,19 +319,117 @@ class StrategyAgent:
                                     'confidence': round(float(signal['signal']) * 100, 1),
                                     'strategy': signal['strategy_name'],
                                     'approved': True,
-                                    'reason': 'Auto-approved (high confidence)',
-                                    # Extended metadata for Sniper AI
-                                    'weighted_score': metadata.get('weighted_score'),
-                                    'checklist_score': metadata.get('checklist_score'),
-                                    'setup_type': metadata.get('setup_type'),
-                                    'ai_reasoning': metadata.get('ai_reasoning'),
-                                    'checklist_details': metadata.get('checklist_details'),
+                                    'reason': f"Score {metadata.get('score', 0):.1f} (auto-approved)",
+                                    'weighted_score': metadata.get('score'),
+                                    'diagnostic': metadata.get('diagnostic'),
                                     'current_price': metadata.get('current_price'),
                                 })
                             except:
                                 pass
                     elif signal['direction'] != 'NEUTRAL':
-                        cprint(f"⚠️ Signal confidence too low for auto-approval: {signal['signal']}", "yellow")
+                        cprint(f"⚠️ Signal strength too low: {signal['signal']:.0%}", "yellow")
+                    # Log NEUTRAL signals to dashboard too
+                    elif WEB_STATE_AVAILABLE:
+                        try:
+                            metadata = signal.get('metadata', {})
+                            web_add_signal({
+                                'token': signal.get('token', token),
+                                'direction': signal['direction'],
+                                'confidence': round(float(signal['signal']) * 100, 1),
+                                'strategy': signal['strategy_name'],
+                                'approved': False,
+                                'reason': metadata.get('reason', 'NEUTRAL'),
+                                'weighted_score': metadata.get('score'),
+                                'diagnostic': metadata.get('diagnostic'),
+                                'current_price': metadata.get('current_price'),
+                            })
+                        except:
+                            pass
+            else:
+                # LLM evaluation path (default for non-adaptive strategies)
+                print("\n🤖 Getting LLM evaluation of signals...")
+                evaluation = self.evaluate_signals(signals, market_data)
+
+                if evaluation:
+                    # LLM evaluation available - use it
+                    for i, signal in enumerate(signals):
+                        if i < len(evaluation['decisions']):
+                            decision = evaluation['decisions'][i]
+                            llm_says_execute = "EXECUTE" in decision.upper()
+
+                            # NEVER approve NEUTRAL signals, even if LLM says EXECUTE
+                            is_neutral = signal['direction'] == 'NEUTRAL'
+                            approved = llm_says_execute and not is_neutral
+
+                            if approved:
+                                cprint(f"✅ LLM approved {signal['strategy_name']}'s {signal['direction']} signal", "green")
+                                approved_signals.append(signal)
+                            else:
+                                cprint(f"❌ LLM rejected {signal['strategy_name']}'s {signal['direction']} signal", "red")
+
+                            # Log signal to web dashboard
+                            if WEB_STATE_AVAILABLE:
+                                try:
+                                    metadata = signal.get('metadata', {})
+                                    # Use strategy's reason for context, LLM decision for approval status
+                                    strategy_reason = metadata.get('reason', 'No reason provided')
+                                    display_reason = f"{strategy_reason}" if not approved else 'LLM approved'
+
+                                    web_add_signal({
+                                        'token': signal.get('token', token),
+                                        'direction': signal['direction'],
+                                        'confidence': round(float(signal['signal']) * 100, 1),
+                                        'strategy': signal['strategy_name'],
+                                        'approved': approved,
+                                        'reason': display_reason,
+                                        # Extended metadata for Sniper AI
+                                        'weighted_score': metadata.get('weighted_score'),
+                                        'checklist_score': metadata.get('checklist_score'),
+                                        'setup_type': metadata.get('setup_type'),
+                                        'ai_reasoning': metadata.get('ai_reasoning'),
+                                        'checklist_details': metadata.get('checklist_details'),
+                                        'current_price': metadata.get('current_price'),
+                                        # Diagnostic fields for understanding why no pattern detected
+                                        'market_state': metadata.get('market_state'),
+                                        'skip_reasons': metadata.get('skip_reasons'),
+                                        'diagnostic': metadata.get('diagnostic'),
+                                    })
+                                except:
+                                    pass
+                        else:
+                            cprint(f"⚠️ No LLM decision for signal {i}, defaulting to REJECT", "yellow")
+                else:
+                    # LLM unavailable - fallback to using high-confidence signals directly
+                    cprint("⚠️ LLM evaluation unavailable - using signal confidence fallback", "yellow")
+                    for signal in signals:
+                        # Only auto-approve signals with direction != NEUTRAL and confidence >= 0.7
+                        if signal['direction'] != 'NEUTRAL' and signal['signal'] >= 0.7:
+                            cprint(f"✅ Auto-approved high-confidence signal: {signal['strategy_name']} {signal['direction']} ({signal['signal']})", "green")
+                            approved_signals.append(signal)
+
+                            # Log approved signal to web dashboard
+                            if WEB_STATE_AVAILABLE:
+                                try:
+                                    metadata = signal.get('metadata', {})
+                                    web_add_signal({
+                                        'token': signal.get('token', token),
+                                        'direction': signal['direction'],
+                                        'confidence': round(float(signal['signal']) * 100, 1),
+                                        'strategy': signal['strategy_name'],
+                                        'approved': True,
+                                        'reason': 'Auto-approved (high confidence)',
+                                        # Extended metadata for Sniper AI
+                                        'weighted_score': metadata.get('weighted_score'),
+                                        'checklist_score': metadata.get('checklist_score'),
+                                        'setup_type': metadata.get('setup_type'),
+                                        'ai_reasoning': metadata.get('ai_reasoning'),
+                                        'checklist_details': metadata.get('checklist_details'),
+                                        'current_price': metadata.get('current_price'),
+                                    })
+                                except:
+                                    pass
+                        elif signal['direction'] != 'NEUTRAL':
+                            cprint(f"⚠️ Signal confidence too low for auto-approval: {signal['signal']}", "yellow")
 
             # 5. Print final approved signals
             if approved_signals:

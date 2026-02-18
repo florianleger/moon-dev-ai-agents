@@ -67,7 +67,7 @@ BREAKOUT_PRICE = .0001 # NOT USED YET 1/5/25
 SLEEP_AFTER_CLOSE = 600  # Prevent overtrading
 
 MAX_LOSS_GAIN_CHECK_HOURS = 12  # How far back to check for max loss/gain limits (in hours)
-SLEEP_BETWEEN_RUNS_MINUTES = 15  # How long to sleep between agent runs 🕒
+# Note: SLEEP_BETWEEN_RUNS_MINUTES is defined further below (line ~115)
 
 
 # Max Loss/Gain Settings FOR RISK AGENT 1/5/25
@@ -112,7 +112,7 @@ ENABLE_STRATEGIES = True  # Set this to True to use strategies
 STRATEGY_MIN_CONFIDENCE = 0.7  # Minimum confidence to act on strategy signals
 
 # Sleep time between main agent runs
-SLEEP_BETWEEN_RUNS_MINUTES = 15  # How long to sleep between agent runs 🕒
+SLEEP_BETWEEN_RUNS_MINUTES = 10  # How long to sleep between agent runs 🕒
 
 # in our nice_funcs in token over view we look for minimum trades last hour
 MIN_TRADES_LAST_HOUR = 2
@@ -237,7 +237,7 @@ PAPER_TRADING_BALANCE = 500          # Simulated starting balance in USD
 # ============================================================================
 # Choose which strategy to run (only one should be active at a time)
 
-ACTIVE_STRATEGY = 'hybrid'           # Options: 'multifactor', 'ramf', 'sniper', 'hybrid', 'example'
+ACTIVE_STRATEGY = 'adaptive_hybrid'  # Options: 'multifactor', 'ramf', 'sniper', 'hybrid', 'adaptive_hybrid', 'example'
 
 # ============================================================================
 # SNIPER AI Strategy Settings
@@ -404,6 +404,34 @@ HYBRID_MODE_ENABLED = True
 HYBRID_PREFER_SNIPER = True                # Sniper takes priority over Trend Rider
 HYBRID_MAX_CONCURRENT_POSITIONS = 2        # Max positions across both strategies
 HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
+
+# ============================================================================
+# ADAPTIVE HYBRID Strategy Settings
+# ============================================================================
+# Multi-module scoring strategy that aggregates 8 independent signal generators.
+# Target: 1-3 trades/day with 55%+ win rate.
+
+ADAPTIVE_HYBRID_BASE_THRESHOLD = 45      # Base score threshold (0-100) to trigger a trade
+ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
+ADAPTIVE_HYBRID_URGENCY_FLOOR = 30       # Minimum threshold (never go below this)
+ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5     # Max trades per day
+ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30  # Daily loss limit in USD
+ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
+ADAPTIVE_HYBRID_ATR_SL_MULT = 1.5       # Stop loss = 1.5x ATR
+ADAPTIVE_HYBRID_ATR_TP_MULT = 2.5       # Take profit = 2.5x ATR
+ADAPTIVE_HYBRID_SKIP_LLM = True          # Skip LLM re-evaluation (strategy has own filters)
+
+# Module weights (must sum to 1.0)
+ADAPTIVE_HYBRID_WEIGHTS = {
+    'mean_reversion': 0.15,      # Bollinger Bands + RSI in ranging markets
+    'momentum_breakout': 0.12,   # Range breakout + volume confirmation
+    'ema_crossover': 0.10,       # EMA 9/21 crossover signals
+    'funding_contrarian': 0.10,  # Extreme funding rate contrarian
+    'rsi_divergence': 0.10,      # Price vs RSI divergence
+    'sniper_lite': 0.18,         # Relaxed Sniper (extreme move + volume)
+    'trend_rider_lite': 0.15,    # Relaxed trend following (ADX>25)
+    'ramf_lite': 0.10,           # Volatility regime (no dead zone)
+}
 
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3

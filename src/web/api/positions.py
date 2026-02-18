@@ -218,9 +218,19 @@ async def get_positions(username: str = Depends(verify_credentials)) -> List[Dic
 
     # Fallback to in-memory singleton (works when API and strategy in same process)
     try:
-        from src.strategies.custom.ramf_strategy import RAMFStrategy
+        strategy = None
+        try:
+            from src.strategies.custom.adaptive_hybrid_strategy import AdaptiveHybridStrategy
+            strategy = AdaptiveHybridStrategy._instance if hasattr(AdaptiveHybridStrategy, '_instance') else None
+        except ImportError:
+            pass
+        if strategy is None:
+            try:
+                from src.strategies.custom.ramf_strategy import RAMFStrategy
+                strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
+            except ImportError:
+                pass
 
-        strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
         if strategy and hasattr(strategy, 'paper_positions') and strategy.paper_positions:
             for position_id, pos in strategy.paper_positions.items():
                 direction = pos.get("direction", "BUY")
@@ -252,9 +262,15 @@ async def close_position(
 ) -> Dict:
     """Close a specific position."""
     try:
-        from src.strategies.custom.ramf_strategy import RAMFStrategy
-
-        strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
+        strategy = None
+        try:
+            from src.strategies.custom.adaptive_hybrid_strategy import AdaptiveHybridStrategy
+            strategy = AdaptiveHybridStrategy._instance if hasattr(AdaptiveHybridStrategy, '_instance') else None
+        except ImportError:
+            pass
+        if strategy is None:
+            from src.strategies.custom.ramf_strategy import RAMFStrategy
+            strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
 
         # Try strategy-based close first
         if strategy and hasattr(strategy, 'paper_positions') and strategy.paper_positions:
@@ -322,9 +338,15 @@ async def close_position(
 async def close_all_positions(username: str = Depends(verify_credentials)) -> Dict:
     """Close all open positions."""
     try:
-        from src.strategies.custom.ramf_strategy import RAMFStrategy
-
-        strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
+        strategy = None
+        try:
+            from src.strategies.custom.adaptive_hybrid_strategy import AdaptiveHybridStrategy
+            strategy = AdaptiveHybridStrategy._instance if hasattr(AdaptiveHybridStrategy, '_instance') else None
+        except ImportError:
+            pass
+        if strategy is None:
+            from src.strategies.custom.ramf_strategy import RAMFStrategy
+            strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
 
         # Try strategy-based close first
         if strategy and hasattr(strategy, 'close_all_paper_positions'):

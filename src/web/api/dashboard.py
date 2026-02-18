@@ -21,11 +21,20 @@ DATA_BASE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
 INITIAL_BALANCE = 500.0
 
 
+def _get_strategy_folder() -> str:
+    """Get the correct data folder for the active strategy."""
+    from src.config import ACTIVE_STRATEGY
+    folder_map = {
+        'sniper': 'sniper',
+        'adaptive_hybrid': 'adaptive_hybrid',
+        'hybrid': 'sniper',  # hybrid uses sniper's infrastructure
+    }
+    return folder_map.get(ACTIVE_STRATEGY, 'ramf')
+
+
 def _get_paper_trades_csv() -> str:
     """Get the correct paper trades CSV path based on active strategy."""
-    from src.config import ACTIVE_STRATEGY
-    strategy_folder = 'sniper' if ACTIVE_STRATEGY == 'sniper' else 'ramf'
-    return os.path.join(DATA_BASE_PATH, strategy_folder, 'paper_trades.csv')
+    return os.path.join(DATA_BASE_PATH, _get_strategy_folder(), 'paper_trades.csv')
 
 
 def _get_leverage() -> int:
@@ -34,6 +43,9 @@ def _get_leverage() -> int:
     if ACTIVE_STRATEGY == 'sniper':
         from src.config import SNIPER_LEVERAGE
         return SNIPER_LEVERAGE
+    elif ACTIVE_STRATEGY == 'adaptive_hybrid':
+        from src.config import ADAPTIVE_HYBRID_LEVERAGE
+        return ADAPTIVE_HYBRID_LEVERAGE
     else:
         from src.config import RAMF_LEVERAGE
         return RAMF_LEVERAGE
@@ -150,6 +162,9 @@ async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
     if ACTIVE_STRATEGY == 'sniper':
         from src.config import SNIPER_MAX_DAILY_TRADES
         max_daily_trades = SNIPER_MAX_DAILY_TRADES
+    elif ACTIVE_STRATEGY == 'adaptive_hybrid':
+        from src.config import ADAPTIVE_HYBRID_MAX_DAILY_TRADES
+        max_daily_trades = ADAPTIVE_HYBRID_MAX_DAILY_TRADES
     else:
         from src.config import RAMF_MAX_DAILY_TRADES
         max_daily_trades = RAMF_MAX_DAILY_TRADES
@@ -158,6 +173,7 @@ async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
     stats = _get_stats_from_csv()
     stats["running"] = is_strategy_running()
     stats["max_daily_trades"] = max_daily_trades
+    stats["strategy_name"] = ACTIVE_STRATEGY.replace('_', ' ').title()
 
     # If CSV has data, return it
     if stats["total_pnl"] != 0 or stats["open_positions"] > 0:
@@ -168,6 +184,9 @@ async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
         if ACTIVE_STRATEGY == 'sniper':
             from src.strategies.custom.sniper_ai_strategy import SniperAIStrategy
             strategy = SniperAIStrategy._instance if hasattr(SniperAIStrategy, '_instance') else None
+        elif ACTIVE_STRATEGY == 'adaptive_hybrid':
+            from src.strategies.custom.adaptive_hybrid_strategy import AdaptiveHybridStrategy
+            strategy = AdaptiveHybridStrategy._instance if hasattr(AdaptiveHybridStrategy, '_instance') else None
         else:
             from src.strategies.custom.ramf_strategy import RAMFStrategy
             strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
@@ -251,8 +270,10 @@ async def sse_updates(username: str = Depends(verify_credentials)):
 
         while True:
             # Use CSV-based functions for cross-process data sharing
+            from src.config import ACTIVE_STRATEGY
             stats = _get_stats_from_csv()
             stats["running"] = is_strategy_running()
+            stats["strategy_name"] = ACTIVE_STRATEGY.replace('_', ' ').title()
             positions = _get_positions_from_csv()
             signals = get_signals_history(limit=5)
 

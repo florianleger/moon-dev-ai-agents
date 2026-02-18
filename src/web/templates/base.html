@@ -165,7 +165,7 @@
                 try {
                     const data = JSON.parse(evt.detail.xhr.responseText);
                     const statusHtml = data.running
-                        ? '<span class="inline-block w-3 h-3 rounded-full bg-green-500 pulse-green"></span><span class="text-green-400">RAMF Running</span>'
+                        ? '<span class="inline-block w-3 h-3 rounded-full bg-green-500 pulse-green"></span><span class="text-green-400">' + (data.strategy_name || 'Strategy') + ' Running</span>'
                         : '<span class="inline-block w-3 h-3 rounded-full bg-gray-500"></span><span class="text-gray-400">Stopped</span>';
                     evt.detail.target.innerHTML = statusHtml;
                 } catch (e) {}
