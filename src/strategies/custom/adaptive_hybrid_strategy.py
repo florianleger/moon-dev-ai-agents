@@ -172,6 +172,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Trailing stops state: {position_id: {'highest': float, 'lowest': float, 'trailing_active': bool}}
         self.trailing_stops = {}
 
+        # OI history for delta calculation: {symbol: previous_oi_value}
+        self._oi_history = {}
+
         # Market data provider (for funding rates)
         self._market_data = None
         try:
@@ -802,18 +805,26 @@ class AdaptiveHybridStrategy(BaseStrategy):
             if oi_data is None:
                 return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No OI data'}
 
-            oi_change_pct = oi_data.get('oi_change_pct', 0)
+            current_oi = oi_data.get('open_interest', 0)
+            if current_oi <= 0:
+                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'OI is zero'}
+
+            # Compute delta from stored history
+            prev_oi = self._oi_history.get(symbol, current_oi)
+            oi_change_pct = ((current_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
+            self._oi_history[symbol] = current_oi
+
             price_change = ind.get('close', 0) - ind.get('open', ind.get('close', 0))
 
             long_score = 0
             short_score = 0
 
-            if oi_change_pct > 5:  # OI increasing significantly
+            if oi_change_pct > 3:  # OI increasing significantly
                 if price_change > 0:
                     long_score += 50  # New longs entering
                 else:
                     short_score += 40  # New shorts entering
-            elif oi_change_pct < -5:  # OI decreasing
+            elif oi_change_pct < -3:  # OI decreasing
                 if price_change > 0:
                     long_score += 30  # Short squeeze (shorts closing)
                 else:
@@ -822,48 +833,46 @@ class AdaptiveHybridStrategy(BaseStrategy):
             best = max(long_score, short_score)
             direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
             return {'score': min(100, best), 'direction': direction,
-                    'reason': f'OI delta={oi_change_pct:+.1f}% price_chg={price_change:+.2f}'}
+                    'reason': f'OI delta={oi_change_pct:+.1f}% (OI={current_oi:,.0f}) price_chg={price_change:+.2f}'}
         except Exception as e:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'OI error: {e}'}
 
     def _score_sentiment(self, symbol: str, ind: dict) -> dict:
-        """Module: Sentiment composite (Fear & Greed + Twitter if available)."""
+        """Module: Sentiment composite (Fear & Greed + token-specific Twitter)."""
         try:
             import sys
             sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
             from strategies.utils.sentiment_reader import SentimentReader
             reader = SentimentReader()
-            sentiment_data = reader.get_current_sentiment()
 
-            if not sentiment_data:
-                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No sentiment data'}
-
-            fg_score = sentiment_data.get('fear_greed', 50)  # 0-100
-            twitter_score = sentiment_data.get('twitter_sentiment', 0)  # -1 to +1
+            # get_current_sentiment returns float -1 to +1 (fear to greed)
+            token_sentiment = reader.get_current_sentiment(symbol)
+            # get_fear_greed_score returns float -1 to +1
+            fg_score = reader.get_fear_greed_score()
 
             long_score = 0
             short_score = 0
 
-            # Contrarian: extreme fear = buy, extreme greed = sell
-            if fg_score < 25:
-                long_score += 50
-            elif fg_score < 35:
-                long_score += 25
-            elif fg_score > 75:
-                short_score += 50
-            elif fg_score > 65:
-                short_score += 25
+            # Fear & Greed contrarian: extreme fear = buy, extreme greed = sell
+            if fg_score < -0.5:
+                long_score += 50  # Extreme fear
+            elif fg_score < -0.2:
+                long_score += 25  # Fear
+            elif fg_score > 0.5:
+                short_score += 50  # Extreme greed
+            elif fg_score > 0.2:
+                short_score += 25  # Greed
 
-            # Twitter sentiment boost
-            if twitter_score < -0.3:
-                long_score += 20  # Contrarian
-            elif twitter_score > 0.3:
+            # Token-specific sentiment (contrarian)
+            if token_sentiment < -0.3:
+                long_score += 20
+            elif token_sentiment > 0.3:
                 short_score += 20
 
             best = max(long_score, short_score)
             direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
             return {'score': min(100, best), 'direction': direction,
-                    'reason': f'F&G={fg_score} Twitter={twitter_score:+.2f}'}
+                    'reason': f'F&G={fg_score:+.2f} token={token_sentiment:+.2f}'}
         except Exception as e:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'Sentiment error: {e}'}
 
@@ -1093,8 +1102,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     'details': 'No weight in winning direction'}
 
         raw_score = active_weighted_sum / active_weight_total
-        coverage = active_weight_total / sum(weights.values())
-        final_score = raw_score * (0.5 + 0.5 * coverage)
+
+        # Coverage: only count modules that had data (score > 0) in denominator
+        # This avoids penalizing when data-dependent modules (OI, sentiment, etc.) have no data
+        data_available_weight = sum(weights.get(n, 0) for n, r in module_results.items() if r.get('score', 0) > 0)
+        coverage = active_weight_total / max(data_available_weight, 0.01) if data_available_weight > 0 else 0
+        final_score = raw_score * (0.6 + 0.4 * coverage)
 
         # BTC macro filter: penalize signals against BTC trend, proportional to correlation
         btc_trend = self._check_btc_trend()

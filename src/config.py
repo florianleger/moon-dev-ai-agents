@@ -427,7 +427,7 @@ ADAPTIVE_HYBRID_ATR_PROFILES = {
     'mid':    {'sl_mult': 1.5, 'tp_mult': 3.0, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
     'alt':    {'sl_mult': 1.2, 'tp_mult': 2.4, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
 }
-ADAPTIVE_HYBRID_RESET_PAPER = True       # One-shot flag: reset paper trading state on next startup
+ADAPTIVE_HYBRID_RESET_PAPER = False       # One-shot flag: reset paper trading state on next startup
 
 # Trailing Stop (conservative)
 ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR = 1.5  # Activate trailing after +1.5 ATR profit
