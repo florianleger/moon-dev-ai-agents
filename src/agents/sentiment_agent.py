@@ -44,6 +44,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import numpy as np
 import openai
 from pathlib import Path
+from src.data.signals.signal_pipeline import SignalPipeline
 
 # Create data directory if it doesn't exist
 pathlib.Path(DATA_FOLDER).mkdir(parents=True, exist_ok=True)
@@ -305,6 +306,31 @@ class SentimentAgent:
         is_important = abs(sentiment_score) > SENTIMENT_ANNOUNCE_THRESHOLD or (percent_change is not None and abs(percent_change) > 5)
         self._announce(message, is_important)
         
+        # Persist signal to pipeline
+        if sentiment_score > 0.1:
+            direction = 'BUY'
+        elif sentiment_score < -0.1:
+            direction = 'SELL'
+        else:
+            direction = 'NOTHING'
+
+        # Convert -1..+1 to 0..100 confidence
+        signal_confidence = min(100, abs(sentiment_score) * 100)
+
+        SignalPipeline.write_signal(
+            source='sentiment_agent',
+            symbol='MARKET',
+            direction=direction,
+            confidence=signal_confidence,
+            reasoning=f"Sentiment {sentiment} (score: {sentiment_score:.2f}, {len(texts)} tweets)",
+            metadata={
+                'sentiment_score': sentiment_score,
+                'score_percent': score_percent,
+                'num_tweets': len(texts),
+                'percent_change': percent_change,
+            }
+        )
+
         # If not announcing vocally, print the raw score for debugging
         if not is_important:
             cprint(f"📊 Raw sentiment score: {sentiment_score:.2f} (on scale of -1 to 1)", "cyan")

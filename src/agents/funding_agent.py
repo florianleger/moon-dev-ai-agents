@@ -30,6 +30,7 @@ from src import nice_funcs_hyperliquid as hl
 from src.agents.api import MoonDevAPI
 from collections import deque
 from src.agents.base_agent import BaseAgent
+from src.data.signals.signal_pipeline import SignalPipeline
 import traceback
 import numpy as np
 import re
@@ -302,6 +303,16 @@ class FundingAgent(BaseAgent):
                                     'analysis': analysis['analysis'],
                                     'confidence': analysis['confidence']
                                 }
+
+                                # Persist signal to pipeline
+                                SignalPipeline.write_signal(
+                                    source='funding_agent',
+                                    symbol=symbol,
+                                    direction=analysis['action'],
+                                    confidence=analysis['confidence'],
+                                    reasoning=analysis['analysis'],
+                                    metadata={'annual_rate': annual_rate}
+                                )
                             
                 except Exception as e:
                     continue

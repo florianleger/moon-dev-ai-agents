@@ -1,19 +1,22 @@
 """
 Adaptive Hybrid Strategy
 
-Multi-module scoring strategy that aggregates 8 independent signal generators.
+Multi-module scoring strategy that aggregates 12 independent signal generators.
 Instead of requiring ALL conditions (AND logic), it requires enough convergence
 (weighted score > threshold) for a trade signal.
 
 Modules:
 1. Mean Reversion (Bollinger Bands + RSI)
 2. Momentum Breakout (range breakout + volume)
-3. EMA Crossover (9/21 crossover)
+3. EMA Trend (EMA alignment + ADX + MACD)
 4. Funding Rate Contrarian (extreme funding Z-score)
-5. RSI Divergence (price vs RSI divergence)
-6. Sniper Lite (relaxed extreme move + funding)
-7. Trend Rider Lite (relaxed trend + pullback)
-8. RAMF Lite (volatility regime + exhaustion)
+5. RSI Divergence (pivot-based price vs RSI divergence)
+6. Sniper Lite (extreme move + funding, 50-bar / 2-sigma)
+7. RAMF Lite (volatility regime + exhaustion)
+8. OI Delta (Open Interest positioning pressure)
+9. Sentiment (Fear & Greed + Twitter contrarian)
+10. Squeeze Detector (funding + OI + volatility compression)
+11. Order Imbalance (HyperLiquid L2 bid/ask depth)
 
 Target: 1-3 trades/day with 55%+ win rate.
 """
@@ -58,6 +61,17 @@ try:
         ADAPTIVE_HYBRID_RANGING_TOKENS,
         ADAPTIVE_HYBRID_TRENDING_TOKENS,
         SNIPER_ASSETS,
+        ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR,
+        ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR,
+        ADAPTIVE_HYBRID_MAX_HOLD_HOURS,
+        ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS,
+        PAPER_TAKER_FEE,
+        PAPER_SLIPPAGE,
+        ADAPTIVE_HYBRID_LEVERAGE_PROFILES,
+        RISK_MAX_DRAWDOWN_PCT,
+        CASH_PERCENTAGE,
+        ADAPTIVE_HYBRID_OPTIMAL_HOURS,
+        ADAPTIVE_HYBRID_AVOID_HOURS,
     )
 except ImportError:
     PAPER_TRADING = True
@@ -81,27 +95,44 @@ except ImportError:
         'alt': {'sl_mult': 1.2, 'tp_mult': 2.4, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
     }
     ADAPTIVE_HYBRID_WEIGHTS = {
-        'mean_reversion': 0.15, 'momentum_breakout': 0.12,
-        'ema_crossover': 0.10, 'funding_contrarian': 0.10,
-        'rsi_divergence': 0.10, 'sniper_lite': 0.18,
-        'trend_rider_lite': 0.15, 'ramf_lite': 0.10,
+        'mean_reversion': 0.12, 'momentum_breakout': 0.10,
+        'ema_trend': 0.12, 'funding_contrarian': 0.08,
+        'rsi_divergence': 0.08, 'sniper_lite': 0.14,
+        'ramf_lite': 0.08, 'oi_delta': 0.08,
+        'sentiment': 0.06, 'squeeze_detector': 0.08,
+        'order_imbalance': 0.06,
     }
     ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
         'ranging': {
-            'mean_reversion': 0.20, 'momentum_breakout': 0.08, 'ema_crossover': 0.10,
-            'funding_contrarian': 0.12, 'rsi_divergence': 0.12, 'sniper_lite': 0.18,
-            'trend_rider_lite': 0.10, 'ramf_lite': 0.10,
+            'mean_reversion': 0.16, 'momentum_breakout': 0.06, 'ema_trend': 0.10,
+            'funding_contrarian': 0.10, 'rsi_divergence': 0.10, 'sniper_lite': 0.14,
+            'ramf_lite': 0.08, 'oi_delta': 0.08,
+            'sentiment': 0.06, 'squeeze_detector': 0.06,
+            'order_imbalance': 0.06,
         },
         'trending': {
-            'mean_reversion': 0.08, 'momentum_breakout': 0.18, 'ema_crossover': 0.12,
-            'funding_contrarian': 0.10, 'rsi_divergence': 0.08, 'sniper_lite': 0.14,
-            'trend_rider_lite': 0.20, 'ramf_lite': 0.10,
+            'mean_reversion': 0.06, 'momentum_breakout': 0.14, 'ema_trend': 0.16,
+            'funding_contrarian': 0.08, 'rsi_divergence': 0.06, 'sniper_lite': 0.12,
+            'ramf_lite': 0.08, 'oi_delta': 0.08,
+            'sentiment': 0.06, 'squeeze_detector': 0.08,
+            'order_imbalance': 0.08,
         },
     }
     ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
     ADAPTIVE_HYBRID_TRENDING_TOKENS = ['DOGE', 'kPEPE', 'SUI', 'TAO']
     SNIPER_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR',
                      'AAVE', 'ENA', 'LINK', 'DOGE', 'kPEPE', 'ADA']
+    ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR = 1.5
+    ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR = 2.0
+    ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48
+    ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 24
+    PAPER_TAKER_FEE = 0.00035
+    PAPER_SLIPPAGE = {'major': 0.001, 'mid': 0.002, 'alt': 0.005}
+    ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {'major': 3, 'mid': 3, 'alt': 2}
+    RISK_MAX_DRAWDOWN_PCT = 15
+    CASH_PERCENTAGE = 20
+    ADAPTIVE_HYBRID_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 19, 20, 21]
+    ADAPTIVE_HYBRID_AVOID_HOURS = [0, 1, 2, 3, 4, 5]
 
 
 class AdaptiveHybridStrategy(BaseStrategy):
@@ -134,6 +165,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self.closed_positions = []
         self._position_counter = 0
         self._position_lock = threading.Lock()
+
+        # High Water Mark
+        self.peak_balance = PAPER_TRADING_BALANCE
+
+        # Trailing stops state: {position_id: {'highest': float, 'lowest': float, 'trailing_active': bool}}
+        self.trailing_stops = {}
 
         # Market data provider (for funding rates)
         self._market_data = None
@@ -171,11 +208,30 @@ class AdaptiveHybridStrategy(BaseStrategy):
             # Load existing state
             self._load_state_from_csv()
 
+        # Pre-load funding history to avoid cold start
+        self._preload_funding_history()
+
         cprint(f"[AdaptiveHybrid] Strategy initialized", "cyan")
         cprint(f"  - Assets: {len(self.assets)} symbols", "white")
         cprint(f"  - Base threshold: {ADAPTIVE_HYBRID_BASE_THRESHOLD}/100", "white")
         cprint(f"  - Paper Trading: {PAPER_TRADING}", "white")
         cprint(f"  - Balance: ${self.paper_balance:,.2f}", "white")
+
+    def _preload_funding_history(self):
+        """Pre-load 7 days of funding history to avoid cold start."""
+        if not self._market_data:
+            return
+        for symbol in SNIPER_ASSETS:
+            try:
+                rate_data = self._market_data.get_funding_rate(symbol)
+                if rate_data and rate_data.get('funding_rate') is not None:
+                    rate = rate_data['funding_rate']
+                    if symbol not in self._funding_history:
+                        self._funding_history[symbol] = deque(maxlen=200)
+                    self._funding_history[symbol].append(rate)
+                    self._funding_last_rate[symbol] = rate
+            except Exception:
+                pass
 
     # =========================================================================
     # PAPER TRADING RESET
@@ -303,9 +359,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
         vol_avg = volume.rolling(20).mean()
         df['volume_ratio'] = volume / vol_avg.replace(0, 1)
 
-        # VWAP approximation (intraday)
-        typical_price = (high + low + close) / 3
-        df['vwap'] = (typical_price * volume).cumsum() / volume.cumsum().replace(0, 1)
+        # VWAP rolling (14-period)
+        vwap_ind = VolumeWeightedAveragePrice(high=high, low=low, close=close, volume=volume, window=14)
+        df['vwap'] = vwap_ind.volume_weighted_average_price()
+        df['vwap'] = df['vwap'].fillna((high + low + close) / 3)
 
         # Dynamic RSI thresholds (percentile-based)
         rsi_series = rsi_ind.rsi().dropna()
@@ -319,10 +376,15 @@ class AdaptiveHybridStrategy(BaseStrategy):
             rsi_oversold = 30
             rsi_overbought = 70
 
+        # Bollinger Band %B for squeeze detection
+        bb_range = df['bb_upper'] - df['bb_lower']
+        df['bb_pct'] = (df['close'] - df['bb_lower']) / bb_range.replace(0, 1)
+
         # Return last row values as dict for easy access
         last = df.iloc[-1]
         return {
             'close': float(last['close']),
+            'open': float(last['open']),
             'high': float(last['high']),
             'low': float(last['low']),
             'volume': float(last['volume']),
@@ -337,12 +399,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
             'bb_upper': float(last['bb_upper']) if pd.notna(last['bb_upper']) else float(last['close']),
             'bb_lower': float(last['bb_lower']) if pd.notna(last['bb_lower']) else float(last['close']),
             'bb_mid': float(last['bb_mid']) if pd.notna(last['bb_mid']) else float(last['close']),
+            'bb_pct': float(last['bb_pct']) if pd.notna(last['bb_pct']) else 0.5,
             'atr': float(last['atr']) if pd.notna(last['atr']) else 0,
             'macd': float(last['macd']) if pd.notna(last['macd']) else 0,
             'macd_signal': float(last['macd_signal']) if pd.notna(last['macd_signal']) else 0,
             'macd_diff': float(last['macd_diff']) if pd.notna(last['macd_diff']) else 0,
             'volume_ratio': float(last['volume_ratio']) if pd.notna(last['volume_ratio']) else 1.0,
             'vwap': float(last['vwap']) if pd.notna(last['vwap']) else float(last['close']),
+            '_df': df,
         }
 
     # =========================================================================
@@ -442,52 +506,40 @@ class AdaptiveHybridStrategy(BaseStrategy):
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'H20={high_20:.2f} L20={low_20:.2f} Vol={vol_ratio:.1f}x'}
 
-    def _score_ema_crossover(self, df: pd.DataFrame, ind: dict) -> dict:
-        """Module 3: EMA 9/21 crossover signals."""
+    def _score_ema_trend(self, symbol: str, ind: dict) -> dict:
+        """Combined EMA trend module (replaces ema_crossover + absorbs trend elements)."""
         long_score = 0
         short_score = 0
 
-        if len(df) < 3 or 'ema_9' not in df.columns:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Insufficient data'}
+        # EMA alignment (9 > 21 > 50 for bullish)
+        bullish_alignment = ind['ema_9'] > ind['ema_21'] > ind['ema_50']
+        bearish_alignment = ind['ema_9'] < ind['ema_21'] < ind['ema_50']
 
-        ema_9_now = ind['ema_9']
-        ema_21_now = ind['ema_21']
-        ema_9_prev = float(df['ema_9'].iloc[-2]) if pd.notna(df['ema_9'].iloc[-2]) else ema_9_now
-        ema_21_prev = float(df['ema_21'].iloc[-2]) if pd.notna(df['ema_21'].iloc[-2]) else ema_21_now
+        if bullish_alignment:
+            long_score += 30
+            if ind['adx'] > 25:
+                long_score += 20  # Strong trend confirmation
+            if ind['macd_diff'] > 0:
+                long_score += 15
+            # Check if close is near EMA 21 (pullback entry)
+            ema_dist = abs(ind['close'] - ind['ema_21']) / ind['ema_21']
+            if ema_dist < 0.01:
+                long_score += 20  # Pullback to EMA
 
-        # Bullish crossover
-        if ema_9_now > ema_21_now and ema_9_prev <= ema_21_prev:
-            long_score += 60
-        elif ema_9_now > ema_21_now:
-            gap_pct = (ema_9_now - ema_21_now) / ema_21_now
-            if gap_pct < 0.002:
-                long_score += 30  # Recently crossed
-
-        if ind['close'] > ema_9_now and long_score > 0:
-            long_score += 25
-
-        # MACD confirmation
-        if ind['macd_diff'] > 0 and long_score > 0:
-            long_score += 15
-
-        # Bearish crossover
-        if ema_9_now < ema_21_now and ema_9_prev >= ema_21_prev:
-            short_score += 60
-        elif ema_9_now < ema_21_now:
-            gap_pct = (ema_21_now - ema_9_now) / ema_21_now
-            if gap_pct < 0.002:
-                short_score += 30
-
-        if ind['close'] < ema_9_now and short_score > 0:
-            short_score += 25
-
-        if ind['macd_diff'] < 0 and short_score > 0:
-            short_score += 15
+        if bearish_alignment:
+            short_score += 30
+            if ind['adx'] > 25:
+                short_score += 20
+            if ind['macd_diff'] < 0:
+                short_score += 15
+            ema_dist = abs(ind['close'] - ind['ema_21']) / ind['ema_21']
+            if ema_dist < 0.01:
+                short_score += 20
 
         best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
+        direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
         return {'score': min(100, best), 'direction': direction,
-                'reason': f'EMA9={ema_9_now:.2f} EMA21={ema_21_now:.2f} MACD={ind["macd_diff"]:.4f}'}
+                'reason': f'EMA trend alignment ADX={ind["adx"]:.1f} MACD={ind["macd_diff"]:.4f}'}
 
     def _get_funding_zscore_per_token(self, symbol: str) -> float:
         """Calculate per-token historical funding Z-score."""
@@ -516,7 +568,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
                 history = list(self._funding_history[symbol])
 
-            if len(history) < 10:
+            if len(history) < 5:
                 # Not enough history: fall back to cross-sectional Z-score
                 return self._market_data.get_funding_zscore(symbol)
 
@@ -564,64 +616,70 @@ class AdaptiveHybridStrategy(BaseStrategy):
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'Funding Z={zscore:.2f}'}
 
-    def _score_rsi_divergence(self, df: pd.DataFrame, ind: dict) -> dict:
-        """Module 5: RSI divergence detection (price vs RSI disagreement)."""
+    def _score_rsi_divergence(self, symbol: str, ind: dict) -> dict:
+        """Module 5: RSI divergence detection using swing pivot points."""
+        lookback = 30
+        df = ind.get('_df')
+        if df is None or len(df) < lookback:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Insufficient data'}
+
+        prices = df['close'].values[-lookback:]
+        rsis = df['rsi'].values[-lookback:]
+
+        # Filter NaN from RSI
+        valid = ~np.isnan(rsis)
+        if valid.sum() < lookback // 2:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Not enough RSI data'}
+
+        # Detect swing lows (3 candles each side)
+        def find_swing_lows(arr, order=3):
+            lows = []
+            for i in range(order, len(arr) - order):
+                if all(arr[i] <= arr[i-j] for j in range(1, order+1)) and all(arr[i] <= arr[i+j] for j in range(1, order+1)):
+                    lows.append(i)
+            return lows
+
+        def find_swing_highs(arr, order=3):
+            highs = []
+            for i in range(order, len(arr) - order):
+                if all(arr[i] >= arr[i-j] for j in range(1, order+1)) and all(arr[i] >= arr[i+j] for j in range(1, order+1)):
+                    highs.append(i)
+            return highs
+
         long_score = 0
         short_score = 0
 
-        if len(df) < 20 or 'rsi' not in df.columns:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Insufficient data'}
-
-        # Look at last 10 bars for divergence
-        lookback = min(10, len(df) - 1)
-        prices = df['close'].tail(lookback + 1).values
-        rsis = df['rsi'].tail(lookback + 1).values
-
-        # Filter out NaN
-        valid = ~np.isnan(rsis)
-        if valid.sum() < 5:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Not enough RSI data'}
-
-        prices = prices[valid]
-        rsis = rsis[valid]
-
-        # Bullish divergence: price making lower lows but RSI making higher lows
-        price_min_idx = np.argmin(prices[-5:])
-        price_prev_min_idx = np.argmin(prices[:5])
-
-        oversold_mid = (ind['rsi_oversold'] + 50) / 2
-        overbought_mid = (ind['rsi_overbought'] + 50) / 2
-
-        if prices[-5:][price_min_idx] < prices[:5][price_prev_min_idx]:
-            # Price is lower
-            if rsis[-5:].min() > rsis[:5].min():
-                # RSI is higher = bullish divergence
+        # Bullish divergence: price lower lows, RSI higher lows
+        price_lows = find_swing_lows(prices)
+        if len(price_lows) >= 2:
+            i, j = price_lows[-2], price_lows[-1]
+            if prices[j] < prices[i] and rsis[j] > rsis[i]:
                 long_score += 60
-                if ind['rsi'] < oversold_mid:
+                if ind['rsi'] < ind['rsi_oversold'] + 10:
                     long_score += 25
 
-        # Bearish divergence: price making higher highs but RSI making lower highs
-        price_max_idx = np.argmax(prices[-5:])
-        price_prev_max_idx = np.argmax(prices[:5])
-
-        if prices[-5:][price_max_idx] > prices[:5][price_prev_max_idx]:
-            if rsis[-5:].max() < rsis[:5].max():
+        # Bearish divergence: price higher highs, RSI lower highs
+        price_highs = find_swing_highs(prices)
+        if len(price_highs) >= 2:
+            i, j = price_highs[-2], price_highs[-1]
+            if prices[j] > prices[i] and rsis[j] < rsis[i]:
                 short_score += 60
-                if ind['rsi'] > overbought_mid:
+                if ind['rsi'] > ind['rsi_overbought'] - 10:
                     short_score += 25
 
         best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
+        direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
         return {'score': min(100, best), 'direction': direction,
-                'reason': f'RSI={ind["rsi"]:.0f} div_long={long_score} div_short={short_score}'}
+                'reason': f'RSI divergence (pivot-based, lookback={lookback})'}
 
     def _score_sniper_lite(self, df: pd.DataFrame, ind: dict) -> dict:
         """Module 6: Relaxed version of Sniper AI (extreme move + funding check)."""
         long_score = 0
         short_score = 0
 
-        # Check Z-score (relaxed: 1.5 sigma instead of 1.8)
-        window = 20
+        # Check Z-score (2.0 sigma, 50-bar window)
+        window = 50
+        threshold = 2.0
         close_series = df['close'].tail(window + 5)
         rolling_mean = close_series.rolling(window=window).mean()
         rolling_std = close_series.rolling(window=window).std()
@@ -633,14 +691,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
         z_score = (current_price - mean) / std if std > 0 else 0
 
         # Extreme move down = potential long (fade the move)
-        if z_score <= -1.5:
+        if z_score <= -threshold:
             long_score += 45
-            if z_score <= -2.0:
+            if z_score <= -(threshold + 0.5):
                 long_score += 15
         # Extreme move up = potential short
-        if z_score >= 1.5:
+        if z_score >= threshold:
             short_score += 45
-            if z_score >= 2.0:
+            if z_score >= threshold + 0.5:
                 short_score += 15
 
         # Volume confirmation (relaxed: 2x instead of 3x)
@@ -665,55 +723,6 @@ class AdaptiveHybridStrategy(BaseStrategy):
         direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'Z={z_score:.2f} Vol={ind["volume_ratio"]:.1f}x RSI={ind["rsi"]:.0f}'}
-
-    def _score_trend_rider_lite(self, df: pd.DataFrame, ind: dict) -> dict:
-        """Module 7: Relaxed trend following (ADX>25, EMA20>EMA50, pullback)."""
-        long_score = 0
-        short_score = 0
-
-        # Trend alignment (relaxed: ADX>25 instead of 35, only 2 EMAs needed)
-        bullish_trend = ind['ema_9'] > ind['ema_50'] and ind['adx'] > 25
-        bearish_trend = ind['ema_9'] < ind['ema_50'] and ind['adx'] > 25
-
-        oversold_mid = (ind['rsi_oversold'] + 50) / 2
-        overbought_mid = (ind['rsi_overbought'] + 50) / 2
-
-        if bullish_trend:
-            long_score += 35
-            # Pullback zone: between oversold and neutral (50)
-            if ind['rsi_oversold'] + 5 <= ind['rsi'] <= 50:
-                long_score += 30
-            elif ind['rsi_oversold'] <= ind['rsi'] <= 55:
-                long_score += 15
-            # Price near EMA 21 (within 1%)
-            ema_dist = abs(ind['close'] - ind['ema_21']) / ind['ema_21']
-            if ema_dist < 0.01:
-                long_score += 20
-            elif ema_dist < 0.02:
-                long_score += 10
-            # MACD positive
-            if ind['macd_diff'] > 0:
-                long_score += 15
-
-        if bearish_trend:
-            short_score += 35
-            # Pullback zone: between neutral (50) and overbought
-            if 50 <= ind['rsi'] <= ind['rsi_overbought'] - 5:
-                short_score += 30
-            elif 45 <= ind['rsi'] <= ind['rsi_overbought']:
-                short_score += 15
-            ema_dist = abs(ind['close'] - ind['ema_21']) / ind['ema_21']
-            if ema_dist < 0.01:
-                short_score += 20
-            elif ema_dist < 0.02:
-                short_score += 10
-            if ind['macd_diff'] < 0:
-                short_score += 15
-
-        best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
-        return {'score': min(100, best), 'direction': direction,
-                'reason': f'ADX={ind["adx"]:.0f} EMA9{">" if ind["ema_9"] > ind["ema_50"] else "<"}EMA50 RSI={ind["rsi"]:.0f}'}
 
     def _score_ramf_lite(self, df: pd.DataFrame, ind: dict) -> dict:
         """Module 8: Volatility regime + momentum exhaustion (no dead zone)."""
@@ -783,6 +792,159 @@ class AdaptiveHybridStrategy(BaseStrategy):
         direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'Regime={regime} ATR%={atr_percentile:.0f} VWAP_dist={abs(ind["close"] - ind["vwap"]):.2f}'}
+
+    def _score_oi_delta(self, symbol: str, ind: dict) -> dict:
+        """Module: Open Interest delta -- detects positioning pressure."""
+        if not self._market_data:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No market data'}
+        try:
+            oi_data = self._market_data.get_open_interest(symbol)
+            if oi_data is None:
+                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No OI data'}
+
+            oi_change_pct = oi_data.get('oi_change_pct', 0)
+            price_change = ind.get('close', 0) - ind.get('open', ind.get('close', 0))
+
+            long_score = 0
+            short_score = 0
+
+            if oi_change_pct > 5:  # OI increasing significantly
+                if price_change > 0:
+                    long_score += 50  # New longs entering
+                else:
+                    short_score += 40  # New shorts entering
+            elif oi_change_pct < -5:  # OI decreasing
+                if price_change > 0:
+                    long_score += 30  # Short squeeze (shorts closing)
+                else:
+                    short_score += 30  # Long squeeze
+
+            best = max(long_score, short_score)
+            direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
+            return {'score': min(100, best), 'direction': direction,
+                    'reason': f'OI delta={oi_change_pct:+.1f}% price_chg={price_change:+.2f}'}
+        except Exception as e:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'OI error: {e}'}
+
+    def _score_sentiment(self, symbol: str, ind: dict) -> dict:
+        """Module: Sentiment composite (Fear & Greed + Twitter if available)."""
+        try:
+            import sys
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+            from strategies.utils.sentiment_reader import SentimentReader
+            reader = SentimentReader()
+            sentiment_data = reader.get_current_sentiment()
+
+            if not sentiment_data:
+                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No sentiment data'}
+
+            fg_score = sentiment_data.get('fear_greed', 50)  # 0-100
+            twitter_score = sentiment_data.get('twitter_sentiment', 0)  # -1 to +1
+
+            long_score = 0
+            short_score = 0
+
+            # Contrarian: extreme fear = buy, extreme greed = sell
+            if fg_score < 25:
+                long_score += 50
+            elif fg_score < 35:
+                long_score += 25
+            elif fg_score > 75:
+                short_score += 50
+            elif fg_score > 65:
+                short_score += 25
+
+            # Twitter sentiment boost
+            if twitter_score < -0.3:
+                long_score += 20  # Contrarian
+            elif twitter_score > 0.3:
+                short_score += 20
+
+            best = max(long_score, short_score)
+            direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
+            return {'score': min(100, best), 'direction': direction,
+                    'reason': f'F&G={fg_score} Twitter={twitter_score:+.2f}'}
+        except Exception as e:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'Sentiment error: {e}'}
+
+    def _score_squeeze_detector(self, symbol: str, ind: dict) -> dict:
+        """Module: Squeeze detection combining funding + OI + volatility compression."""
+        if not self._market_data:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No market data'}
+        try:
+            funding_zscore = self._get_funding_zscore_per_token(symbol)
+            bb_pct = ind.get('bb_pct', 0.5)
+
+            long_score = 0
+            short_score = 0
+
+            # Bollinger squeeze (BB width compression)
+            bb_squeeze = bb_pct > 0.3 and bb_pct < 0.7  # Price near middle = compression
+
+            # Short squeeze: very negative funding + compression
+            if funding_zscore < -1.5:
+                long_score += 40
+                if bb_squeeze:
+                    long_score += 20
+                if ind['rsi'] < ind['rsi_oversold'] + 10:
+                    long_score += 15
+
+            # Long squeeze: very positive funding + compression
+            if funding_zscore > 1.5:
+                short_score += 40
+                if bb_squeeze:
+                    short_score += 20
+                if ind['rsi'] > ind['rsi_overbought'] - 10:
+                    short_score += 15
+
+            best = max(long_score, short_score)
+            direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
+            return {'score': min(100, best), 'direction': direction,
+                    'reason': f'Squeeze: funding_z={funding_zscore:.2f} bb_pct={bb_pct:.2f}'}
+        except Exception as e:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'Squeeze error: {e}'}
+
+    def _score_order_imbalance(self, symbol: str, ind: dict) -> dict:
+        """Module: Order book bid/ask imbalance from HyperLiquid L2."""
+        try:
+            from hyperliquid.info import Info
+            info = Info(skip_ws=True)
+            l2_data = info.l2_snapshot(symbol)
+
+            if not l2_data or 'levels' not in l2_data:
+                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No L2 data'}
+
+            levels = l2_data['levels']
+            if len(levels) < 2:
+                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Insufficient L2 data'}
+
+            bids = levels[0]  # [[price, size], ...]
+            asks = levels[1]
+
+            # Sum top 10 levels
+            bid_depth = sum(float(b['sz']) for b in bids[:10])
+            ask_depth = sum(float(a['sz']) for a in asks[:10])
+            total = bid_depth + ask_depth
+
+            if total == 0:
+                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Empty book'}
+
+            imbalance = (bid_depth - ask_depth) / total  # -1 to +1
+
+            long_score = 0
+            short_score = 0
+
+            if imbalance > 0.3:
+                long_score += int(40 + imbalance * 30)  # 40-70
+            elif imbalance < -0.3:
+                short_score += int(40 + abs(imbalance) * 30)
+
+            best = max(long_score, short_score)
+            direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
+            return {'score': min(100, best), 'direction': direction,
+                    'reason': f'Book imbalance={imbalance:+.2f} bid={bid_depth:.0f} ask={ask_depth:.0f}'}
+        except Exception as e:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'L2 error: {e}'}
 
     # =========================================================================
     # BTC MACRO FILTER
@@ -865,17 +1027,23 @@ class AdaptiveHybridStrategy(BaseStrategy):
     # AGGREGATION
     # =========================================================================
 
-    def _get_weights_for_symbol(self, symbol: str) -> dict:
-        """Get module weights for this token's behavior class."""
+    def _get_weights_for_symbol(self, symbol: str, ind: dict = None) -> dict:
+        """Get module weights based on dynamic regime detection."""
+        if ind is not None and 'adx' in ind:
+            if ind['adx'] > 30:
+                return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('trending', self.weights)
+            elif ind['adx'] < 20:
+                return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('ranging', self.weights)
+        # Fallback: static mapping
         if symbol in ADAPTIVE_HYBRID_RANGING_TOKENS:
             return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('ranging', self.weights)
         elif symbol in ADAPTIVE_HYBRID_TRENDING_TOKENS:
             return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('trending', self.weights)
         return self.weights
 
-    def _aggregate_scores(self, module_results: dict, symbol: str = None) -> dict:
+    def _aggregate_scores(self, module_results: dict, symbol: str = None, ind: dict = None) -> dict:
         """Aggregate all module scores into a final trading decision."""
-        weights = self._get_weights_for_symbol(symbol) if symbol else self.weights
+        weights = self._get_weights_for_symbol(symbol, ind=ind) if symbol else self.weights
 
         # Separate by direction
         long_modules = {}
@@ -948,12 +1116,20 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     final_score *= btc_penalty
                     details = f" | BTC bullish penalty -{btc_penalty_amount:.0%} (corr={corr:.2f})"
 
-        # Conflict penalty: if opposing direction has significant weight
-        if losing_weight > 0.25 * winning_weight:
-            conflict_factor = 0.70
-            final_score *= conflict_factor
+        # Graduated conflict penalty
+        conflict_ratio = losing_weight / max(winning_weight, 0.01)
+        if conflict_ratio > 0.15:
+            conflict_factor = max(0.50, 1.0 - conflict_ratio * 0.60)
         else:
             conflict_factor = 1.0
+        final_score *= conflict_factor
+
+        # Session filter
+        hour = datetime.utcnow().hour
+        if hour in ADAPTIVE_HYBRID_AVOID_HOURS:
+            final_score *= 0.80
+        elif hour in ADAPTIVE_HYBRID_OPTIMAL_HOURS:
+            final_score *= 1.10
 
         # Build details string
         module_details = []
@@ -1054,20 +1230,23 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Compute all indicators
         ind = self._compute_indicators(df)
 
-        # Run all 8 modules
+        # Run all 11 modules
         module_results = {
             'mean_reversion': self._score_mean_reversion(df, ind),
             'momentum_breakout': self._score_momentum_breakout(df, ind),
-            'ema_crossover': self._score_ema_crossover(df, ind),
+            'ema_trend': self._score_ema_trend(symbol, ind),
             'funding_contrarian': self._score_funding_contrarian(symbol, ind),
-            'rsi_divergence': self._score_rsi_divergence(df, ind),
+            'rsi_divergence': self._score_rsi_divergence(symbol, ind),
             'sniper_lite': self._score_sniper_lite(df, ind),
-            'trend_rider_lite': self._score_trend_rider_lite(df, ind),
             'ramf_lite': self._score_ramf_lite(df, ind),
+            'oi_delta': self._score_oi_delta(symbol, ind),
+            'sentiment': self._score_sentiment(symbol, ind),
+            'squeeze_detector': self._score_squeeze_detector(symbol, ind),
+            'order_imbalance': self._score_order_imbalance(symbol, ind),
         }
 
         # Aggregate scores
-        aggregated = self._aggregate_scores(module_results, symbol=symbol)
+        aggregated = self._aggregate_scores(module_results, symbol=symbol, ind=ind)
 
         # Get threshold
         threshold = self._get_effective_threshold(symbol)
@@ -1076,7 +1255,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Log analysis
         fired_modules = {n: r for n, r in module_results.items() if r['score'] > 0 and r['direction'] != 'NEUTRAL'}
         cprint(f"  [{symbol}] Score: {aggregated['score']:.1f}/{threshold:.0f} | "
-               f"Modules: {len(fired_modules)}/8 | Direction: {aggregated['direction']} | "
+               f"Modules: {len(fired_modules)}/{len(module_results)} | Direction: {aggregated['direction']} | "
                f"Urgency: {urgency:.0%}", "white")
 
         for name, result in fired_modules.items():
@@ -1193,7 +1372,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 self.last_trade_date = today
 
     def execute_paper_trade(self, signal: dict) -> dict:
-        """Execute a paper trade (simulation)."""
+        """Execute a paper trade (simulation) with capital protection checks."""
         if not PAPER_TRADING:
             return None
 
@@ -1202,6 +1381,24 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         if not symbol or direction == 'NEUTRAL':
             return None
+
+        # HWM Drawdown check
+        self.peak_balance = max(self.peak_balance, self.paper_balance)
+        hwm_drawdown_pct = (self.peak_balance - self.paper_balance) / self.peak_balance * 100
+        if hwm_drawdown_pct >= RISK_MAX_DRAWDOWN_PCT:
+            cprint(f"[AdaptiveHybrid] HWM DRAWDOWN BREAKER: {hwm_drawdown_pct:.1f}% from peak ${self.peak_balance:,.2f}", "red", attrs=['bold'])
+            return None
+
+        # Correlation-aware position check
+        if len(self.paper_positions) > 0:
+            same_direction_positions = [p for p in self.paper_positions.values() if p['direction'] == direction]
+            if len(same_direction_positions) >= 2:
+                new_corr = self._get_btc_correlation(symbol)
+                if new_corr is not None and abs(new_corr) > 0.7:
+                    avg_corr = sum(abs(self._get_btc_correlation(p['symbol']) or 0) for p in same_direction_positions) / len(same_direction_positions)
+                    if avg_corr > 0.6:
+                        cprint(f"[AdaptiveHybrid] CORRELATION LIMIT: {len(same_direction_positions)} correlated {direction} positions (avg corr={avg_corr:.2f})", "yellow")
+                        return None
 
         metadata = signal.get('metadata', {})
         price = metadata.get('current_price', 0)
@@ -1217,6 +1414,15 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         sl_pct = metadata.get('stop_loss_pct', 1.5)
         tp_pct = metadata.get('take_profit_pct', 2.5)
+        atr = metadata.get('atr', 0)
+
+        # Dynamic leverage by token class
+        token_class = 'mid'  # default
+        for cls, profile in ADAPTIVE_HYBRID_ATR_PROFILES.items():
+            if symbol in profile['tokens']:
+                token_class = cls
+                break
+        leverage = ADAPTIVE_HYBRID_LEVERAGE_PROFILES.get(token_class, ADAPTIVE_HYBRID_LEVERAGE)
 
         # Calculate SL/TP prices (pure math, no shared state)
         if direction == 'BUY':
@@ -1232,23 +1438,26 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 pos.get('position_size', 0) / pos.get('leverage', ADAPTIVE_HYBRID_LEVERAGE)
                 for pos in self.paper_positions.values()
             )
-            available_margin = max(0, self.paper_balance - used_margin)
+
+            # Apply cash reserve
+            cash_reserve = self.paper_balance * (CASH_PERCENTAGE / 100)
+            available_margin = max(0, self.paper_balance - used_margin - cash_reserve)
 
             # Position sizing: 2% risk per trade
-            # The ATR-based sl_pct already adjusts for volatility naturally:
-            # high vol → wide SL → smaller position; low vol → tight SL → larger position.
-            # No additional vol_scalar needed (avoids double-counting ATR).
             risk_amount = self.paper_balance * 0.02
             sl_fraction = max(sl_pct / 100, 0.001)  # Guard against near-zero SL
-            position_size = risk_amount / sl_fraction * ADAPTIVE_HYBRID_LEVERAGE
-            max_position_by_margin = available_margin * 0.9 * ADAPTIVE_HYBRID_LEVERAGE
-            # Cap on notional exposure (not margin) — intentionally conservative
+            position_size = risk_amount / sl_fraction * leverage
+            max_position_by_margin = available_margin * 0.9 * leverage
+            # Cap on notional exposure (not margin)
             max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100)
             position_size = min(position_size, max_position_by_margin, max_position_by_pct)
 
             if position_size < 10:
                 cprint(f"[AdaptiveHybrid] Insufficient margin", "red")
                 return None
+
+            # Deduct entry fee
+            entry_fee = position_size * PAPER_TAKER_FEE
 
             # Generate position ID (under lock to avoid counter race)
             self._position_counter += 1
@@ -1257,15 +1466,18 @@ class AdaptiveHybridStrategy(BaseStrategy):
             trade = {
                 'position_id': position_id,
                 'timestamp': datetime.now().isoformat(),
+                'entry_time': datetime.now(),
                 'symbol': symbol,
                 'direction': direction,
                 'entry_price': price,
                 'position_size': round(position_size, 2),
-                'leverage': ADAPTIVE_HYBRID_LEVERAGE,
+                'leverage': leverage,
                 'stop_loss': round(stop_loss_price, 2),
                 'take_profit': round(take_profit_price, 2),
                 'sl_pct': sl_pct,
                 'tp_pct': tp_pct,
+                'atr': atr,
+                'entry_fee': round(entry_fee, 4),
                 'confidence': round(float(signal.get('signal', 0)) * 100, 1),
                 'status': 'OPEN',
                 'score': metadata.get('score', 0),
@@ -1273,6 +1485,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             }
 
             self.paper_positions[position_id] = trade
+            self.paper_balance -= entry_fee
             self.daily_trades += 1
             self.last_trade_time = datetime.now()
             self.last_trade_time_per_token[symbol] = datetime.now()
@@ -1286,15 +1499,15 @@ class AdaptiveHybridStrategy(BaseStrategy):
             df.to_csv(log_file, index=False)
 
         cprint(f"\n[ADAPTIVE HYBRID] Opened {direction} {symbol} (ID: {position_id})", "magenta", attrs=['bold'])
-        cprint(f"  Entry: ${price:,.2f} | Size: ${position_size:,.2f} | Score: {metadata.get('score', 0):.1f}", "white")
-        cprint(f"  Risk: ${risk_amount:,.2f} | SL: {sl_pct:.2f}%", "white")
+        cprint(f"  Entry: ${price:,.2f} | Size: ${position_size:,.2f} | Leverage: {leverage}x | Score: {metadata.get('score', 0):.1f}", "white")
+        cprint(f"  Risk: ${risk_amount:,.2f} | SL: {sl_pct:.2f}% | Fee: ${entry_fee:.4f}", "white")
         cprint(f"  SL: ${trade['stop_loss']:,.2f} ({sl_pct:.2f}%)", "white")
         cprint(f"  TP: ${trade['take_profit']:,.2f} ({tp_pct:.2f}%)", "white")
 
         return trade
 
     def monitor_paper_positions(self) -> list:
-        """Monitor all open paper positions and close those that hit SL/TP."""
+        """Monitor all open paper positions: intra-candle SL/TP, trailing stop, time-based exits."""
         if not PAPER_TRADING or not self.paper_positions:
             return []
 
@@ -1303,12 +1516,18 @@ class AdaptiveHybridStrategy(BaseStrategy):
         with self._position_lock:
             symbols_to_check = set(pos['symbol'] for pos in self.paper_positions.values())
 
-        current_prices = {}
+        # Fetch candle data with high/low for intra-candle checks
+        candle_data = {}  # {symbol: {'close': float, 'high': float, 'low': float}}
         for symbol in symbols_to_check:
             try:
                 df = self._fetch_candles(symbol, interval='15m', candles=5)
                 if df is not None and len(df) > 0:
-                    current_prices[symbol] = float(df['close'].iloc[-1])
+                    last = df.iloc[-1]
+                    candle_data[symbol] = {
+                        'close': float(last['close']),
+                        'high': float(last['high']),
+                        'low': float(last['low']),
+                    }
             except Exception:
                 pass
 
@@ -1317,38 +1536,115 @@ class AdaptiveHybridStrategy(BaseStrategy):
         with self._position_lock:
             for position_id, trade in self.paper_positions.items():
                 symbol = trade['symbol']
-                if symbol not in current_prices:
+                if symbol not in candle_data:
                     continue
 
-                current_price = current_prices[symbol]
+                cd = candle_data[symbol]
+                current_price = cd['close']
+                candle_high = cd['high']
+                candle_low = cd['low']
                 direction = trade['direction']
+                entry_price = trade['entry_price']
                 stop_loss = trade['stop_loss']
                 take_profit = trade['take_profit']
 
                 close_reason = None
+                close_price = current_price
+
+                # Intra-candle SL/TP check using high/low
                 if direction == 'BUY':
-                    if current_price <= stop_loss:
+                    if candle_low <= stop_loss:
                         close_reason = 'STOP_LOSS'
-                    elif current_price >= take_profit:
+                        close_price = stop_loss
+                    elif candle_high >= take_profit:
                         close_reason = 'TAKE_PROFIT'
+                        close_price = take_profit
                 else:
-                    if current_price >= stop_loss:
+                    if candle_high >= stop_loss:
                         close_reason = 'STOP_LOSS'
-                    elif current_price <= take_profit:
+                        close_price = stop_loss
+                    elif candle_low <= take_profit:
                         close_reason = 'TAKE_PROFIT'
+                        close_price = take_profit
+
+                # Trailing stop management (only if not already closing)
+                if close_reason is None:
+                    if position_id not in self.trailing_stops:
+                        self.trailing_stops[position_id] = {
+                            'highest': entry_price, 'lowest': entry_price, 'trailing_active': False
+                        }
+
+                    ts = self.trailing_stops[position_id]
+                    ts['highest'] = max(ts['highest'], candle_high)
+                    ts['lowest'] = min(ts['lowest'], candle_low)
+
+                    atr = trade.get('atr', 0)
+                    if atr <= 0:
+                        atr = abs(entry_price * 0.015)  # fallback 1.5%
+
+                    if direction == 'BUY':
+                        profit_in_atr = (ts['highest'] - entry_price) / atr
+                        if profit_in_atr >= ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR:
+                            ts['trailing_active'] = True
+                        if ts['trailing_active']:
+                            trailing_sl = ts['highest'] - ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR * atr
+                            if trailing_sl > stop_loss:
+                                if candle_low <= trailing_sl:
+                                    close_reason = 'TRAILING_STOP'
+                                    close_price = trailing_sl
+                    elif direction == 'SELL':
+                        profit_in_atr = (entry_price - ts['lowest']) / atr
+                        if profit_in_atr >= ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR:
+                            ts['trailing_active'] = True
+                        if ts['trailing_active']:
+                            trailing_sl = ts['lowest'] + ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR * atr
+                            if trailing_sl < stop_loss:
+                                if candle_high >= trailing_sl:
+                                    close_reason = 'TRAILING_STOP'
+                                    close_price = trailing_sl
+
+                # Time-based exit (only if not already closing)
+                if close_reason is None:
+                    entry_time = trade.get('entry_time')
+                    if entry_time is not None:
+                        if isinstance(entry_time, str):
+                            try:
+                                entry_time = datetime.fromisoformat(entry_time)
+                            except (ValueError, TypeError):
+                                entry_time = None
+
+                    if entry_time is not None:
+                        hold_hours = (datetime.now() - entry_time).total_seconds() / 3600
+
+                        if hold_hours >= ADAPTIVE_HYBRID_MAX_HOLD_HOURS:
+                            close_reason = 'TIME_EXIT_48H'
+                            close_price = current_price
+                        elif hold_hours >= ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS:
+                            # Close if less than 50% of TP reached
+                            if direction == 'BUY':
+                                tp_dist = take_profit - entry_price
+                                tp_progress = (current_price - entry_price) / tp_dist if tp_dist > 0 else 0
+                            else:
+                                tp_dist = entry_price - take_profit
+                                tp_progress = (entry_price - current_price) / tp_dist if tp_dist > 0 else 0
+                            if tp_progress < 0.5:
+                                close_reason = 'TIME_EXIT_24H'
+                                close_price = current_price
 
                 if close_reason:
-                    positions_to_close.append((position_id, current_price, close_reason))
+                    positions_to_close.append((position_id, close_price, close_reason))
 
         for position_id, close_price, reason in positions_to_close:
             closed_trade = self._close_paper_position(position_id, close_price, reason)
             if closed_trade:
                 closed.append(closed_trade)
+                # Clean up trailing stop state
+                self.trailing_stops.pop(position_id, None)
 
         return closed
 
     def _close_paper_position(self, position_id: str, close_price: float, reason: str) -> dict:
-        """Close a paper position and update PnL. Fully thread-safe."""
+        """Close a paper position with slippage and fees simulation. Fully thread-safe."""
         with self._position_lock:
             if position_id not in self.paper_positions:
                 return None
@@ -1357,18 +1653,44 @@ class AdaptiveHybridStrategy(BaseStrategy):
             entry_price = trade['entry_price']
             direction = trade['direction']
             position_size = trade['position_size']
+            symbol = trade['symbol']
+            entry_fee = trade.get('entry_fee', 0)
+
+            # Determine token class for slippage
+            token_class = 'mid'
+            for cls, profile in ADAPTIVE_HYBRID_ATR_PROFILES.items():
+                if symbol in profile['tokens']:
+                    token_class = cls
+                    break
+
+            slippage = PAPER_SLIPPAGE.get(token_class, 0.002)
+            exit_fee = position_size * PAPER_TAKER_FEE
+
+            # Apply slippage to close price (worse for trader)
+            if direction == 'BUY':
+                effective_close_price = close_price * (1 - slippage)
+            else:
+                effective_close_price = close_price * (1 + slippage)
 
             if direction == 'BUY':
-                price_change_pct = (close_price - entry_price) / entry_price
+                price_change_pct = (effective_close_price - entry_price) / entry_price
             else:
-                price_change_pct = (entry_price - close_price) / entry_price
+                price_change_pct = (entry_price - effective_close_price) / entry_price
 
             pnl = position_size * price_change_pct
 
+            # Deduct fees from PnL
+            total_fees = entry_fee + exit_fee
+            pnl = pnl - total_fees
+
             trade['close_price'] = close_price
+            trade['effective_close_price'] = round(effective_close_price, 6)
             trade['exit_price'] = close_price
             trade['exit_time'] = datetime.now().isoformat()
             trade['close_reason'] = reason
+            trade['exit_fee'] = round(exit_fee, 4)
+            trade['total_fees'] = round(total_fees, 4)
+            trade['slippage'] = slippage
             trade['pnl'] = round(pnl, 2)
             trade['pnl_pct'] = round(price_change_pct * 100, 2)
             trade['status'] = 'CLOSED'
@@ -1381,8 +1703,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         color = 'green' if pnl > 0 else 'red'
         cprint(f"\n[ADAPTIVE HYBRID] Closed {trade['symbol']} ({reason})", color, attrs=['bold'])
-        cprint(f"  Entry: ${entry_price:,.2f} -> Exit: ${close_price:,.2f}", "white")
-        cprint(f"  PnL: ${pnl:+,.2f} ({price_change_pct*100:+.2f}%)", color)
+        cprint(f"  Entry: ${entry_price:,.2f} -> Exit: ${close_price:,.2f} (eff: ${effective_close_price:,.2f})", "white")
+        cprint(f"  PnL: ${pnl:+,.2f} ({price_change_pct*100:+.2f}%) | Fees: ${total_fees:.4f} | Slip: {slippage:.3%}", color)
         cprint(f"  Balance: ${balance_snapshot:,.2f}", "white")
 
         # I/O operations outside the lock

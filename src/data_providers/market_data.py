@@ -273,6 +273,43 @@ class MarketDataProvider:
                 'top_symbols': []
             }
 
+    def get_l2_book(self, symbol: str, depth: int = 10) -> Optional[Dict]:
+        """Get L2 order book from HyperLiquid."""
+        try:
+            response = requests.post(
+                HYPERLIQUID_API_URL,
+                headers={'Content-Type': 'application/json'},
+                json={"type": "l2Book", "coin": symbol},
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                return None
+
+            data = response.json()
+            if not data or 'levels' not in data:
+                return None
+
+            bids = data['levels'][0][:depth]
+            asks = data['levels'][1][:depth]
+
+            bid_depth = sum(float(b['sz']) for b in bids)
+            ask_depth = sum(float(a['sz']) for a in asks)
+            total = bid_depth + ask_depth
+            imbalance = (bid_depth - ask_depth) / total if total > 0 else 0
+
+            return {
+                'bid_depth': bid_depth,
+                'ask_depth': ask_depth,
+                'imbalance': imbalance,
+                'spread': float(asks[0]['px']) - float(bids[0]['px']) if bids and asks else 0,
+                'best_bid': float(bids[0]['px']) if bids else 0,
+                'best_ask': float(asks[0]['px']) if asks else 0,
+            }
+        except Exception as e:
+            cprint(f"[MarketData] Error getting L2 book for {symbol}: {e}", "yellow")
+            return None
+
     def get_market_snapshot(self, symbol: str) -> Dict:
         """
         Get a complete market snapshot for an asset.

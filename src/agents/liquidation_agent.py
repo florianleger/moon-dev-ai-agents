@@ -21,6 +21,7 @@ from src import nice_funcs_hyperliquid as hl
 from src.agents.api import MoonDevAPI
 from collections import deque
 from src.agents.base_agent import BaseAgent
+from src.data.signals.signal_pipeline import SignalPipeline
 import traceback
 import numpy as np
 import re
@@ -543,6 +544,22 @@ class LiquidationAgent(BaseAgent):
                                                               previous_longs, previous_shorts)
                             
                             if analysis:
+                                # Persist signal to pipeline
+                                SignalPipeline.write_signal(
+                                    source='liquidation_agent',
+                                    symbol='MARKET',
+                                    direction=analysis['action'],
+                                    confidence=analysis['confidence'],
+                                    reasoning=analysis['analysis'],
+                                    metadata={
+                                        'pct_change': analysis['pct_change'],
+                                        'pct_change_longs': analysis['pct_change_longs'],
+                                        'pct_change_shorts': analysis['pct_change_shorts'],
+                                        'current_longs': current_longs,
+                                        'current_shorts': current_shorts,
+                                    }
+                                )
+
                                 # Format and announce
                                 message = self._format_announcement(analysis)
                                 if message:

@@ -429,29 +429,62 @@ ADAPTIVE_HYBRID_ATR_PROFILES = {
 }
 ADAPTIVE_HYBRID_RESET_PAPER = True       # One-shot flag: reset paper trading state on next startup
 
+# Trailing Stop (conservative)
+ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR = 1.5  # Activate trailing after +1.5 ATR profit
+ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR = 2.0  # Trail at 2 ATR from high/low
+
+# Session filter (UTC hours)
+ADAPTIVE_HYBRID_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 19, 20, 21]  # London + NY + Asia open
+ADAPTIVE_HYBRID_AVOID_HOURS = [0, 1, 2, 3, 4, 5]  # Low liquidity
+
+# Time-based exit
+ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48  # Force close after 48h
+ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 24  # Close if <50% TP after 24h
+
+# Paper trading fees simulation
+PAPER_TAKER_FEE = 0.00035  # HyperLiquid taker fee 0.035%
+PAPER_SLIPPAGE = {
+    'major': 0.001,   # 0.1% for BTC, ETH
+    'mid': 0.002,     # 0.2% for SOL, XRP, AVAX, etc.
+    'alt': 0.005,     # 0.5% for DOGE, kPEPE, ENA
+}
+
+# Leverage profiles by token class
+ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {
+    'major': 3,   # BTC, ETH
+    'mid': 3,     # SOL, XRP, AVAX, etc.
+    'alt': 2,     # DOGE, kPEPE, ENA — lower leverage for volatile alts
+}
+
 # Module weights (must sum to 1.0)
 ADAPTIVE_HYBRID_WEIGHTS = {
-    'mean_reversion': 0.15,      # Bollinger Bands + RSI in ranging markets
-    'momentum_breakout': 0.12,   # Range breakout + volume confirmation
-    'ema_crossover': 0.10,       # EMA 9/21 crossover signals
-    'funding_contrarian': 0.10,  # Extreme funding rate contrarian
-    'rsi_divergence': 0.10,      # Price vs RSI divergence
-    'sniper_lite': 0.18,         # Relaxed Sniper (extreme move + volume)
-    'trend_rider_lite': 0.15,    # Relaxed trend following (ADX>25)
-    'ramf_lite': 0.10,           # Volatility regime (no dead zone)
+    'mean_reversion': 0.12,      # Bollinger Bands + RSI in ranging markets
+    'momentum_breakout': 0.10,   # Range breakout + volume confirmation
+    'ema_trend': 0.10,           # EMA trend (merged ema_crossover + trend_rider)
+    'funding_contrarian': 0.08,  # Extreme funding rate contrarian
+    'rsi_divergence': 0.08,      # Price vs RSI divergence
+    'sniper_lite': 0.14,         # Relaxed Sniper (extreme move + volume)
+    'trend_rider_lite': 0.00,    # Merged into ema_trend
+    'ramf_lite': 0.08,           # Volatility regime (no dead zone)
+    'oi_delta': 0.10,            # NEW: Open Interest delta
+    'sentiment': 0.08,           # NEW: Sentiment composite
+    'squeeze_detector': 0.06,    # NEW: Squeeze detection
+    'order_imbalance': 0.06,     # NEW: Order book imbalance
 }
 
 # Weight profiles by token behavior class
 ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
     'ranging': {  # BTC, ETH — often range-bound
-        'mean_reversion': 0.20, 'momentum_breakout': 0.08, 'ema_crossover': 0.10,
-        'funding_contrarian': 0.12, 'rsi_divergence': 0.12, 'sniper_lite': 0.18,
-        'trend_rider_lite': 0.10, 'ramf_lite': 0.10,
+        'mean_reversion': 0.16, 'momentum_breakout': 0.06, 'ema_trend': 0.08,
+        'funding_contrarian': 0.10, 'rsi_divergence': 0.10, 'sniper_lite': 0.14,
+        'trend_rider_lite': 0.00, 'ramf_lite': 0.08,
+        'oi_delta': 0.08, 'sentiment': 0.08, 'squeeze_detector': 0.06, 'order_imbalance': 0.06,
     },
     'trending': {  # DOGE, kPEPE, SUI, TAO — strong momentum
-        'mean_reversion': 0.08, 'momentum_breakout': 0.18, 'ema_crossover': 0.12,
-        'funding_contrarian': 0.10, 'rsi_divergence': 0.08, 'sniper_lite': 0.14,
-        'trend_rider_lite': 0.20, 'ramf_lite': 0.10,
+        'mean_reversion': 0.06, 'momentum_breakout': 0.14, 'ema_trend': 0.10,
+        'funding_contrarian': 0.08, 'rsi_divergence': 0.06, 'sniper_lite': 0.12,
+        'trend_rider_lite': 0.00, 'ramf_lite': 0.08,
+        'oi_delta': 0.12, 'sentiment': 0.08, 'squeeze_detector': 0.08, 'order_imbalance': 0.08,
     },
 }
 ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
@@ -463,6 +496,11 @@ ADAPTIVE_HYBRID_TRENDING_TOKENS = ['DOGE', 'kPEPE', 'SUI', 'TAO']
 RISK_MAX_DRAWDOWN_PCT = 15       # Pause trading if PnL < -15% of initial capital
 RISK_MAX_DAILY_LOSS_USD = 30     # Pause trading for the day if daily PnL < -$30
 RISK_MAX_POSITIONS = 4           # Maximum simultaneous open positions
+
+# Cooling-off after drawdown breach
+RISK_COOLING_OFF_HOURS = 4        # Wait 4h after drawdown breach before resuming
+RISK_RECOVERY_SIZE_PCT = 50       # Resume with 50% size for 24h after recovery
+RISK_RECOVERY_DURATION_HOURS = 24 # Duration of reduced-size recovery period
 
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3

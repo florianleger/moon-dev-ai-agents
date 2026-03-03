@@ -27,6 +27,7 @@ from src import nice_funcs_hyperliquid as hl  # Add import for hyperliquid funct
 from src.agents.api import MoonDevAPI
 from collections import deque
 from src.agents.base_agent import BaseAgent
+from src.data.signals.signal_pipeline import SignalPipeline
 import traceback
 import numpy as np
 import anthropic
@@ -520,6 +521,21 @@ class WhaleAgent(BaseAgent):
                     analysis_first_line = analysis['analysis'].split('\n')[0] if analysis['analysis'] else ""
                     message += f" | AI suggests {analysis['action']} with {analysis['confidence']}% confidence. "
                     message += f"Analysis: {analysis_first_line} 🌙"
+
+                    # Persist signal to pipeline
+                    SignalPipeline.write_signal(
+                        source='whale_agent',
+                        symbol='BTC',
+                        direction=analysis['action'],
+                        confidence=analysis['confidence'],
+                        reasoning=analysis_first_line,
+                        metadata={
+                            'oi_change_pct': changes['btc'],
+                            'interval_minutes': changes['interval'],
+                            'current_oi': changes['current_btc'],
+                            'previous_oi': changes['start_btc'],
+                        }
+                    )
             
             # Return both message and whale status
             return message, is_whale

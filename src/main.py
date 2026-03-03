@@ -5,6 +5,8 @@ Main entry point for running trading agents
 
 import os
 import sys
+import json
+import threading
 from termcolor import cprint
 from dotenv import load_dotenv
 import time
@@ -59,6 +61,16 @@ if ACTIVE_AGENTS['copybot']:
 if ACTIVE_AGENTS['sentiment']:
     from src.agents.sentiment_agent import SentimentAgent
 
+def position_monitor_loop(strategy, interval=30):
+    """Dedicated thread for monitoring SL/TP every 30 seconds."""
+    while True:
+        try:
+            strategy.monitor_paper_positions()
+        except Exception as e:
+            cprint(f"[Monitor] Error: {e}", "red")
+        time.sleep(interval)
+
+
 def run_agents():
     """Run all active agents in sequence"""
     try:
@@ -70,14 +82,29 @@ def run_agents():
         sentiment_agent = SentimentAgent() if ACTIVE_AGENTS['sentiment'] else None
 
         # Link risk agent to strategy for paper trading monitoring
+        # and start dedicated SL/TP monitoring thread
+        monitor_strategy = None
         if risk_agent and strategy_agent:
             for strategy in strategy_agent.enabled_strategies:
                 if hasattr(strategy, 'get_paper_status'):
                     risk_agent.set_strategy(strategy)
+                    monitor_strategy = strategy
                     break
+
+        if monitor_strategy and hasattr(monitor_strategy, 'monitor_paper_positions'):
+            monitor_thread = threading.Thread(
+                target=position_monitor_loop,
+                args=(monitor_strategy, 30),
+                daemon=True,
+                name="SL_TP_Monitor"
+            )
+            monitor_thread.start()
+            cprint("[Main] SL/TP monitor thread started (30s interval)", "cyan")
 
         while True:
             try:
+                cycle_start = time.time()
+
                 # Run Risk Management
                 if risk_agent:
                     cprint("\n🛡️ Running Risk Management...", "cyan")
@@ -135,12 +162,27 @@ def run_agents():
                             active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
                             tokens_to_analyze = [t for t in active_tokens if t not in EXCLUDED_TOKENS]
                             cprint(f"\n🔍 Analyzing {len(tokens_to_analyze)} tokens...", "cyan")
-                            for token in tokens_to_analyze:
-                                # Re-check risk between each token to catch mid-cycle breaches
-                                if risk_agent and not risk_agent.is_trading_allowed():
-                                    cprint(f"\n⛔ Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
+
+                            # Use batch signal generation if available
+                            batch_used = False
+                            for strat in strategy_agent.enabled_strategies:
+                                if hasattr(strat, 'generate_signals_batch'):
+                                    try:
+                                        results = strat.generate_signals_batch(tokens_to_analyze)
+                                        batch_used = True
+                                        if results:
+                                            cprint(f"[Batch] Got {len(results)} signal results", "cyan")
+                                    except Exception as e:
+                                        cprint(f"[Batch] Error: {e}, falling back to sequential", "yellow")
                                     break
-                                strategy_agent.get_signals(token)
+
+                            # Fallback to sequential if batch not available or failed
+                            if not batch_used:
+                                for token in tokens_to_analyze:
+                                    if risk_agent and not risk_agent.is_trading_allowed():
+                                        cprint(f"\n⛔ Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
+                                        break
+                                    strategy_agent.get_signals(token)
 
                 # Run CopyBot Analysis
                 if copybot_agent:
@@ -151,6 +193,21 @@ def run_agents():
                 if sentiment_agent:
                     cprint("\n🎭 Running Sentiment Analysis...", "cyan")
                     sentiment_agent.run()
+
+                # Write heartbeat
+                cycle_end = time.time()
+                cycle_duration = cycle_end - cycle_start
+                heartbeat_path = os.path.join(os.path.dirname(__file__), 'data', 'bot_heartbeat.json')
+                try:
+                    os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
+                    with open(heartbeat_path, 'w') as f:
+                        json.dump({
+                            'last_cycle': datetime.now().isoformat(),
+                            'status': 'running',
+                            'cycle_duration_s': round(cycle_duration, 1)
+                        }, f)
+                except Exception:
+                    pass
 
                 # Sleep until next cycle
                 next_run = datetime.now() + timedelta(minutes=SLEEP_BETWEEN_RUNS_MINUTES)
