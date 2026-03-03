@@ -112,7 +112,7 @@ ENABLE_STRATEGIES = True  # Set this to True to use strategies
 STRATEGY_MIN_CONFIDENCE = 0.7  # Minimum confidence to act on strategy signals
 
 # Sleep time between main agent runs
-SLEEP_BETWEEN_RUNS_MINUTES = 10  # How long to sleep between agent runs 🕒
+SLEEP_BETWEEN_RUNS_MINUTES = 5  # How long to sleep between agent runs 🕒
 
 # in our nice_funcs in token over view we look for minimum trades last hour
 MIN_TRADES_LAST_HOUR = 2
@@ -413,13 +413,17 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 
 ADAPTIVE_HYBRID_BASE_THRESHOLD = 45      # Base score threshold (0-100) to trigger a trade
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
-ADAPTIVE_HYBRID_URGENCY_FLOOR = 30       # Minimum threshold (never go below this)
+ADAPTIVE_HYBRID_URGENCY_FLOOR = 38       # Minimum threshold (never go below this)
 ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5     # Max trades per day
 ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30  # Daily loss limit in USD
 ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
 ADAPTIVE_HYBRID_ATR_SL_MULT = 1.5       # Stop loss = 1.5x ATR
-ADAPTIVE_HYBRID_ATR_TP_MULT = 2.5       # Take profit = 2.5x ATR
+ADAPTIVE_HYBRID_ATR_TP_MULT = 3.0       # Take profit = 3.0x ATR (must be >= SL_MULT * MIN_RR_RATIO)
 ADAPTIVE_HYBRID_SKIP_LLM = True          # Skip LLM re-evaluation (strategy has own filters)
+ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25    # Max position size as % of paper balance
+ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2  # Minimum modules agreeing for a trade signal
+ADAPTIVE_HYBRID_MIN_RR_RATIO = 2.0       # Minimum reward:risk ratio (TP must be >= SL * this)
+ADAPTIVE_HYBRID_RESET_PAPER = True       # One-shot flag: reset paper trading state on next startup
 
 # Module weights (must sum to 1.0)
 ADAPTIVE_HYBRID_WEIGHTS = {
@@ -432,6 +436,13 @@ ADAPTIVE_HYBRID_WEIGHTS = {
     'trend_rider_lite': 0.15,    # Relaxed trend following (ADX>25)
     'ramf_lite': 0.10,           # Volatility regime (no dead zone)
 }
+
+# ============================================================================
+# Risk Agent Settings (for paper trading mode)
+# ============================================================================
+RISK_MAX_DRAWDOWN_PCT = 15       # Pause trading if PnL < -15% of initial capital
+RISK_MAX_DAILY_LOSS_USD = 30     # Pause trading for the day if daily PnL < -$30
+RISK_MAX_POSITIONS = 4           # Maximum simultaneous open positions
 
 # Future variables (not active yet) 🔮
 sell_at_multiple = 3

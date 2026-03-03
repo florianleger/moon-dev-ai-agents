@@ -41,6 +41,8 @@ async def get_settings(username: str = Depends(verify_credentials)) -> Dict:
 
         if ACTIVE_STRATEGY == 'sniper':
             return _get_sniper_settings()
+        elif ACTIVE_STRATEGY == 'adaptive_hybrid':
+            return _get_adaptive_hybrid_settings()
         else:
             return _get_ramf_settings()
 
@@ -133,6 +135,50 @@ def _get_sniper_settings() -> Dict:
     }
 
 
+def _get_adaptive_hybrid_settings() -> Dict:
+    """Get Adaptive Hybrid strategy settings."""
+    from src.config import (
+        ACTIVE_STRATEGY,
+        PAPER_TRADING,
+        PAPER_TRADING_BALANCE,
+        ADAPTIVE_HYBRID_BASE_THRESHOLD,
+        ADAPTIVE_HYBRID_URGENCY_FLOOR,
+        ADAPTIVE_HYBRID_MAX_DAILY_TRADES,
+        ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD,
+        ADAPTIVE_HYBRID_LEVERAGE,
+        ADAPTIVE_HYBRID_ATR_SL_MULT,
+        ADAPTIVE_HYBRID_ATR_TP_MULT,
+        ADAPTIVE_HYBRID_WEIGHTS,
+        ADAPTIVE_HYBRID_MAX_POSITION_PCT,
+        ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES,
+        ADAPTIVE_HYBRID_MIN_RR_RATIO,
+        SNIPER_ASSETS,
+    )
+
+    return {
+        "strategy": "adaptive_hybrid",
+        "paper_trading": PAPER_TRADING,
+        "paper_balance": PAPER_TRADING_BALANCE,
+        "leverage": ADAPTIVE_HYBRID_LEVERAGE,
+        "min_confidence": ADAPTIVE_HYBRID_BASE_THRESHOLD,
+        "max_daily_trades": ADAPTIVE_HYBRID_MAX_DAILY_TRADES,
+        "assets": SNIPER_ASSETS,
+        "stop_loss_pct": ADAPTIVE_HYBRID_ATR_SL_MULT,
+        "take_profit_pct": ADAPTIVE_HYBRID_ATR_TP_MULT,
+        "max_daily_loss_usd": ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD,
+        "features": {
+            "btc_macro_filter": True,
+            "min_convergent_modules": ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES,
+            "min_rr_ratio": ADAPTIVE_HYBRID_MIN_RR_RATIO,
+            "max_position_pct": ADAPTIVE_HYBRID_MAX_POSITION_PCT,
+        },
+        "feature_params": {
+            "urgency_floor": ADAPTIVE_HYBRID_URGENCY_FLOOR,
+            "weights": ADAPTIVE_HYBRID_WEIGHTS,
+        }
+    }
+
+
 def _get_ramf_settings() -> Dict:
     """Get RAMF strategy settings."""
     from src.config import (
@@ -189,7 +235,12 @@ async def update_settings(
             content = f.read()
 
         updates = []
-        prefix = "SNIPER_" if ACTIVE_STRATEGY == 'sniper' else "RAMF_"
+        if ACTIVE_STRATEGY == 'sniper':
+            prefix = "SNIPER_"
+        elif ACTIVE_STRATEGY == 'adaptive_hybrid':
+            prefix = "ADAPTIVE_HYBRID_"
+        else:
+            prefix = "RAMF_"
 
         # Common settings
         if settings.paper_trading is not None:
@@ -205,7 +256,12 @@ async def update_settings(
         if settings.min_confidence is not None:
             if not 0 <= settings.min_confidence <= 100:
                 raise HTTPException(status_code=400, detail="Confidence must be 0-100")
-            key = "SNIPER_AI_MIN_CONFIDENCE" if ACTIVE_STRATEGY == 'sniper' else "RAMF_MIN_CONFIDENCE"
+            if ACTIVE_STRATEGY == 'sniper':
+                key = "SNIPER_AI_MIN_CONFIDENCE"
+            elif ACTIVE_STRATEGY == 'adaptive_hybrid':
+                key = "ADAPTIVE_HYBRID_BASE_THRESHOLD"
+            else:
+                key = "RAMF_MIN_CONFIDENCE"
             content = _replace_config_value(content, key, str(settings.min_confidence))
             updates.append(f"{key}={settings.min_confidence}")
 
@@ -226,14 +282,22 @@ async def update_settings(
         if settings.stop_loss_pct is not None:
             if not 0.1 <= settings.stop_loss_pct <= 10:
                 raise HTTPException(status_code=400, detail="Stop loss must be 0.1-10%")
-            content = _replace_config_value(content, f"{prefix}STOP_LOSS_PCT", str(settings.stop_loss_pct))
-            updates.append(f"{prefix}STOP_LOSS_PCT={settings.stop_loss_pct}")
+            if ACTIVE_STRATEGY == 'adaptive_hybrid':
+                sl_key = "ADAPTIVE_HYBRID_ATR_SL_MULT"
+            else:
+                sl_key = f"{prefix}STOP_LOSS_PCT"
+            content = _replace_config_value(content, sl_key, str(settings.stop_loss_pct))
+            updates.append(f"{sl_key}={settings.stop_loss_pct}")
 
         if settings.take_profit_pct is not None:
             if not 0.1 <= settings.take_profit_pct <= 20:
                 raise HTTPException(status_code=400, detail="Take profit must be 0.1-20%")
-            content = _replace_config_value(content, f"{prefix}TAKE_PROFIT_PCT", str(settings.take_profit_pct))
-            updates.append(f"{prefix}TAKE_PROFIT_PCT={settings.take_profit_pct}")
+            if ACTIVE_STRATEGY == 'adaptive_hybrid':
+                tp_key = "ADAPTIVE_HYBRID_ATR_TP_MULT"
+            else:
+                tp_key = f"{prefix}TAKE_PROFIT_PCT"
+            content = _replace_config_value(content, tp_key, str(settings.take_profit_pct))
+            updates.append(f"{tp_key}={settings.take_profit_pct}")
 
         # Sniper-specific feature toggles
         if ACTIVE_STRATEGY == 'sniper':

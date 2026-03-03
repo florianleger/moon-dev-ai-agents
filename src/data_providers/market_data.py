@@ -100,9 +100,10 @@ class MarketDataProvider:
                     self._all_prices_cache_time = time.time()
                     return True
 
+            cprint(f"[MarketData] Failed to fetch prices: HTTP {response.status_code}", "yellow")
             return False
         except Exception as e:
-            cprint(f"[MarketData] Error fetching all prices: {e}", "yellow")
+            cprint(f"[MarketData] Error fetching all prices: {type(e).__name__}: {e}", "yellow")
             return False
 
     def get_funding_rate(self, symbol: str) -> Optional[Dict]:
@@ -160,11 +161,10 @@ class MarketDataProvider:
 
     def get_funding_zscore(self, symbol: str) -> float:
         """
-        Calculate funding rate Z-score approximation.
+        Calculate funding rate Z-score using adaptive parameters from cache.
 
-        Uses typical perpetual funding distribution:
-        - Mean: ~10% annual (slight long bias)
-        - Std: ~15% annual
+        If enough symbols are cached, calculates mean/std from actual market data.
+        Falls back to typical perpetual funding distribution if insufficient data.
 
         Args:
             symbol: Asset symbol
@@ -175,21 +175,37 @@ class MarketDataProvider:
         try:
             data = self.get_funding_rate(symbol)
             if data and 'funding_rate' in data:
-                # HyperLiquid returns hourly funding rate
                 hourly_rate = data['funding_rate']
                 annual_rate = hourly_rate * 24 * 365 * 100  # Convert to annual %
 
-                # Typical funding parameters
+                # Adaptive: compute mean/std from all cached funding rates
+                if len(self._all_prices_cache) >= 5:
+                    all_annual_rates = [
+                        d['funding_rate'] * 24 * 365 * 100
+                        for d in self._all_prices_cache.values()
+                        if 'funding_rate' in d
+                    ]
+                    if len(all_annual_rates) >= 5:
+                        import statistics
+                        mean_funding = statistics.mean(all_annual_rates)
+                        std_funding = statistics.stdev(all_annual_rates)
+                        if std_funding < 1.0:
+                            std_funding = 1.0  # Floor to avoid division by near-zero
+                        zscore = (annual_rate - mean_funding) / std_funding
+                        return round(zscore, 2)
+
+                # Fallback: typical funding parameters
                 mean_funding = 10.0  # 10% annual mean
                 std_funding = 15.0   # 15% annual std
 
                 zscore = (annual_rate - mean_funding) / std_funding
                 return round(zscore, 2)
 
+            cprint(f"[MarketData] No funding data for {symbol}, returning Z=0", "yellow")
             return 0.0
 
         except Exception as e:
-            cprint(f"[MarketData] Error calculating funding Z-score: {e}", "yellow")
+            cprint(f"[MarketData] Error calculating funding Z-score for {symbol}: {e}", "yellow")
             return 0.0
 
     def get_liquidation_ratio(self, minutes: int = 15) -> float:

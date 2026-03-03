@@ -34,7 +34,7 @@ load_dotenv()
 # Data sources: HyperLiquid (funding, OI) + Binance WebSocket (liquidations)
 # No Moon Dev API dependency.
 ACTIVE_AGENTS = {
-    'risk': False,      # Risk management agent (disabled)
+    'risk': True,       # Risk management agent (paper trading circuit breakers)
     'trading': False,   # LLM trading agent (disabled)
     'strategy': True,   # RAMF Strategy only
     'copybot': False,   # CopyBot agent (disabled)
@@ -68,6 +68,13 @@ def run_agents():
         strategy_agent = StrategyAgent() if ACTIVE_AGENTS['strategy'] else None
         copybot_agent = CopyBotAgent() if ACTIVE_AGENTS['copybot'] else None
         sentiment_agent = SentimentAgent() if ACTIVE_AGENTS['sentiment'] else None
+
+        # Link risk agent to strategy for paper trading monitoring
+        if risk_agent and strategy_agent:
+            for strategy in strategy_agent.enabled_strategies:
+                if hasattr(strategy, 'get_paper_status'):
+                    risk_agent.set_strategy(strategy)
+                    break
 
         while True:
             try:
@@ -121,10 +128,18 @@ def run_agents():
 
                     # Only analyze new signals if strategy is running (controlled by dashboard)
                     if is_strategy_running():
-                        active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
-                        for token in active_tokens:
-                            if token not in EXCLUDED_TOKENS:  # Skip USDC and other excluded tokens
-                                cprint(f"\n🔍 Analyzing {token}...", "cyan")
+                        # Check risk agent before opening new positions
+                        if risk_agent and not risk_agent.is_trading_allowed():
+                            cprint(f"\n⛔ Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
+                        else:
+                            active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
+                            tokens_to_analyze = [t for t in active_tokens if t not in EXCLUDED_TOKENS]
+                            cprint(f"\n🔍 Analyzing {len(tokens_to_analyze)} tokens...", "cyan")
+                            for token in tokens_to_analyze:
+                                # Re-check risk between each token to catch mid-cycle breaches
+                                if risk_agent and not risk_agent.is_trading_allowed():
+                                    cprint(f"\n⛔ Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
+                                    break
                                 strategy_agent.get_signals(token)
 
                 # Run CopyBot Analysis

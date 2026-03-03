@@ -20,8 +20,10 @@ Target: 1-3 trades/day with 55%+ win rate.
 
 import os
 import json
+import threading
 import pandas as pd
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from termcolor import cprint
 from ta.volatility import AverageTrueRange, BollingerBands
@@ -46,6 +48,10 @@ try:
         ADAPTIVE_HYBRID_ATR_TP_MULT,
         ADAPTIVE_HYBRID_SKIP_LLM,
         ADAPTIVE_HYBRID_WEIGHTS,
+        ADAPTIVE_HYBRID_MAX_POSITION_PCT,
+        ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES,
+        ADAPTIVE_HYBRID_MIN_RR_RATIO,
+        ADAPTIVE_HYBRID_RESET_PAPER,
         SNIPER_ASSETS,
     )
 except ImportError:
@@ -53,13 +59,17 @@ except ImportError:
     PAPER_TRADING_BALANCE = 500
     ADAPTIVE_HYBRID_BASE_THRESHOLD = 45
     ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4
-    ADAPTIVE_HYBRID_URGENCY_FLOOR = 30
+    ADAPTIVE_HYBRID_URGENCY_FLOOR = 38
     ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5
     ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30
     ADAPTIVE_HYBRID_LEVERAGE = 3
     ADAPTIVE_HYBRID_ATR_SL_MULT = 1.5
-    ADAPTIVE_HYBRID_ATR_TP_MULT = 2.5
+    ADAPTIVE_HYBRID_ATR_TP_MULT = 3.0
     ADAPTIVE_HYBRID_SKIP_LLM = True
+    ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25
+    ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2
+    ADAPTIVE_HYBRID_MIN_RR_RATIO = 2.0
+    ADAPTIVE_HYBRID_RESET_PAPER = True
     ADAPTIVE_HYBRID_WEIGHTS = {
         'mean_reversion': 0.15, 'momentum_breakout': 0.12,
         'ema_crossover': 0.10, 'funding_contrarian': 0.10,
@@ -98,6 +108,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self.paper_positions = {}
         self.closed_positions = []
         self._position_counter = 0
+        self._position_lock = threading.Lock()
 
         # Market data provider (for funding rates)
         self._market_data = None
@@ -105,7 +116,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
             from src.data_providers.market_data import MarketDataProvider
             self._market_data = MarketDataProvider(start_liquidation_stream=False)
         except Exception as e:
-            cprint(f"[AdaptiveHybrid] Warning: Market data provider unavailable: {e}", "yellow")
+            cprint(f"[AdaptiveHybrid] Warning: Market data provider unavailable ({type(e).__name__}: {e})", "yellow")
+
+        # BTC trend cache (15-minute TTL)
+        self._btc_trend_cache = None
+        self._btc_trend_timestamp = None
 
         # Data directory
         self.data_dir = os.path.join(
@@ -114,14 +129,65 @@ class AdaptiveHybridStrategy(BaseStrategy):
         )
         os.makedirs(self.data_dir, exist_ok=True)
 
-        # Load existing state
-        self._load_state_from_csv()
+        # Check for paper trading reset flag
+        if ADAPTIVE_HYBRID_RESET_PAPER:
+            self._reset_paper_trading()
+        else:
+            # Load existing state
+            self._load_state_from_csv()
 
         cprint(f"[AdaptiveHybrid] Strategy initialized", "cyan")
         cprint(f"  - Assets: {len(self.assets)} symbols", "white")
         cprint(f"  - Base threshold: {ADAPTIVE_HYBRID_BASE_THRESHOLD}/100", "white")
         cprint(f"  - Paper Trading: {PAPER_TRADING}", "white")
         cprint(f"  - Balance: ${self.paper_balance:,.2f}", "white")
+
+    # =========================================================================
+    # PAPER TRADING RESET
+    # =========================================================================
+
+    def _reset_paper_trading(self):
+        """Reset paper trading state: balance to initial, clear all positions and history."""
+        cprint("[AdaptiveHybrid] RESET: Resetting paper trading state to initial values", "yellow", attrs=['bold'])
+
+        self.paper_balance = PAPER_TRADING_BALANCE
+        self.paper_positions = {}
+        self.closed_positions = []
+        self.daily_pnl = 0.0
+        self.daily_trades = 0
+        self._position_counter = 0
+
+        # Clear CSV files
+        for filename in ['paper_trades.csv', 'closed_trades.csv']:
+            filepath = os.path.join(self.data_dir, filename)
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                cprint(f"  Removed {filename}", "yellow")
+
+        # Disable reset flag in config to prevent re-reset on next restart
+        try:
+            import re
+            config_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+                'src', 'config.py'
+            )
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    content = f.read()
+                new_content = re.sub(
+                    r'^(ADAPTIVE_HYBRID_RESET_PAPER\s*=\s*)True',
+                    r'\g<1>False',
+                    content,
+                    flags=re.MULTILINE
+                )
+                if new_content != content:
+                    with open(config_path, 'w') as f:
+                        f.write(new_content)
+                    cprint("  Reset flag cleared in config.py (set to False)", "yellow")
+        except Exception as e:
+            cprint(f"  Warning: Could not clear reset flag in config: {e}", "yellow")
+
+        cprint(f"  Balance reset to ${PAPER_TRADING_BALANCE:,.2f}", "yellow")
 
     # =========================================================================
     # DATA FETCHING
@@ -622,6 +688,48 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 'reason': f'Regime={regime} ATR%={atr_percentile:.0f} VWAP_dist={abs(ind["close"] - ind["vwap"]):.2f}'}
 
     # =========================================================================
+    # BTC MACRO FILTER
+    # =========================================================================
+
+    def _check_btc_trend(self) -> bool:
+        """
+        Check if BTC is in an uptrend (price > EMA200).
+        Cached for 15 minutes.
+
+        Returns:
+            bool: True if BTC is bullish (price above EMA200)
+        """
+        if self._btc_trend_cache is not None and self._btc_trend_timestamp:
+            age = (datetime.now() - self._btc_trend_timestamp).total_seconds()
+            if age < 900:  # 15 min cache
+                return self._btc_trend_cache
+
+        try:
+            df = self._fetch_candles('BTC', interval='1h', candles=250)
+            if df is None or len(df) < 200:
+                return True  # Default to allowing trades
+
+            close = df['close']
+            ema200 = EMAIndicator(close, window=200).ema_indicator()
+
+            current_price = float(close.iloc[-1])
+            current_ema200 = float(ema200.iloc[-1])
+
+            is_bullish = current_price > current_ema200
+
+            self._btc_trend_cache = is_bullish
+            self._btc_trend_timestamp = datetime.now()
+
+            cprint(f"  [BTC Macro] Price=${current_price:,.0f} EMA200=${current_ema200:,.0f} "
+                   f"-> {'BULLISH' if is_bullish else 'BEARISH'}", "cyan")
+
+            return is_bullish
+
+        except Exception as e:
+            cprint(f"[AdaptiveHybrid] Error checking BTC trend: {e}", "yellow")
+            return True  # Default to allowing trades
+
+    # =========================================================================
     # AGGREGATION
     # =========================================================================
 
@@ -663,6 +771,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
             losing_weight = long_weight_total
             winning_weight = short_weight_total
 
+        # Minimum convergent modules check
+        if len(winning_modules) < ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES:
+            return {'direction': 'NEUTRAL', 'score': 0, 'agreement': 0,
+                    'details': f'Only {len(winning_modules)} module(s) converge (min {ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES} required)'}
+
         # Weighted average of ACTIVE modules in winning direction
         active_weighted_sum = sum(r['score'] * weights.get(n, 0) for n, r in winning_modules.items())
         active_weight_total = sum(weights.get(n, 0) for n in winning_modules)
@@ -674,6 +787,16 @@ class AdaptiveHybridStrategy(BaseStrategy):
         raw_score = active_weighted_sum / active_weight_total
         coverage = active_weight_total / sum(weights.values())
         final_score = raw_score * (0.5 + 0.5 * coverage)
+
+        # BTC macro filter: penalize trades against BTC trend by 30%
+        btc_bullish = self._check_btc_trend()
+        btc_penalty = 1.0
+        if direction == 'BUY' and not btc_bullish:
+            btc_penalty = 0.70
+            final_score *= btc_penalty
+        elif direction == 'SELL' and btc_bullish:
+            btc_penalty = 0.70
+            final_score *= btc_penalty
 
         # Conflict penalty: if opposing direction has significant weight
         if losing_weight > 0.25 * winning_weight:
@@ -693,10 +816,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
             'raw_score': round(raw_score, 1),
             'coverage': round(coverage * 100, 1),
             'conflict_factor': conflict_factor,
+            'btc_penalty': btc_penalty,
             'active_modules': len(winning_modules),
             'total_modules_fired': len(long_modules) + len(short_modules),
             'agreement': round(coverage, 2),
-            'details': f"{direction} score={final_score:.1f} ({len(winning_modules)} modules: {', '.join(module_details)})",
+            'details': f"{direction} score={final_score:.1f} ({len(winning_modules)} modules: {', '.join(module_details)})"
+                       + (f" [BTC filter: {btc_penalty:.0%}]" if btc_penalty < 1.0 else ""),
             'module_scores': {n: r['score'] for n, r in module_results.items() if r['score'] > 0},
         }
 
@@ -789,14 +914,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Decision
         if aggregated['direction'] != 'NEUTRAL' and aggregated['score'] >= threshold:
-            # Map score to signal strength (0-1)
+            # Map score linearly to signal strength (0.45 to 0.95)
             score = aggregated['score']
-            if score >= 70:
-                strength = 0.85
-            elif score >= 55:
-                strength = 0.70
-            else:
-                strength = 0.55
+            score_range = max(100 - threshold, 1)  # Guard against division by zero
+            strength = 0.45 + (score - threshold) / score_range * 0.50
+            strength = max(0.45, min(0.95, strength))
 
             # Calculate ATR-based SL/TP
             atr = ind['atr']
@@ -806,6 +928,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
             else:
                 sl_pct = 1.5
                 tp_pct = 2.5
+
+            # Enforce minimum reward:risk ratio
+            if tp_pct < sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO:
+                tp_pct = sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO
 
             cprint(f"  [{symbol}] SIGNAL: {aggregated['direction']} (score={score:.1f}, "
                    f"threshold={threshold:.0f}, strength={strength:.0%})", "green", attrs=['bold'])
@@ -851,16 +977,49 @@ class AdaptiveHybridStrategy(BaseStrategy):
         }
 
     # =========================================================================
+    # BATCH SIGNAL GENERATION (parallel)
+    # =========================================================================
+
+    def generate_signals_batch(self, symbols: list) -> list:
+        """Generate signals for multiple symbols in parallel using ThreadPoolExecutor.
+
+        _fetch_candles() is HTTP-based and thread-safe. Paper position mutations
+        are protected by _position_lock in execute_paper_trade / _close_paper_position.
+        """
+        results = []
+
+        def _analyze_symbol(symbol):
+            try:
+                return self.generate_signals(symbol=symbol)
+            except Exception as e:
+                cprint(f"[AdaptiveHybrid] Error analyzing {symbol}: {e}", "red")
+                return None
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(_analyze_symbol, sym): sym for sym in symbols}
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    signal = future.result()
+                    if signal is not None:
+                        results.append(signal)
+                except Exception as e:
+                    cprint(f"[AdaptiveHybrid] Thread error for {symbol}: {e}", "red")
+
+        return results
+
+    # =========================================================================
     # PAPER TRADING
     # =========================================================================
 
     def _reset_daily_counters(self):
-        """Reset daily counters if new day."""
+        """Reset daily counters if new day. Thread-safe."""
         today = datetime.now().date()
-        if self.last_trade_date != today:
-            self.daily_trades = 0
-            self.daily_pnl = 0.0
-            self.last_trade_date = today
+        with self._position_lock:
+            if self.last_trade_date != today:
+                self.daily_trades = 0
+                self.daily_pnl = 0.0
+                self.last_trade_date = today
 
     def execute_paper_trade(self, signal: dict) -> dict:
         """Execute a paper trade (simulation)."""
@@ -888,28 +1047,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         sl_pct = metadata.get('stop_loss_pct', 1.5)
         tp_pct = metadata.get('take_profit_pct', 2.5)
 
-        # Calculate margin
-        used_margin = sum(
-            pos.get('position_size', 0) / pos.get('leverage', ADAPTIVE_HYBRID_LEVERAGE)
-            for pos in self.paper_positions.values()
-        )
-        available_margin = max(0, self.paper_balance - used_margin)
-
-        # Position sizing: 2% risk per trade
-        risk_amount = self.paper_balance * 0.02
-        position_size = risk_amount / (sl_pct / 100) * ADAPTIVE_HYBRID_LEVERAGE
-        max_position = available_margin * 0.9 * ADAPTIVE_HYBRID_LEVERAGE
-        position_size = min(position_size, max_position)
-
-        if position_size < 10:
-            cprint(f"[AdaptiveHybrid] Insufficient margin", "red")
-            return None
-
-        # Generate position ID
-        self._position_counter += 1
-        position_id = f"AH_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._position_counter}"
-
-        # Calculate SL/TP prices
+        # Calculate SL/TP prices (pure math, no shared state)
         if direction == 'BUY':
             stop_loss_price = price * (1 - sl_pct / 100)
             take_profit_price = price * (1 + tp_pct / 100)
@@ -917,27 +1055,51 @@ class AdaptiveHybridStrategy(BaseStrategy):
             stop_loss_price = price * (1 + sl_pct / 100)
             take_profit_price = price * (1 - tp_pct / 100)
 
-        trade = {
-            'position_id': position_id,
-            'timestamp': datetime.now().isoformat(),
-            'symbol': symbol,
-            'direction': direction,
-            'entry_price': price,
-            'position_size': round(position_size, 2),
-            'leverage': ADAPTIVE_HYBRID_LEVERAGE,
-            'stop_loss': round(stop_loss_price, 2),
-            'take_profit': round(take_profit_price, 2),
-            'sl_pct': sl_pct,
-            'tp_pct': tp_pct,
-            'confidence': round(float(signal.get('signal', 0)) * 100, 1),
-            'status': 'OPEN',
-            'score': metadata.get('score', 0),
-            'modules': str(metadata.get('module_scores', {})),
-        }
+        # Atomic: margin check + position sizing + ID generation + insertion
+        with self._position_lock:
+            used_margin = sum(
+                pos.get('position_size', 0) / pos.get('leverage', ADAPTIVE_HYBRID_LEVERAGE)
+                for pos in self.paper_positions.values()
+            )
+            available_margin = max(0, self.paper_balance - used_margin)
 
-        self.paper_positions[position_id] = trade
-        self.daily_trades += 1
-        self.last_trade_time = datetime.now()
+            # Position sizing: 2% risk per trade
+            risk_amount = self.paper_balance * 0.02
+            position_size = risk_amount / (sl_pct / 100) * ADAPTIVE_HYBRID_LEVERAGE
+            max_position_by_margin = available_margin * 0.9 * ADAPTIVE_HYBRID_LEVERAGE
+            # Cap on notional exposure (not margin) — intentionally conservative
+            max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100)
+            position_size = min(position_size, max_position_by_margin, max_position_by_pct)
+
+            if position_size < 10:
+                cprint(f"[AdaptiveHybrid] Insufficient margin", "red")
+                return None
+
+            # Generate position ID (under lock to avoid counter race)
+            self._position_counter += 1
+            position_id = f"AH_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._position_counter}"
+
+            trade = {
+                'position_id': position_id,
+                'timestamp': datetime.now().isoformat(),
+                'symbol': symbol,
+                'direction': direction,
+                'entry_price': price,
+                'position_size': round(position_size, 2),
+                'leverage': ADAPTIVE_HYBRID_LEVERAGE,
+                'stop_loss': round(stop_loss_price, 2),
+                'take_profit': round(take_profit_price, 2),
+                'sl_pct': sl_pct,
+                'tp_pct': tp_pct,
+                'confidence': round(float(signal.get('signal', 0)) * 100, 1),
+                'status': 'OPEN',
+                'score': metadata.get('score', 0),
+                'modules': str(metadata.get('module_scores', {})),
+            }
+
+            self.paper_positions[position_id] = trade
+            self.daily_trades += 1
+            self.last_trade_time = datetime.now()
 
         # Log to file
         log_file = os.path.join(self.data_dir, 'paper_trades.csv')
@@ -960,9 +1122,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
             return []
 
         closed = []
-        symbols_to_check = set(pos['symbol'] for pos in self.paper_positions.values())
-        current_prices = {}
 
+        with self._position_lock:
+            symbols_to_check = set(pos['symbol'] for pos in self.paper_positions.values())
+
+        current_prices = {}
         for symbol in symbols_to_check:
             try:
                 df = self._fetch_candles(symbol, interval='15m', candles=5)
@@ -973,30 +1137,31 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         positions_to_close = []
 
-        for position_id, trade in self.paper_positions.items():
-            symbol = trade['symbol']
-            if symbol not in current_prices:
-                continue
+        with self._position_lock:
+            for position_id, trade in self.paper_positions.items():
+                symbol = trade['symbol']
+                if symbol not in current_prices:
+                    continue
 
-            current_price = current_prices[symbol]
-            direction = trade['direction']
-            stop_loss = trade['stop_loss']
-            take_profit = trade['take_profit']
+                current_price = current_prices[symbol]
+                direction = trade['direction']
+                stop_loss = trade['stop_loss']
+                take_profit = trade['take_profit']
 
-            close_reason = None
-            if direction == 'BUY':
-                if current_price <= stop_loss:
-                    close_reason = 'STOP_LOSS'
-                elif current_price >= take_profit:
-                    close_reason = 'TAKE_PROFIT'
-            else:
-                if current_price >= stop_loss:
-                    close_reason = 'STOP_LOSS'
-                elif current_price <= take_profit:
-                    close_reason = 'TAKE_PROFIT'
+                close_reason = None
+                if direction == 'BUY':
+                    if current_price <= stop_loss:
+                        close_reason = 'STOP_LOSS'
+                    elif current_price >= take_profit:
+                        close_reason = 'TAKE_PROFIT'
+                else:
+                    if current_price >= stop_loss:
+                        close_reason = 'STOP_LOSS'
+                    elif current_price <= take_profit:
+                        close_reason = 'TAKE_PROFIT'
 
-            if close_reason:
-                positions_to_close.append((position_id, current_price, close_reason))
+                if close_reason:
+                    positions_to_close.append((position_id, current_price, close_reason))
 
         for position_id, close_price, reason in positions_to_close:
             closed_trade = self._close_paper_position(position_id, close_price, reason)
@@ -1006,43 +1171,44 @@ class AdaptiveHybridStrategy(BaseStrategy):
         return closed
 
     def _close_paper_position(self, position_id: str, close_price: float, reason: str) -> dict:
-        """Close a paper position and update PnL."""
-        if position_id not in self.paper_positions:
-            return None
+        """Close a paper position and update PnL. Fully thread-safe."""
+        with self._position_lock:
+            if position_id not in self.paper_positions:
+                return None
 
-        trade = self.paper_positions[position_id].copy()
-        entry_price = trade['entry_price']
-        direction = trade['direction']
-        position_size = trade['position_size']
+            trade = self.paper_positions[position_id].copy()
+            entry_price = trade['entry_price']
+            direction = trade['direction']
+            position_size = trade['position_size']
 
-        if direction == 'BUY':
-            price_change_pct = (close_price - entry_price) / entry_price
-        else:
-            price_change_pct = (entry_price - close_price) / entry_price
+            if direction == 'BUY':
+                price_change_pct = (close_price - entry_price) / entry_price
+            else:
+                price_change_pct = (entry_price - close_price) / entry_price
 
-        pnl = position_size * price_change_pct
+            pnl = position_size * price_change_pct
 
-        trade['close_price'] = close_price
-        trade['exit_price'] = close_price
-        trade['exit_time'] = datetime.now().isoformat()
-        trade['close_reason'] = reason
-        trade['pnl'] = round(pnl, 2)
-        trade['pnl_pct'] = round(price_change_pct * 100, 2)
-        trade['status'] = 'CLOSED'
+            trade['close_price'] = close_price
+            trade['exit_price'] = close_price
+            trade['exit_time'] = datetime.now().isoformat()
+            trade['close_reason'] = reason
+            trade['pnl'] = round(pnl, 2)
+            trade['pnl_pct'] = round(price_change_pct * 100, 2)
+            trade['status'] = 'CLOSED'
 
-        self.daily_pnl += pnl
-        self.paper_balance += pnl
-
-        del self.paper_positions[position_id]
-        self.closed_positions.append(trade)
+            self.daily_pnl += pnl
+            self.paper_balance += pnl
+            del self.paper_positions[position_id]
+            self.closed_positions.append(trade)
+            balance_snapshot = self.paper_balance
 
         color = 'green' if pnl > 0 else 'red'
         cprint(f"\n[ADAPTIVE HYBRID] Closed {trade['symbol']} ({reason})", color, attrs=['bold'])
         cprint(f"  Entry: ${entry_price:,.2f} -> Exit: ${close_price:,.2f}", "white")
         cprint(f"  PnL: ${pnl:+,.2f} ({price_change_pct*100:+.2f}%)", color)
-        cprint(f"  Balance: ${self.paper_balance:,.2f}", "white")
+        cprint(f"  Balance: ${balance_snapshot:,.2f}", "white")
 
-        # Log closed trade
+        # I/O operations outside the lock
         self._log_closed_trade(trade)
         self._update_position_status_in_csv(position_id, trade)
 
@@ -1081,26 +1247,30 @@ class AdaptiveHybridStrategy(BaseStrategy):
             cprint(f"[AdaptiveHybrid] Error logging closed trade: {e}", "yellow")
 
     def get_paper_status(self) -> dict:
-        """Get current paper trading status (for dashboard)."""
-        return {
-            'paper_balance': round(self.paper_balance, 2),
-            'initial_balance': PAPER_TRADING_BALANCE,
-            'total_pnl': round(self.paper_balance - PAPER_TRADING_BALANCE, 2),
-            'daily_pnl': round(self.daily_pnl, 2),
-            'daily_trades': self.daily_trades,
-            'open_positions': len(self.paper_positions),
-            'total_closed': len(self.closed_positions),
-            'positions': list(self.paper_positions.values()),
-        }
+        """Get current paper trading status (for dashboard). Thread-safe."""
+        with self._position_lock:
+            return {
+                'paper_balance': round(self.paper_balance, 2),
+                'initial_balance': PAPER_TRADING_BALANCE,
+                'total_pnl': round(self.paper_balance - PAPER_TRADING_BALANCE, 2),
+                'daily_pnl': round(self.daily_pnl, 2),
+                'daily_trades': self.daily_trades,
+                'open_positions': len(self.paper_positions),
+                'total_closed': len(self.closed_positions),
+                'positions': [pos.copy() for pos in self.paper_positions.values()],
+            }
 
     def close_all_paper_positions(self) -> list:
         """Force close all open paper positions at current market price."""
-        if not self.paper_positions:
-            return []
+        with self._position_lock:
+            if not self.paper_positions:
+                return []
+            position_ids = list(self.paper_positions.keys())
+            positions_copy = {pid: self.paper_positions[pid].copy() for pid in position_ids}
 
         closed = []
-        for position_id in list(self.paper_positions.keys()):
-            trade = self.paper_positions[position_id]
+        for position_id in position_ids:
+            trade = positions_copy[position_id]
             try:
                 df = self._fetch_candles(trade['symbol'], interval='15m', candles=5)
                 if df is not None and len(df) > 0:

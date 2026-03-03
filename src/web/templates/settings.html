@@ -8,7 +8,7 @@
         <div>
             <h1 class="text-2xl font-bold text-white">Settings</h1>
             <p class="text-gray-400 text-sm mt-1">
-                Active Strategy: <span class="text-moon-purple font-medium" x-text="settings.strategy === 'sniper' ? 'Sniper AI' : 'RAMF'"></span>
+                Active Strategy: <span class="text-moon-purple font-medium" x-text="settings.strategy === 'sniper' ? 'Sniper AI' : settings.strategy === 'adaptive_hybrid' ? 'Adaptive Hybrid' : 'RAMF'"></span>
             </p>
         </div>
         <button @click="saveSettings()"
@@ -54,7 +54,7 @@
 
         <!-- Strategy Parameters -->
         <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
-            <h2 class="text-lg font-semibold text-white mb-4" x-text="settings.strategy === 'sniper' ? 'Sniper AI Parameters' : 'RAMF Strategy Parameters'"></h2>
+            <h2 class="text-lg font-semibold text-white mb-4" x-text="settings.strategy === 'sniper' ? 'Sniper AI Parameters' : settings.strategy === 'adaptive_hybrid' ? 'Adaptive Hybrid Parameters' : 'RAMF Strategy Parameters'"></h2>
 
             <div class="space-y-4">
                 <!-- Leverage -->
