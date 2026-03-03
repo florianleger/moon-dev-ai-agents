@@ -1,45 +1,61 @@
 # Moon Dev AI Trading Bot - Docker Image
 # Optimized for Coolify deployment
-# Build: 2026-01-20-v4 - Critical fix: Load positions from CSV on startup (margin management)
+# Build: 2026-03-03-v5 - Multi-stage build, non-root user, improved healthcheck
 
-FROM python:3.10-slim
+# Stage 1: Build dependencies
+FROM python:3.10-slim AS builder
 
-# Set working directory
-WORKDIR /app
-
-# Prevent Python from writing pyc files and buffering stdout/stderr
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# Install system dependencies
+# Install build-time system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     libffi-dev \
     libssl-dev \
     git \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install Python dependencies to user site-packages
+COPY requirements-docker.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt
+
+# Stage 2: Runtime
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Prevent Python from writing pyc files and buffering stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install runtime-only system dependencies (no gcc/g++)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
+# Copy Python packages from builder stage
+COPY --from=builder /install /usr/local
+
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash trader
-RUN mkdir -p /app/src/data/ramf && chown -R trader:trader /app
 
-# Copy requirements first for better caching (use minimal docker requirements)
-COPY --chown=trader:trader requirements-docker.txt ./requirements.txt
-
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# Create data directories and set permissions BEFORE switching user
+RUN mkdir -p /app/src/data/ramf \
+    /app/src/data/execution_results \
+    /app/src/data/signals \
+    /app/data \
+    /app/logs \
+    && chown -R trader:trader /app
 
 # Copy application code
-COPY src/ ./src/
-COPY entrypoint.sh .
+COPY --chown=trader:trader src/ ./src/
+COPY --chown=trader:trader entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-# Note: Running as root for volume mount compatibility
-# The data volume needs write permissions
+# Switch to non-root user
+USER trader
 
 # Volume for persistent data (trades, logs, signals)
 VOLUME ["/app/src/data"]
@@ -47,9 +63,11 @@ VOLUME ["/app/src/data"]
 # Expose web dashboard port
 EXPOSE 8080
 
-# Health check - verify web dashboard is responding (uses public /health endpoint)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Health check - verify web dashboard AND main.py heartbeat
+HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health && \
+    python -c "import json,time; d=json.load(open('/app/src/data/bot_heartbeat.json')); assert time.time()-d.get('timestamp',0)<600, 'Bot heartbeat stale'" \
+    || exit 1
 
 # Default entry point
 ENTRYPOINT ["./entrypoint.sh"]

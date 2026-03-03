@@ -321,7 +321,7 @@ class RestreamChatHandler:
                             if username_elem:
                                 username = username_elem.text.strip()
                                 break
-                        except:
+                        except Exception:
                             continue
                     
                     if not username:
@@ -335,7 +335,7 @@ class RestreamChatHandler:
                             if text_elem:
                                 text = text_elem.text.strip()
                                 break
-                        except:
+                        except Exception:
                             continue
                     
                     if not text:

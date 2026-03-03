@@ -3,6 +3,8 @@
 Built with love by Moon Dev 🚀
 """
 
+import os
+
 # 🔄 Exchange Selection
 EXCHANGE = 'hyperliquid'  # Options: 'solana', 'hyperliquid'
 
@@ -48,7 +50,8 @@ TOKEN_EXCHANGE_MAP = {
 
 # Token and wallet settings
 symbol = '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump'
-address = '4wgfCBf2WwLSRKLef9iW7JXZ2AfkxUxGM4XcKpHm3Sin' # YOUR WALLET ADDRESS HERE
+WALLET_ADDRESS = os.getenv('SOLANA_WALLET_ADDRESS', '4wgfCBf2WwLSRKLef9iW7JXZ2AfkxUxGM4XcKpHm3Sin')
+address = WALLET_ADDRESS  # Backward compatibility alias
 
 # Position sizing 🎯
 usd_size = 25  # Size of position to hold
@@ -59,8 +62,6 @@ slippage = 199  # Slippage settings
 # Risk Management Settings 🛡️
 CASH_PERCENTAGE = 20  # Minimum % to keep in USDC as safety buffer (0-100)
 MAX_POSITION_PERCENTAGE = 30  # Maximum % allocation per position (0-100)
-STOPLOSS_PRICE = 1 # NOT USED YET 1/5/25    
-BREAKOUT_PRICE = .0001 # NOT USED YET 1/5/25
 SLEEP_AFTER_CLOSE = 600  # Prevent overtrading
 
 MAX_LOSS_GAIN_CHECK_HOURS = 12  # How far back to check for max loss/gain limits (in hours)
@@ -83,7 +84,6 @@ MAX_LOSS_PERCENT = 5  # Maximum loss as percentage (e.g., 20 = 20% loss)
 MAX_GAIN_PERCENT = 5  # Maximum gain as percentage (e.g., 50 = 50% gain)
 
 # Transaction settings ⚡
-slippage = 199  # 500 = 5% and 50 = .5% slippage
 PRIORITY_FEE = 100000  # ~0.02 USD at current SOL prices
 orders_per_open = 3  # Multiple orders for better fill rates
 
@@ -98,9 +98,9 @@ SAVE_OHLCV_DATA = False  # 🌙 Set to True to save data permanently, False will
 
 # AI Model Settings 🤖
 AI_MODEL = "claude-3-haiku-20240307"  # Model Options:
-                                     # - claude-3-haiku-20240307 (Fast, efficient Claude model)
-                                     # - claude-3-sonnet-20240229 (Balanced Claude model)
-                                     # - claude-3-opus-20240229 (Most powerful Claude model)
+                                     # - claude-3-5-haiku-latest (Fast, efficient Claude model)
+                                     # - claude-sonnet-4-6 (Balanced Claude 4.x model)
+                                     # - claude-opus-4-6 (Most powerful Claude 4.x model)
 AI_MAX_TOKENS = 1024  # Max tokens for response
 AI_TEMPERATURE = 0.7  # Creativity vs precision (0-1)
 
@@ -410,7 +410,7 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 
 ADAPTIVE_HYBRID_BASE_THRESHOLD = 45      # Base score threshold (0-100) to trigger a trade
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
-ADAPTIVE_HYBRID_URGENCY_FLOOR = 38       # Minimum threshold (never go below this)
+ADAPTIVE_HYBRID_URGENCY_FLOOR = 42       # Minimum threshold (never go below this)
 ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5     # Max trades per day
 ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30  # Daily loss limit in USD
 ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
@@ -502,13 +502,3 @@ RISK_COOLING_OFF_HOURS = 4        # Wait 4h after drawdown breach before resumin
 RISK_RECOVERY_SIZE_PCT = 50       # Resume with 50% size for 24h after recovery
 RISK_RECOVERY_DURATION_HOURS = 24 # Duration of reduced-size recovery period
 
-# Future variables (not active yet) 🔮
-sell_at_multiple = 3
-USDC_SIZE = 1
-limit = 49
-timeframe = '15m'
-stop_loss_perctentage = -.24
-EXIT_ALL_POSITIONS = False
-DO_NOT_TRADE_LIST = ['777']
-CLOSED_POSITIONS_TXT = '777'
-minimum_trades_in_last_hour = 777

@@ -14,27 +14,42 @@ from pathlib import Path
 BACKTEST_FILE = "/Users/md/Dropbox/dev/github/moon-dev-ai-agents-for-trading/src/agents/test_backtest_working.py"
 CONDA_ENV = "tflow"  # Your conda environment name
 
+FORBIDDEN_IMPORTS = ['os', 'subprocess', 'socket', 'shutil', 'pathlib', 'requests', 'urllib']
+
+def validate_generated_code(code_path):
+    """Validate that generated backtest code does not contain forbidden imports or constructs"""
+    with open(code_path, 'r') as f:
+        code = f.read()
+    for forbidden in FORBIDDEN_IMPORTS:
+        if f'import {forbidden}' in code or f'from {forbidden}' in code:
+            raise ValueError(f"Generated code contains forbidden import: {forbidden}")
+    if 'eval(' in code or 'exec(' in code or '__import__' in code:
+        raise ValueError("Generated code contains forbidden construct")
+
 def run_backtest_in_conda(file_path: str, conda_env: str = "tflow"):
     """
     Run a backtest file in a conda environment and capture all output
-    
+
     Returns dict with:
     - stdout: Standard output (results, prints)
     - stderr: Standard error (errors, tracebacks)
     - return_code: 0 for success, non-zero for failure
     - execution_time: How long it took
     """
-    
+
     print(f"\n🚀 Moon Dev's Backtest Runner Starting!")
     print(f"📂 File: {file_path}")
     print(f"🐍 Conda env: {conda_env}")
     print("=" * 60)
-    
+
     if not os.path.exists(file_path):
         return {
             "error": f"File not found: {file_path}",
             "success": False
         }
+
+    # Validate generated code before execution
+    validate_generated_code(file_path)
     
     # Build the command to run in conda environment
     cmd = [
@@ -128,7 +143,7 @@ def parse_backtest_output(output: dict):
                     if 'line' in line:
                         try:
                             error_info['error_line'] = int(line.split('line ')[1].split(',')[0])
-                        except:
+                        except Exception:
                             pass
                             
                 if line.strip() and not line.startswith(' ') and i > 0:

@@ -74,8 +74,6 @@ class TxScanner:
         self.seen_links = set()
         self.last_check_time = None
         self.sound_enabled = SOUND_ENABLED
-        self.api_key = os.getenv('MOONDEV_API_KEY')
-        self.headers = {'X-API-Key': self.api_key} if self.api_key else {}
         self.session = requests.Session()
         
         # Only check sound files if sound is enabled
@@ -89,7 +87,7 @@ class TxScanner:
         """Fetch recent transactions data silently"""
         try:
             url = f'{BASE_URL}/copybot/data/recent_txs'
-            response = self.session.get(url, headers=self.headers)
+            response = self.session.get(url)
             response.raise_for_status()
             
             # Save to cache
@@ -123,7 +121,7 @@ class TxScanner:
         try:
             time_obj = pd.to_datetime(row['blockTime'], unit='s')
             time_str = time_obj.strftime("%m-%d %H:%M")
-        except:
+        except Exception:
             time_str = "Unknown Time"
             
         random_emoji = random.choice(TRANSACTION_EMOJIS)
@@ -198,7 +196,7 @@ class TxScanner:
         try:
             time_obj = pd.to_datetime(row['blockTime'], unit='s')
             time_str = time_obj.strftime("%m-%d %H:%M")
-        except:
+        except Exception:
             time_str = "Unknown Time"
             
         random_emoji = random.choice(TRANSACTION_EMOJIS)

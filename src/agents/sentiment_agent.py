@@ -175,10 +175,11 @@ class SentimentAgent:
                     f.write(chunk)
             
             # Play the audio
+            import subprocess
             if os.name == 'posix':  # macOS/Linux
-                os.system(f"afplay {speech_file}")
+                subprocess.run(["afplay", str(speech_file)], check=False)
             else:  # Windows
-                os.system(f"start {speech_file}")
+                subprocess.run(["cmd", "/c", "start", str(speech_file)], check=False)
                 time.sleep(5)
             
             # Clean up

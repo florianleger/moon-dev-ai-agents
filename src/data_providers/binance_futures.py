@@ -48,9 +48,11 @@ class BinanceLiquidationStream:
         self.liquidations = deque(maxlen=buffer_size)
         self.ws: Optional[websocket.WebSocketApp] = None
         self.ws_thread: Optional[threading.Thread] = None
+        self._zombie_thread: Optional[threading.Thread] = None
         self.running = False
         self.connected = False
         self.last_message_time: Optional[datetime] = None
+        self._last_message_epoch: float = 0.0
         self._lock = threading.Lock()
 
     def start_stream(self) -> bool:
@@ -80,6 +82,10 @@ class BinanceLiquidationStream:
             self.ws_thread.start()
             self.running = True
 
+            # Start zombie connection detector
+            self._zombie_thread = threading.Thread(target=self._zombie_detector, daemon=True)
+            self._zombie_thread.start()
+
             # Wait for connection (longer timeout for container startup)
             timeout = 30
             start = time.time()
@@ -97,6 +103,19 @@ class BinanceLiquidationStream:
             cprint(f"[BinanceFutures] Failed to start stream: {e}", "red")
             return False
 
+    def _zombie_detector(self):
+        """Monitor for zombie WebSocket connections (no messages for 2+ minutes)."""
+        while self.running:
+            time.sleep(30)  # Check every 30 seconds
+            if not self.running:
+                break
+            if self.connected and self._last_message_epoch > 0:
+                silence = time.time() - self._last_message_epoch
+                if silence > 120:  # 2 minutes without a message
+                    cprint(f"[BinanceFutures] WebSocket zombie detected ({silence:.0f}s silent), reconnecting...", "yellow")
+                    if self.ws:
+                        self.ws.close()
+
     def stop_stream(self):
         """Stop the WebSocket stream."""
         self.running = False
@@ -105,17 +124,39 @@ class BinanceLiquidationStream:
         self.connected = False
 
     def _run_forever(self):
-        """Run WebSocket with automatic reconnection."""
-        reconnect_delay = 5
-        while self.running:
-            try:
-                self.ws.run_forever(ping_interval=30, ping_timeout=10)
-            except Exception as e:
-                cprint(f"[BinanceFutures] WebSocket error: {e}", "yellow")
+        """Run WebSocket with automatic reconnection and exponential backoff."""
+        base_delay = 5
+        max_delay = 300
+        current_delay = base_delay
+        max_reconnects = 50
+        reconnect_count = 0
 
-            if self.running:
-                cprint(f"[BinanceFutures] Reconnecting in {reconnect_delay}s...", "yellow")
-                time.sleep(reconnect_delay)
+        while self.running and reconnect_count < max_reconnects:
+            try:
+                self.ws = websocket.WebSocketApp(
+                    self.WS_URL,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                    on_open=self._on_open
+                )
+                self.ws.run_forever(ping_interval=30, ping_timeout=10)
+                # Clean disconnect: reset backoff
+                current_delay = base_delay
+                reconnect_count = 0
+            except Exception as e:
+                reconnect_count += 1
+                cprint(f"[BinanceFutures] WebSocket error (attempt {reconnect_count}/{max_reconnects}): {e}", "red")
+                time.sleep(current_delay)
+                current_delay = min(current_delay * 2, max_delay)
+
+            if self.running and reconnect_count > 0:
+                cprint(f"[BinanceFutures] Reconnecting in {current_delay}s (attempt {reconnect_count})...", "yellow")
+                time.sleep(current_delay)
+                current_delay = min(current_delay * 2, max_delay)
+
+        if reconnect_count >= max_reconnects:
+            cprint("[BinanceFutures] Max reconnection attempts reached, giving up", "red")
 
     def _on_open(self, ws):
         """Handle WebSocket connection opened."""
@@ -177,6 +218,7 @@ class BinanceLiquidationStream:
                 with self._lock:
                     self.liquidations.append(liquidation)
                     self.last_message_time = datetime.now()
+                    self._last_message_epoch = time.time()
 
         except Exception as e:
             cprint(f"[BinanceFutures] Error parsing message: {e}", "yellow")

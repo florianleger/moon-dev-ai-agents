@@ -21,7 +21,9 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)) ->
         HTTPException: 401 if credentials are invalid
     """
     expected_username = os.getenv("WEB_USERNAME", "admin")
-    expected_password = os.getenv("WEB_PASSWORD", "changeme")
+    expected_password = os.getenv("WEB_PASSWORD")
+    if not expected_password:
+        raise ValueError("WEB_PASSWORD environment variable must be set")
 
     correct_username = secrets.compare_digest(
         credentials.username.encode("utf-8"),

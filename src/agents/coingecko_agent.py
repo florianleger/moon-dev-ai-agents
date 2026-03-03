@@ -451,7 +451,7 @@ class CoinGeckoAPI:
         try:
             response = self._make_request("ping")
             return "gecko_says" in response
-        except:
+        except Exception:
             return False
 
     def get_price(self, ids: Union[str, List[str]], vs_currencies: Union[str, List[str]]) -> Dict:

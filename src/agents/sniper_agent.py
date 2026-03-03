@@ -44,7 +44,7 @@ ANIMATION_DURATION = 10  # Seconds to show attention-grabbing animation
 AUTO_OPEN_BROWSER = True  # Set to True to automatically open new tokens in browser
 USE_DEXSCREENER = True  # Set to True to use DexScreener instead of Birdeye
 EXCLUDE_PATTERNS = ['So11111111111111111111111111111111111111112']  # Exclude the SOLE token pattern
-BASE_URL = "http://api.moondev.com:8000"
+BASE_URL = "http://api.moondev.com:8000"  # TODO: Deprecated - migrate to HyperLiquid/Binance data providers
 SOUND_ENABLED = True  # Set to True to enable sound effects, False to disable them
 DATA_FOLDER = Path(__file__).parent.parent / "data" / "sniper_agent"  # Folder for token data
 
@@ -177,7 +177,7 @@ class TokenScanner:
         try:
             time_obj = pd.to_datetime(time_found)
             time_str = time_obj.strftime("%m-%d %H:%M")
-        except:
+        except Exception:
             time_str = time_found
             
         random_emoji = random.choice(LAUNCH_EMOJIS)
@@ -252,7 +252,7 @@ class TokenScanner:
         try:
             time_obj = pd.to_datetime(time_found)
             time_str = time_obj.strftime("%m-%d %H:%M")
-        except:
+        except Exception:
             time_str = time_found
             
         random_emoji = random.choice(LAUNCH_EMOJIS)

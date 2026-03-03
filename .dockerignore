@@ -39,20 +39,22 @@ Thumbs.db
 
 # Secrets and config (loaded via env vars)
 .env
-.env.local
-.env.production
+.env.*
 dontshare.py
 secrets.json
 config.private.py
+cookies.json
 
 # Data directories (mounted as volumes)
 src/data/
 # But include essential code files from data directory
 !src/data/__init__.py
 !src/data/ohlcv_collector.py
+browser_data/
 temp_data/
 trading_history/
 logs/
+*.log
 
 # Documentation and non-essential files
 *.md

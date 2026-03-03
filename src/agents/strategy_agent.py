@@ -6,7 +6,7 @@ Handles all strategy-based trading decisions
 from src.config import *
 import json
 from termcolor import cprint
-import anthropic
+import anthropic  # TODO: Migrate to ModelFactory for unified LLM access
 import os
 import importlib
 import inspect
@@ -324,8 +324,8 @@ class StrategyAgent:
                                     'diagnostic': metadata.get('diagnostic'),
                                     'current_price': metadata.get('current_price'),
                                 })
-                            except:
-                                pass
+                            except Exception as e:
+                                cprint(f"⚠️ Error logging signal to web dashboard: {e}", "yellow")
                     elif signal['direction'] != 'NEUTRAL':
                         cprint(f"⚠️ Signal strength too low: {signal['signal']:.0%}", "yellow")
                     # Log NEUTRAL signals to dashboard too
@@ -343,8 +343,8 @@ class StrategyAgent:
                                 'diagnostic': metadata.get('diagnostic'),
                                 'current_price': metadata.get('current_price'),
                             })
-                        except:
-                            pass
+                        except Exception as e:
+                            cprint(f"⚠️ Error logging signal to web dashboard: {e}", "yellow")
             else:
                 # LLM evaluation path (default for non-adaptive strategies)
                 print("\n🤖 Getting LLM evaluation of signals...")
@@ -394,8 +394,8 @@ class StrategyAgent:
                                         'skip_reasons': metadata.get('skip_reasons'),
                                         'diagnostic': metadata.get('diagnostic'),
                                     })
-                                except:
-                                    pass
+                                except Exception as e:
+                                    cprint(f"⚠️ Error logging signal to web dashboard: {e}", "yellow")
                         else:
                             cprint(f"⚠️ No LLM decision for signal {i}, defaulting to REJECT", "yellow")
                 else:
@@ -426,8 +426,8 @@ class StrategyAgent:
                                         'checklist_details': metadata.get('checklist_details'),
                                         'current_price': metadata.get('current_price'),
                                     })
-                                except:
-                                    pass
+                                except Exception as e:
+                                    cprint(f"⚠️ Error logging signal to web dashboard: {e}", "yellow")
                         elif signal['direction'] != 'NEUTRAL':
                             cprint(f"⚠️ Signal confidence too low for auto-approval: {signal['signal']}", "yellow")
 

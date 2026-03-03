@@ -29,9 +29,9 @@ import atexit
 load_dotenv()
 
 # Get API keys from environment
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
 if not BIRDEYE_API_KEY:
-    raise ValueError("🚨 BIRDEYE_API_KEY not found in environment variables!")
+    cprint("BIRDEYE_API_KEY not set - BirdEye functions will be unavailable", 'yellow')
 
 sample_address = "2yXTyarttn2pTZ6cwt4DqmrRuBw1G7pmFv9oT6MStdKP"
 
@@ -69,7 +69,7 @@ def token_overview(address):
     overview_url = f"{BASE_URL}/token_overview?address={address}"
     headers = {"X-API-KEY": BIRDEYE_API_KEY}
 
-    response = requests.get(overview_url, headers=headers)
+    response = requests.get(overview_url, headers=headers, timeout=15)
     result = {}
  
 
@@ -193,7 +193,7 @@ def token_security_info(address):
     headers = {"X-API-KEY": BIRDEYE_API_KEY}
 
     # Sending a GET request to the API
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=15)
 
     if response.status_code == 200:
         # Parse the JSON response
@@ -219,7 +219,7 @@ def token_creation_info(address):
     headers = {"X-API-KEY": BIRDEYE_API_KEY}
 
     # Sending a GET request to the API
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=15)
 
     if response.status_code == 200:
         # Parse the JSON response
@@ -256,7 +256,10 @@ def market_buy(token, amount, slippage):
     print(f"💰 Converting ${amount} to {amount_in_units:,} USDC units")
 
     # Use Jupiter Lite API (faster and more efficient)
-    quote = requests.get(f'https://lite-api.jup.ag/swap/v1/quote?inputMint={QUOTE_TOKEN}&outputMint={token}&amount={amount_in_units}&slippageBps={SLIPPAGE}').json()
+    quote = requests.get(f'https://lite-api.jup.ag/swap/v1/quote?inputMint={QUOTE_TOKEN}&outputMint={token}&amount={amount_in_units}&slippageBps={SLIPPAGE}', timeout=15).json()
+    if 'error' in quote or 'routePlan' not in quote:
+        cprint(f"Jupiter quote error: {quote}", 'red')
+        return None
 
     txRes = requests.post('https://lite-api.jup.ag/swap/v1/swap',
                           headers={"Content-Type": "application/json"},
@@ -264,14 +267,13 @@ def market_buy(token, amount, slippage):
                               "quoteResponse": quote,
                               "userPublicKey": str(KEY.pubkey()),
                               "prioritizationFeeLamports": PRIORITY_FEE  # or replace 'auto' with your specific lamport value
-                          })).json()
+                          }), timeout=15).json()
 
     swapTx = base64.b64decode(txRes['swapTransaction'])
     tx1 = VersionedTransaction.from_bytes(swapTx)
     tx = VersionedTransaction(tx1.message, [KEY])
     txId = http_client.send_raw_transaction(bytes(tx), TxOpts(skip_preflight=True)).value
     print(f"https://solscan.io/tx/{str(txId)}")
-    return str(txId)  # Return the transaction ID for the calling function to use
     return str(txId)  # Return the transaction ID for the calling function to use
 
 
@@ -301,16 +303,17 @@ def market_sell(QUOTE_TOKEN, amount, slippage):
     print('http client success')
 
     # Use Jupiter Lite API (faster and more efficient)
-    quote = requests.get(f'https://lite-api.jup.ag/swap/v1/quote?inputMint={QUOTE_TOKEN}&outputMint={token}&amount={amount}&slippageBps={SLIPPAGE}').json()
-    #print(quote)
+    quote = requests.get(f'https://lite-api.jup.ag/swap/v1/quote?inputMint={QUOTE_TOKEN}&outputMint={token}&amount={amount}&slippageBps={SLIPPAGE}', timeout=15).json()
+    if 'error' in quote or 'routePlan' not in quote:
+        cprint(f"Jupiter quote error: {quote}", 'red')
+        return None
     txRes = requests.post('https://lite-api.jup.ag/swap/v1/swap',
                           headers={"Content-Type": "application/json"},
                           data=json.dumps({
                               "quoteResponse": quote,
                               "userPublicKey": str(KEY.pubkey()),
                               "prioritizationFeeLamports": PRIORITY_FEE
-                          })).json()
-    #print(txRes)
+                          }), timeout=15).json()
     swapTx = base64.b64decode(txRes['swapTransaction'])
     #print(swapTx)
     tx1 = VersionedTransaction.from_bytes(swapTx)
@@ -361,7 +364,7 @@ def get_data(address, days_back_4_data, timeframe):
     url = f"https://public-api.birdeye.so/defi/ohlcv?address={address}&type={timeframe}&time_from={time_from}&time_to={time_to}"
 
     headers = {"X-API-KEY": BIRDEYE_API_KEY}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=15)
     if response.status_code == 200:
         json_response = response.json()
         items = json_response.get('data', {}).get('items', [])
@@ -383,12 +386,10 @@ def get_data(address, days_back_4_data, timeframe):
         df = df[df['datetime_obj'] <= current_date]
         df = df.drop('datetime_obj', axis=1)
 
-        # Pad if needed
+        # Reject insufficient data instead of padding with fake rows
         if len(df) < 40:
-            print(f"🌙 MoonDev Alert: Padding data to ensure minimum 40 rows for analysis! 🚀")
-            rows_to_add = 40 - len(df)
-            first_row_replicated = pd.concat([df.iloc[0:1]] * rows_to_add, ignore_index=True)
-            df = pd.concat([first_row_replicated, df], ignore_index=True)
+            cprint(f"Insufficient data: {len(df)} rows (min 40 required)", 'yellow')
+            return None
 
         print(f"📊 MoonDev's Data Analysis Ready! Processing {len(df)} candles... 🎯")
 
@@ -423,7 +424,7 @@ def fetch_wallet_holdings_og(address):
 
     url = f"https://public-api.birdeye.so/v1/wallet/token_list?wallet={address}"
     headers = {"x-chain": "solana", "X-API-KEY": API_KEY}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=15)
 
     if response.status_code == 200:
         json_response = response.json()
@@ -467,7 +468,7 @@ def fetch_wallet_token_single(address, token_mint_address):
 def token_price(address):
     url = f"https://public-api.birdeye.so/defi/price?address={address}"
     headers = {"X-API-KEY": BIRDEYE_API_KEY}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=15)
     price_data = response.json()
 
     print(price_data)
@@ -544,7 +545,7 @@ def get_decimals(token_mint_address):
     })
 
     # Make the request to Solana RPC
-    response = requests.post(url, headers=headers, data=payload)
+    response = requests.post(url, headers=headers, data=payload, timeout=15)
     response_json = response.json()
 
     # Parse the response to extract the number of decimals
@@ -598,7 +599,7 @@ def pnl_close(token_mint_address):
             cprint(f'just made an order {token_mint_address[:4]} selling {sell_size} ...', 'white', 'on_green')
             time.sleep(15)
 
-        except:
+        except Exception:
             cprint('order error.. trying again', 'white', 'on_red')
             time.sleep(2)
 
@@ -641,7 +642,7 @@ def pnl_close(token_mint_address):
                 cprint(f'just made an order {token_mint_address[:4]} selling {sell_size} ...', 'white', 'on_blue')
                 time.sleep(15)
 
-            except:
+            except Exception:
                 cprint('order error.. trying again', 'white', 'on_red')
                 # time.sleep(7)
 
@@ -687,8 +688,11 @@ def chunk_kill(token_mint_address, max_usd_order_size, slippage):
         decimals = get_decimals(token_mint_address)
         
         cprint(f"📊 Initial position: {token_amount:.2f} tokens (${current_usd_value:.2f})", "white", "on_cyan")
-        
-        while current_usd_value > 0.1:  # Keep going until position is essentially zero
+
+        max_attempts = 10
+        attempt = 0
+        while current_usd_value > 0.1 and attempt < max_attempts:  # Keep going until position is essentially zero
+            attempt += 1
             # Calculate chunk size based on current position
             chunk_size = token_amount / 3  # Split remaining into 3 chunks
             cprint(f"\n🔄 Splitting remaining position into chunks of {chunk_size:.2f} tokens", "white", "on_cyan")
@@ -720,8 +724,11 @@ def chunk_kill(token_mint_address, max_usd_order_size, slippage):
                 cprint("🔄 Position still open - continuing to close...", "white", "on_cyan")
                 time.sleep(2)
             
-        cprint("\n✨ Position successfully closed!", "white", "on_green")
-        
+        if attempt >= max_attempts and current_usd_value > 0.1:
+            cprint(f"⚠️ chunk_kill: max attempts ({max_attempts}) reached, ${current_usd_value:.2f} remaining", "red")
+        else:
+            cprint("\n✨ Position successfully closed!", "white", "on_green")
+
     except Exception as e:
         cprint(f"❌ Error during position exit: {str(e)}", "white", "on_red")
 
@@ -782,7 +789,7 @@ def kill_switch(token_mint_address):
             cprint(f'just made an order {token_mint_address[:4]} selling {sell_size} ...', 'white', 'on_blue')
             time.sleep(15)
 
-        except:
+        except Exception:
             cprint('order error.. trying again', 'white', 'on_red')
             # time.sleep(7)
 
@@ -926,7 +933,7 @@ def elegant_entry(symbol, buy_under):
             chunk_size = int(chunk_size * 10**6)
             chunk_size = str(chunk_size)
 
-        except:
+        except Exception:
 
             try:
                 cprint(f'trying again to make the order in 30 seconds.....', 'light_blue', 'on_light_magenta')
@@ -948,7 +955,7 @@ def elegant_entry(symbol, buy_under):
                 chunk_size = str(chunk_size)
 
 
-            except:
+            except Exception:
                 cprint(f'Final Error in the buy, restart needed', 'white', 'on_red')
                 time.sleep(10)
                 break
@@ -1026,7 +1033,7 @@ def breakout_entry(symbol, BREAKOUT_PRICE):
             chunk_size = int(chunk_size * 10**6)
             chunk_size = str(chunk_size)
 
-        except:
+        except Exception:
 
             try:
                 cprint(f'trying again to make the order in 30 seconds.....', 'light_blue', 'on_light_magenta')
@@ -1048,7 +1055,7 @@ def breakout_entry(symbol, BREAKOUT_PRICE):
                 chunk_size = str(chunk_size)
 
 
-            except:
+            except Exception:
                 cprint(f'Final Error in the buy, restart needed', 'white', 'on_red')
                 time.sleep(10)
                 break
@@ -1162,7 +1169,7 @@ def ai_entry(symbol, amount):
                 chunk_size = int(chunk_size * 10**6)
                 chunk_size = str(chunk_size)
 
-            except:
+            except Exception:
                 cprint("❌ AI Agent encountered critical error, manual intervention needed", "white", "on_red")
                 return
 

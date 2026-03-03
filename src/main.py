@@ -163,26 +163,23 @@ def run_agents():
                             tokens_to_analyze = [t for t in active_tokens if t not in EXCLUDED_TOKENS]
                             cprint(f"\n🔍 Analyzing {len(tokens_to_analyze)} tokens...", "cyan")
 
-                            # Use batch signal generation if available
-                            batch_used = False
+                            # Use batch signal generation for pre-computation if available
                             for strat in strategy_agent.enabled_strategies:
                                 if hasattr(strat, 'generate_signals_batch'):
                                     try:
                                         results = strat.generate_signals_batch(tokens_to_analyze)
-                                        batch_used = True
                                         if results:
-                                            cprint(f"[Batch] Got {len(results)} signal results", "cyan")
+                                            cprint(f"[Batch] Pre-computed {len(results)} signal results", "cyan")
                                     except Exception as e:
-                                        cprint(f"[Batch] Error: {e}, falling back to sequential", "yellow")
+                                        cprint(f"[Batch] Error: {e}", "yellow")
                                     break
 
-                            # Fallback to sequential if batch not available or failed
-                            if not batch_used:
-                                for token in tokens_to_analyze:
-                                    if risk_agent and not risk_agent.is_trading_allowed():
-                                        cprint(f"\n⛔ Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
-                                        break
-                                    strategy_agent.get_signals(token)
+                            # Always run sequential analysis for proper signal evaluation and trade execution
+                            for token in tokens_to_analyze:
+                                if risk_agent and not risk_agent.is_trading_allowed():
+                                    cprint(f"\n⛔ Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
+                                    break
+                                strategy_agent.get_signals(token)
 
                 # Run CopyBot Analysis
                 if copybot_agent:

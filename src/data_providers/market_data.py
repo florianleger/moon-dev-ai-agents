@@ -48,6 +48,38 @@ class MarketDataProvider:
         if start_liquidation_stream:
             self._init_liquidation_stream()
 
+    def _fetch_with_retry(self, url: str, method: str = 'get', json_body=None,
+                          headers=None, max_retries: int = 3, timeout: int = 10):
+        """
+        Fetch URL with exponential backoff retry.
+
+        Args:
+            url: URL to fetch
+            method: HTTP method ('get' or 'post')
+            json_body: JSON body for POST requests
+            headers: HTTP headers
+            max_retries: Maximum number of retry attempts
+            timeout: Request timeout in seconds
+
+        Returns:
+            Response JSON or None on failure
+        """
+        for attempt in range(max_retries):
+            try:
+                if method == 'post':
+                    response = requests.post(url, headers=headers, json=json_body, timeout=timeout)
+                else:
+                    response = requests.get(url, headers=headers, timeout=timeout)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    cprint(f"[MarketData] API call failed after {max_retries} attempts: {e}", "red")
+                    return None
+                wait_time = 2 ** attempt
+                cprint(f"[MarketData] Retry {attempt + 1}/{max_retries} in {wait_time}s: {e}", "yellow")
+                time.sleep(wait_time)
+
     def _init_liquidation_stream(self):
         """Initialize the Binance liquidation stream."""
         try:
@@ -63,6 +95,7 @@ class MarketDataProvider:
         """
         Fetch all prices from HyperLiquid in a single API call.
         Caches all symbol data for subsequent lookups.
+        Uses retry with exponential backoff.
 
         Returns:
             bool: True if successful, False otherwise
@@ -71,40 +104,33 @@ class MarketDataProvider:
         if self._all_prices_cache and (time.time() - self._all_prices_cache_time) < self._cache_ttl:
             return True
 
-        try:
-            response = requests.post(
-                HYPERLIQUID_API_URL,
-                headers={'Content-Type': 'application/json'},
-                json={"type": "metaAndAssetCtxs"},
-                timeout=10
-            )
+        data = self._fetch_with_retry(
+            HYPERLIQUID_API_URL,
+            method='post',
+            headers={'Content-Type': 'application/json'},
+            json_body={"type": "metaAndAssetCtxs"},
+        )
 
-            if response.status_code == 200:
-                data = response.json()
-                if len(data) >= 2 and isinstance(data[0], dict) and isinstance(data[1], list):
-                    # Build symbol -> index mapping
-                    universe = {coin['name']: i for i, coin in enumerate(data[0]['universe'])}
-                    funding_data = data[1]
+        if data and len(data) >= 2 and isinstance(data[0], dict) and isinstance(data[1], list):
+            # Build symbol -> index mapping
+            universe = {coin['name']: i for i, coin in enumerate(data[0]['universe'])}
+            funding_data = data[1]
 
-                    # Cache all prices
-                    self._all_prices_cache = {}
-                    for symbol, idx in universe.items():
-                        if idx < len(funding_data):
-                            asset_data = funding_data[idx]
-                            self._all_prices_cache[symbol] = {
-                                'funding_rate': float(asset_data['funding']),
-                                'mark_price': float(asset_data['markPx']),
-                                'open_interest': float(asset_data['openInterest'])
-                            }
+            # Cache all prices
+            self._all_prices_cache = {}
+            for symbol, idx in universe.items():
+                if idx < len(funding_data):
+                    asset_data = funding_data[idx]
+                    self._all_prices_cache[symbol] = {
+                        'funding_rate': float(asset_data['funding']),
+                        'mark_price': float(asset_data['markPx']),
+                        'open_interest': float(asset_data['openInterest'])
+                    }
 
-                    self._all_prices_cache_time = time.time()
-                    return True
+            self._all_prices_cache_time = time.time()
+            return True
 
-            cprint(f"[MarketData] Failed to fetch prices: HTTP {response.status_code}", "yellow")
-            return False
-        except Exception as e:
-            cprint(f"[MarketData] Error fetching all prices: {type(e).__name__}: {e}", "yellow")
-            return False
+        return False
 
     def get_funding_rate(self, symbol: str) -> Optional[Dict]:
         """
@@ -274,41 +300,33 @@ class MarketDataProvider:
             }
 
     def get_l2_book(self, symbol: str, depth: int = 10) -> Optional[Dict]:
-        """Get L2 order book from HyperLiquid."""
-        try:
-            response = requests.post(
-                HYPERLIQUID_API_URL,
-                headers={'Content-Type': 'application/json'},
-                json={"type": "l2Book", "coin": symbol},
-                timeout=10
-            )
+        """Get L2 order book from HyperLiquid. Uses retry with exponential backoff."""
+        data = self._fetch_with_retry(
+            HYPERLIQUID_API_URL,
+            method='post',
+            headers={'Content-Type': 'application/json'},
+            json_body={"type": "l2Book", "coin": symbol},
+        )
 
-            if response.status_code != 200:
-                return None
-
-            data = response.json()
-            if not data or 'levels' not in data:
-                return None
-
-            bids = data['levels'][0][:depth]
-            asks = data['levels'][1][:depth]
-
-            bid_depth = sum(float(b['sz']) for b in bids)
-            ask_depth = sum(float(a['sz']) for a in asks)
-            total = bid_depth + ask_depth
-            imbalance = (bid_depth - ask_depth) / total if total > 0 else 0
-
-            return {
-                'bid_depth': bid_depth,
-                'ask_depth': ask_depth,
-                'imbalance': imbalance,
-                'spread': float(asks[0]['px']) - float(bids[0]['px']) if bids and asks else 0,
-                'best_bid': float(bids[0]['px']) if bids else 0,
-                'best_ask': float(asks[0]['px']) if asks else 0,
-            }
-        except Exception as e:
-            cprint(f"[MarketData] Error getting L2 book for {symbol}: {e}", "yellow")
+        if not data or 'levels' not in data:
             return None
+
+        bids = data['levels'][0][:depth]
+        asks = data['levels'][1][:depth]
+
+        bid_depth = sum(float(b['sz']) for b in bids)
+        ask_depth = sum(float(a['sz']) for a in asks)
+        total = bid_depth + ask_depth
+        imbalance = (bid_depth - ask_depth) / total if total > 0 else 0
+
+        return {
+            'bid_depth': bid_depth,
+            'ask_depth': ask_depth,
+            'imbalance': imbalance,
+            'spread': float(asks[0]['px']) - float(bids[0]['px']) if bids and asks else 0,
+            'best_bid': float(bids[0]['px']) if bids else 0,
+            'best_ask': float(asks[0]['px']) if asks else 0,
+        }
 
     def get_market_snapshot(self, symbol: str) -> Dict:
         """

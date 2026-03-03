@@ -315,6 +315,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
+            # Validate candle freshness
+            if len(df) > 0 and 'timestamp' in df.columns:
+                last_candle_time = pd.to_datetime(df['timestamp'].iloc[-1], unit='ms', utc=True)
+                max_staleness = pd.Timedelta(hours=2)
+                if pd.Timestamp.now(tz='UTC') - last_candle_time > max_staleness:
+                    cprint(f"[AdaptiveHybrid] Stale candle data for {symbol}: last candle {last_candle_time}", "yellow")
+                    return None
+
             return df
 
         except Exception as e:
@@ -1103,11 +1111,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         raw_score = active_weighted_sum / active_weight_total
 
-        # Coverage: only count modules that had data (score > 0) in denominator
-        # This avoids penalizing when data-dependent modules (OI, sentiment, etc.) have no data
-        data_available_weight = sum(weights.get(n, 0) for n, r in module_results.items() if r.get('score', 0) > 0)
-        coverage = active_weight_total / max(data_available_weight, 0.01) if data_available_weight > 0 else 0
-        final_score = raw_score * (0.6 + 0.4 * coverage)
+        # Coverage penalty: penalize signals with few convergent modules
+        # Uses convergence_ratio^0.5 so partial convergence is meaningfully penalized
+        data_available_count = sum(1 for n, r in module_results.items() if r.get('score', 0) > 0)
+        n_active = len(winning_modules)
+        convergence_ratio = n_active / max(data_available_count, 1)
+        coverage_penalty = convergence_ratio ** 0.5
+        final_score = raw_score * coverage_penalty
 
         # BTC macro filter: penalize signals against BTC trend, proportional to correlation
         btc_trend = self._check_btc_trend()
@@ -1456,8 +1466,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
             cash_reserve = self.paper_balance * (CASH_PERCENTAGE / 100)
             available_margin = max(0, self.paper_balance - used_margin - cash_reserve)
 
-            # Position sizing: 2% risk per trade
-            risk_amount = self.paper_balance * 0.02
+            # Position sizing: 2% risk per trade, modulated by signal strength
+            strength = signal.get('signal', 0.7)
+            strength_multiplier = 0.5 + float(strength)  # Range: 0.5x to 1.5x
+            risk_amount = self.paper_balance * 0.02 * strength_multiplier
             sl_fraction = max(sl_pct / 100, 0.001)  # Guard against near-zero SL
             position_size = risk_amount / sl_fraction * leverage
             max_position_by_margin = available_margin * 0.9 * leverage

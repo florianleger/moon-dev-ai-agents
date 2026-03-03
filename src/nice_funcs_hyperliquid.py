@@ -35,6 +35,9 @@ import traceback
 # Load environment variables
 load_dotenv()
 
+# Determine API URL based on USE_TESTNET environment variable
+HL_API_URL = constants.TESTNET_API_URL if os.getenv('USE_TESTNET', 'false').lower() == 'true' else HL_API_URL
+
 # Hide all warnings
 import warnings
 warnings.filterwarnings('ignore')
@@ -121,7 +124,7 @@ def get_position(symbol, account):
     """Get current position for a symbol"""
     print(f'{colored("Getting position for", "cyan")} {colored(symbol, "yellow")}')
 
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    info = Info(HL_API_URL, skip_ws=True)
     user_state = info.user_state(account.address)
 
     positions = []
@@ -157,7 +160,7 @@ def get_position(symbol, account):
 def set_leverage(symbol, leverage, account):
     """Set leverage for a symbol"""
     print(f'Setting leverage for {symbol} to {leverage}x')
-    exchange = Exchange(account, constants.MAINNET_API_URL)
+    exchange = Exchange(account, HL_API_URL)
 
     # Update leverage (is_cross=True for cross margin)
     result = exchange.update_leverage(leverage, symbol, is_cross=True)
@@ -189,8 +192,8 @@ def adjust_leverage_usd_size(symbol, usd_size, leverage, account):
 def cancel_all_orders(account):
     """Cancel all open orders"""
     print(colored('🚫 Cancelling all orders', 'yellow'))
-    exchange = Exchange(account, constants.MAINNET_API_URL)
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    exchange = Exchange(account, HL_API_URL)
+    info = Info(HL_API_URL, skip_ws=True)
 
     # Get all open orders
     open_orders = info.open_orders(account.address)
@@ -212,7 +215,7 @@ def cancel_all_orders(account):
 
 def limit_order(coin, is_buy, sz, limit_px, reduce_only, account):
     """Place a limit order"""
-    exchange = Exchange(account, constants.MAINNET_API_URL)
+    exchange = Exchange(account, HL_API_URL)
 
     rounding = get_sz_px_decimals(coin)[0]
     sz = round(sz, rounding)
@@ -237,8 +240,8 @@ def kill_switch(symbol, account):
     """Close position at market price"""
     print(colored(f'🔪 KILL SWITCH ACTIVATED for {symbol}', 'red', attrs=['bold']))
 
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
-    exchange = Exchange(account, constants.MAINNET_API_URL)
+    info = Info(HL_API_URL, skip_ws=True)
+    exchange = Exchange(account, HL_API_URL)
 
     # Get current position
     positions, im_in_pos, pos_size, _, _, _, is_long = get_position(symbol, account)
@@ -313,7 +316,7 @@ def get_current_price(symbol):
 
 def get_account_value(account):
     """Get total account value"""
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    info = Info(HL_API_URL, skip_ws=True)
     user_state = info.user_state(account.address)
     account_value = float(user_state["marginSummary"]["accountValue"])
     print(f'Account value: ${account_value:,.2f}')
@@ -362,7 +365,7 @@ def market_buy(symbol, usd_size, account):
         print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * buy_price:.2f})')
 
         # Place IOC order above ask to ensure fill
-        exchange = Exchange(account, constants.MAINNET_API_URL)
+        exchange = Exchange(account, HL_API_URL)
         order_result = exchange.order(symbol, True, pos_size, buy_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
 
         print(colored(f'✅ Market buy executed: {pos_size} {symbol} at ${buy_price}', 'green'))
@@ -417,7 +420,7 @@ def market_sell(symbol, usd_size, account):
         print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * sell_price:.2f})')
 
         # Place IOC order below bid to ensure fill
-        exchange = Exchange(account, constants.MAINNET_API_URL)
+        exchange = Exchange(account, HL_API_URL)
         order_result = exchange.order(symbol, False, pos_size, sell_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
 
         print(colored(f'✅ Market sell executed: {pos_size} {symbol} at ${sell_price}', 'red'))
@@ -443,7 +446,7 @@ def close_position(symbol, account):
 # Additional helper functions for agents
 def get_balance(account):
     """Get USDC balance"""
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    info = Info(HL_API_URL, skip_ws=True)
     user_state = info.user_state(account.address)
 
     # Get withdrawable balance (free balance)
@@ -453,7 +456,7 @@ def get_balance(account):
 
 def get_all_positions(account):
     """Get all open positions"""
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    info = Info(HL_API_URL, skip_ws=True)
     user_state = info.user_state(account.address)
 
     positions = []
@@ -479,11 +482,11 @@ def _get_exchange():
     if not private_key:
         raise ValueError("HYPER_LIQUID_ETH_PRIVATE_KEY not found in .env file")
     account = eth_account.Account.from_key(private_key)
-    return Exchange(account, constants.MAINNET_API_URL)
+    return Exchange(account, HL_API_URL)
 
 def _get_info():
     """Get info instance"""
-    return Info(constants.MAINNET_API_URL, skip_ws=True)
+    return Info(HL_API_URL, skip_ws=True)
 
 def _get_account_from_env():
     """Initialize and return HyperLiquid account from env"""
@@ -570,7 +573,7 @@ def _get_ohlcv(symbol, interval, start_time, end_time, batch_size=BATCH_SIZE):
             try:
                 error_json = response.json()
                 print(f'📋 Parsed error: {error_json}')
-            except:
+            except Exception:
                 pass
 
         except requests.exceptions.RequestException as e:
@@ -949,7 +952,7 @@ def open_short(token, amount, slippage=None, leverage=DEFAULT_LEVERAGE, account=
         print(colored(f'💰 Notional Position: ${amount:.2f} | Margin Required: ${required_margin:.2f} ({leverage}x)', 'cyan'))
 
         # Place market sell to open short
-        exchange = Exchange(account, constants.MAINNET_API_URL)
+        exchange = Exchange(account, HL_API_URL)
         order_result = exchange.order(token, False, pos_size, sell_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
 
         print(colored(f'✅ Short position opened!', 'green'))

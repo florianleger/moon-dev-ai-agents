@@ -308,10 +308,11 @@ class FocusAgent:
                 temp_path = temp_file.name
 
             # Play audio based on OS
+            import subprocess as _sp
             if os.name == 'posix':
-                os.system(f"afplay {temp_path}")
+                _sp.run(["afplay", temp_path], check=False)
             else:
-                os.system(f"start {temp_path}")
+                _sp.run(["cmd", "/c", "start", temp_path], check=False)
                 time_lib.sleep(5)
             
             # Cleanup temp file

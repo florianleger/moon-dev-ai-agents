@@ -74,8 +74,6 @@ TOP_PICKS_FILE = DATA_FOLDER / "solana_agent" / "top_picks.csv"
 class SolanaAnalyzer:
     def __init__(self):
         """🌙 Moon Dev's Solana Analyzer - Built with love by Moon Dev 🚀"""
-        self.api_key = os.getenv('MOONDEV_API_KEY')
-        self.headers = {'X-API-Key': self.api_key} if self.api_key else {}
         self.session = requests.Session()
         
         # Create data directory if it doesn't exist

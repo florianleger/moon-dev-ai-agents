@@ -3,11 +3,14 @@ Settings API endpoints - supports both RAMF and Sniper AI strategies
 """
 
 import os
+import logging
 from typing import Dict, Any
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from src.web.auth import verify_credentials
 
@@ -47,7 +50,8 @@ async def get_settings(username: str = Depends(verify_credentials)) -> Dict:
             return _get_ramf_settings()
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Error fetching settings")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _get_sniper_settings() -> Dict:
@@ -344,7 +348,8 @@ async def update_settings(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Error updating settings")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _replace_config_value(content: str, key: str, value: str) -> str:

@@ -206,8 +206,9 @@ class FundingAgent2(BaseAgent):
 
             cprint(f"💾 Saved audio to: {audio_file}", "green")
 
-            # Play audio using system command
-            os.system(f"afplay {audio_file}")
+            # Play audio using subprocess
+            import subprocess
+            subprocess.run(["afplay", str(audio_file)], check=False)
 
             cprint("✅ Announcement completed!", "green")
 

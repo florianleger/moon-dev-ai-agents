@@ -561,7 +561,7 @@ def analyze_screenshot(screenshot_path, video_number, video_url=None):
             try:
                 df.to_csv(backup_path, index=False, quoting=1)
                 cprint(f"📊 Backup analysis saved to: {backup_path}", "yellow")
-            except:
+            except Exception:
                 cprint("❌ Failed to save backup CSV as well", "red")
         
         cprint(f"🌙 Moon Dev says: Alpha extracted from video #{video_number}! 💸", "magenta")
@@ -885,7 +885,7 @@ def copy_current_url():
         try:
             cprint(f"🖱️ Moving back to browser area ({BROWSER_X}, {BROWSER_Y})", "cyan")
             move_mouse_cg(BROWSER_X, BROWSER_Y)
-        except:
+        except Exception:
             pass
             
         return None
@@ -1218,14 +1218,14 @@ def scrape_tiktok():
         cprint("\n👋 Scraping cancelled by user", "yellow")
         try:
             move_mouse_cg(int(initial_pos.x), int(initial_pos.y))
-        except:
+        except Exception:
             pass
     except Exception as e:
         cprint(f"\n❌ Fatal error: {str(e)}", "red")
         cprint(traceback.format_exc(), "red")
         try:
             move_mouse_cg(int(initial_pos.x), int(initial_pos.y))
-        except:
+        except Exception:
             pass
 
 def find_coordinates():
@@ -1266,9 +1266,7 @@ if __name__ == "__main__":
         try:
             import Quartz
         except ImportError:
-            cprint("\n❌ Quartz framework not found. Installing required package...", "yellow")
-            os.system("pip install pyobjc-framework-Quartz")
-            cprint("✅ Installation complete. Please run the script again.", "green")
+            cprint("\n❌ Quartz framework not found. Install it with: pip install pyobjc-framework-Quartz", "red")
             sys.exit(1)
         
         # Check command line arguments

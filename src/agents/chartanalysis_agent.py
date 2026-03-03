@@ -235,7 +235,7 @@ class ChartAnalysisAgent(BaseAgent):
                     matches = re.findall(r'(\d+)%', lines[2])
                     if matches:
                         confidence = int(matches[0])
-                except:
+                except Exception:
                     print("⚠️ Could not parse confidence, using default")
             
             # Determine direction based on action
@@ -302,7 +302,8 @@ class ChartAnalysisAgent(BaseAgent):
             response.stream_to_file(str(audio_file))
             
             # Play audio
-            os.system(f"afplay {audio_file}")
+            import subprocess
+            subprocess.run(["afplay", str(audio_file)], check=False)
             
         except Exception as e:
             print(f"❌ Error in announcement: {str(e)}")

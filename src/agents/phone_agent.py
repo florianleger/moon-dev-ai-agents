@@ -390,7 +390,7 @@ async def play_audio_response(text):
         resume_time = duration * 0.9
         
         def play_audio():
-            os.system(f"afplay {temp_path}")
+            subprocess.run(["afplay", temp_path], check=False)
             os.unlink(temp_path)
             
         # Start audio playback in background thread
@@ -583,7 +583,7 @@ Key guidelines:
                             await play_audio_response("I can only understand English. Please speak in English.")
                             cprint("\n🎤 Listening...", "cyan")
                             continue
-                    except:
+                    except Exception:
                         pass  # Continue if language detection fails
                     
                     # Add to conversation history

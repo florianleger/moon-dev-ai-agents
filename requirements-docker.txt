@@ -1,9 +1,10 @@
 # Moon Dev AI Trading Bot - Docker Requirements
 # Minimal dependencies for RAMF strategy on HyperLiquid
+# Versions pinned for reproducible builds
 
 # Core
-python-dotenv>=1.0.0
-termcolor>=2.3.0
+python-dotenv==1.0.1
+termcolor==2.4.0
 
 # HyperLiquid SDK
 hyperliquid-python-sdk>=0.20.0
@@ -14,29 +15,25 @@ openai>=1.0.0
 groq>=0.4.0
 
 # Technical Analysis
-pandas>=2.0.0
-numpy>=1.24.0
-ta>=0.10.0
-scipy>=1.10.0
+pandas==2.2.3
+numpy==1.26.4
+ta==0.11.0
+scipy==1.14.1
 
 # HTTP/Networking
-requests>=2.31.0
+requests==2.32.3
 aiohttp>=3.9.0
 httpx>=0.25.0
-websocket-client>=1.6.0  # Binance WebSocket for liquidations
+websocket-client==1.8.0
 
 # Data handling
-python-dateutil>=2.8.0
-
-# Web3/Blockchain (for Solana support if needed)
-# solana>=0.35.0
-# web3>=6.0.0
+python-dateutil==2.9.0.post0
 
 # Utilities
 tqdm>=4.65.0
 
 # Web Dashboard
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-jinja2>=3.1.0
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+jinja2==3.1.4
 python-multipart>=0.0.6

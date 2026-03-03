@@ -229,7 +229,7 @@ class ChatScraper:
                 chrome_options.add_argument("--headless=new")
                 chrome_options.add_argument("--no-sandbox")
                 self.driver = webdriver.Chrome(options=chrome_options)
-            except:
+            except Exception:
                 pass
             return None
             
@@ -292,7 +292,7 @@ class ChatScraper:
             cprint(f"❌ Error scraping chat: {str(e)}", "red")
             try:
                 self.driver.switch_to.default_content()
-            except:
+            except Exception:
                 pass
             return []
             
@@ -301,7 +301,7 @@ class ChatScraper:
         try:
             self.driver.switch_to.default_content()  # Make sure we're out of any frames
             self.driver.quit()
-        except:
+        except Exception:
             pass
 
 class YouTubeChatMonitor:

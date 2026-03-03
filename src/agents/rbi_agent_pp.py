@@ -632,12 +632,27 @@ def save_backtest_if_threshold_met(code: str, stats: dict, strategy_name: str, i
         thread_print(f"❌ Error saving backtest: {str(e)}", thread_id, "red")
         return False
 
+FORBIDDEN_IMPORTS = ['os', 'subprocess', 'socket', 'shutil', 'pathlib', 'requests', 'urllib']
+
+def validate_generated_code(code_path):
+    """Validate that generated backtest code does not contain forbidden imports or constructs"""
+    with open(code_path, 'r') as f:
+        code = f.read()
+    for forbidden in FORBIDDEN_IMPORTS:
+        if f'import {forbidden}' in code or f'from {forbidden}' in code:
+            raise ValueError(f"Generated code contains forbidden import: {forbidden}")
+    if 'eval(' in code or 'exec(' in code or '__import__' in code:
+        raise ValueError("Generated code contains forbidden construct")
+
 def execute_backtest(file_path: str, strategy_name: str, thread_id: int) -> dict:
     """Execute a backtest file in conda environment and capture output"""
     thread_print(f"🚀 Executing: {strategy_name}", thread_id)
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
+
+    # Validate generated code before execution
+    validate_generated_code(str(file_path))
 
     cmd = [
         "conda", "run", "-n", CONDA_ENV,

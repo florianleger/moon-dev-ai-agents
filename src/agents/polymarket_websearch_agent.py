@@ -31,7 +31,7 @@ project_root = str(Path(__file__).parent.parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.models.model_factory import ModelFactory
+from src.models.model_factory import ModelFactory, model_factory as _mf_singleton
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -198,10 +198,10 @@ class PolymarketWebSearchAgent:
                 cprint(f"❌ Failed to load swarm agent: {e}", "red")
                 cprint("💡 Falling back to single model mode", "yellow")
                 self.swarm = None
-                self.model = ModelFactory().get_model(AI_MODEL_PROVIDER, AI_MODEL_NAME)
+                self.model = _mf_singleton.get_model(AI_MODEL_PROVIDER, AI_MODEL_NAME)
         else:
             cprint(f"🤖 Using single model: {AI_MODEL_PROVIDER}/{AI_MODEL_NAME}", "green")
-            self.model = ModelFactory().get_model(AI_MODEL_PROVIDER, AI_MODEL_NAME)
+            self.model = _mf_singleton.get_model(AI_MODEL_PROVIDER, AI_MODEL_NAME)
             self.swarm = None
 
         # Initialize markets DataFrame
@@ -517,7 +517,7 @@ Provide a concise summary of the most relevant and recent information."""
                 time.sleep(5)
                 try:
                     ws.send(json.dumps({"type": "ping"}))
-                except:
+                except Exception:
                     break
 
         ping_thread = threading.Thread(target=send_ping, daemon=True)
@@ -915,7 +915,7 @@ Provide predictions for each market in the specified format."""
                                 market_predictions[market_num][model_name] = 'YES'
                             elif 'NO' in line_upper:
                                 market_predictions[market_num][model_name] = 'NO'
-                        except:
+                        except Exception:
                             continue
 
             markets_list = list(markets.iterrows())
@@ -1003,7 +1003,7 @@ Provide predictions for each market in the specified format."""
                                 market_votes[market_num]["YES"] += 1
                             elif 'NO' in line_upper:
                                 market_votes[market_num]["NO"] += 1
-                        except:
+                        except Exception:
                             continue
 
             total_models = len(model_predictions)
@@ -1092,7 +1092,7 @@ Provide predictions for each market in the specified format."""
                 top_count=TOP_MARKETS_COUNT
             )
 
-            consensus_model = ModelFactory().get_model('claude', 'claude-sonnet-4-5')
+            consensus_model = _mf_singleton.get_model('claude', 'claude-sonnet-4-5')
 
             cprint("⏳ Analyzing all responses for strongest consensus...\n", "cyan")
 
@@ -1242,7 +1242,7 @@ Provide predictions for each market in the specified format."""
                             analyzed_time = pd.to_datetime(last_analyzed)
                             if analyzed_time < cutoff_time:
                                 is_eligible = True
-                        except:
+                        except Exception:
                             is_eligible = True
 
                     has_fresh_trade = False
@@ -1255,7 +1255,7 @@ Provide predictions for each market in the specified format."""
                                 last_run_time = pd.to_datetime(self.last_analysis_run_timestamp)
                                 if trade_time > last_run_time:
                                     has_fresh_trade = True
-                        except:
+                        except Exception:
                             pass
 
                     if is_eligible and has_fresh_trade:
@@ -1309,7 +1309,7 @@ Provide predictions for each market in the specified format."""
                     analyzed_time = pd.to_datetime(last_analyzed)
                     if analyzed_time < cutoff_time:
                         is_eligible = True
-                except:
+                except Exception:
                     is_eligible = True
 
             has_fresh_trade = False
@@ -1322,7 +1322,7 @@ Provide predictions for each market in the specified format."""
                         last_run_time = pd.to_datetime(self.last_analysis_run_timestamp)
                         if trade_time > last_run_time:
                             has_fresh_trade = True
-                except:
+                except Exception:
                     pass
 
             if is_eligible and has_fresh_trade:

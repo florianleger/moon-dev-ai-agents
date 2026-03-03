@@ -78,6 +78,14 @@ Rate Limits:
 Need an API key? for a limited time, bootcamp members get free api keys for claude, openai, helius, birdeye & quant elite gets access to the moon dev api. join here: https://algotradecamp.com
 """
 
+import warnings
+warnings.warn(
+    "MoonDevAPI is deprecated and will be removed. "
+    "Use HyperLiquid/Binance data providers instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
+
 import os
 import pandas as pd
 import requests
@@ -99,6 +107,12 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 class MoonDevAPI:
     def __init__(self, api_key=None, base_url="http://api.moondev.com:8000"):
         """Initialize the API handler"""
+        warnings.warn(
+            "MoonDevAPI is deprecated and will be removed. "
+            "Use HyperLiquid/Binance data providers instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         # Simplified data directory path
         self.base_dir = PROJECT_ROOT / "src" / "agents" / "api_data"
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -191,7 +205,7 @@ class MoonDevAPI:
                                 if isinstance(sample_val, (int, float)) and sample_val > 1000000000000:  # Epoch milliseconds
                                     timestamp_col = col
                                     break
-                        except:
+                        except Exception:
                             continue
 
                     if timestamp_col:

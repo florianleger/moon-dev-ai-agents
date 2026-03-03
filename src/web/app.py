@@ -4,11 +4,13 @@ Moon Dev Trading Dashboard - FastAPI Application
 
 import os
 import sys
+import time
+from collections import defaultdict
 from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -40,6 +42,31 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Rate limiting state
+_request_counts: dict = defaultdict(list)
+_RATE_LIMIT = 60  # max requests per minute per IP
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Simple rate limiter: 60 requests per minute per IP."""
+    # Skip rate limiting for health checks
+    if request.url.path == "/health":
+        return await call_next(request)
+
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+
+    # Clean old entries (older than 60s)
+    _request_counts[client_ip] = [t for t in _request_counts[client_ip] if now - t < 60]
+
+    if len(_request_counts[client_ip]) >= _RATE_LIMIT:
+        return JSONResponse(status_code=429, content={"detail": "Too many requests"})
+
+    _request_counts[client_ip].append(now)
+    return await call_next(request)
+
 
 # Static files and templates
 static_path = Path(__file__).parent / "static"

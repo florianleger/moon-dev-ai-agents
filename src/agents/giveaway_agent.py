@@ -99,8 +99,8 @@ class GiveawayAgent:
                         'solana_address': row['solana_address'],
                         'points': int(row['points'])
                     }
-        except:
-            pass
+        except Exception as e:
+            cprint(f"⚠️ Error loading user data: {e}", "red")
         return users
 
     def save_user_data(self, users):
@@ -115,8 +115,8 @@ class GiveawayAgent:
                         data['solana_address'],
                         data['points']
                     ])
-        except:
-            pass
+        except Exception as e:
+            cprint(f"⚠️ Error saving user data: {e}", "red")
 
     def display_status(self, message_type, username=None):
         """
@@ -223,7 +223,8 @@ class GiveawayAgent:
             self.connected = True
             return True
 
-        except:
+        except Exception as e:
+            cprint(f"⚠️ Error starting browser: {e}", "red")
             return False
 
     def poll_messages(self):
@@ -253,7 +254,7 @@ class GiveawayAgent:
                             if username_elem:
                                 username = username_elem.text.strip()
                                 break
-                        except:
+                        except Exception:
                             continue
 
                     if not username:
@@ -267,7 +268,7 @@ class GiveawayAgent:
                             if text_elem:
                                 text = text_elem.text.strip()
                                 break
-                        except:
+                        except Exception:
                             continue
 
                     if not text:
@@ -325,7 +326,7 @@ class GiveawayAgent:
         if self.driver:
             try:
                 self.driver.quit()
-            except:
+            except Exception:
                 pass
 
 

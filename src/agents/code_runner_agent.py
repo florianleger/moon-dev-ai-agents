@@ -914,13 +914,13 @@ def execute_and_capture():
         cprint("\n👋 Execution cancelled by user", "yellow")
         try:
             move_mouse_cg(int(initial_pos.x), int(initial_pos.y))
-        except:
+        except Exception:
             pass
     except Exception as e:
         cprint(f"\n❌ Fatal error: {str(e)}", "red")
         try:
             move_mouse_cg(int(initial_pos.x), int(initial_pos.y))
-        except:
+        except Exception:
             pass
 
 if __name__ == "__main__":

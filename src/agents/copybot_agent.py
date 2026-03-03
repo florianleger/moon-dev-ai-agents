@@ -13,7 +13,7 @@ Need an API key? for a limited time, bootcamp members get free api keys for clau
 
 import os
 import pandas as pd
-import anthropic
+import anthropic  # TODO: Migrate to ModelFactory for unified LLM access
 from termcolor import colored, cprint
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -174,7 +174,7 @@ class CopyBotAgent:
                 if 'confidence' in line.lower():
                     try:
                         confidence = int(''.join(filter(str.isdigit, line)))
-                    except:
+                    except (ValueError, TypeError):
                         confidence = 50
             
             # Store recommendation

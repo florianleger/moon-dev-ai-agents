@@ -82,6 +82,7 @@ echo ""
 echo "Creating data directories..."
 mkdir -p /app/src/data/ramf
 mkdir -p /app/src/data/execution_results
+mkdir -p /app/src/data/signals
 mkdir -p /app/data
 mkdir -p /app/logs
 echo -e "${GREEN}Data directories ready${NC}"
@@ -101,6 +102,11 @@ echo "  Environment validated successfully"
 echo "==========================================${NC}"
 echo ""
 
+# Run data cleanup on startup (non-blocking, non-fatal)
+echo "Running data cleanup..."
+python src/scripts/data_cleanup.py || true
+echo ""
+
 # Start web dashboard in background
 WEB_PORT=${WEB_PORT:-8080}
 WEB_HOST=${WEB_HOST:-0.0.0.0}
@@ -111,11 +117,12 @@ WEB_PID=$!
 # Give web server time to start
 sleep 2
 
-# Trap to cleanup background process on exit
+# Trap to cleanup background processes on exit
 cleanup() {
     echo ""
     echo -e "${YELLOW}Shutting down...${NC}"
     kill $WEB_PID 2>/dev/null || true
+    kill $MAIN_PID 2>/dev/null || true
     exit 0
 }
 trap cleanup SIGTERM SIGINT
@@ -123,8 +130,15 @@ trap cleanup SIGTERM SIGINT
 echo -e "${GREEN}Starting trading bot...${NC}"
 echo ""
 
-# Execute the main trading bot
-python src/main.py
+# Execute the main trading bot in background and track its PID
+python src/main.py &
+MAIN_PID=$!
+echo $MAIN_PID > /tmp/main.pid
 
-# Keep running (in case main.py exits, keep web dashboard alive)
-wait $WEB_PID
+# Wait for either process to exit
+# If one dies, shut down everything
+wait -n $WEB_PID $MAIN_PID 2>/dev/null
+EXIT_CODE=$?
+echo "Process exited with code $EXIT_CODE, shutting down..."
+kill $WEB_PID $MAIN_PID 2>/dev/null || true
+exit $EXIT_CODE

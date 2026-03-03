@@ -265,8 +265,9 @@ class FundingArbAgent(BaseAgent):
             
             response.stream_to_file(audio_file)
             
-            # Play audio using system command
-            os.system(f"afplay {audio_file}")
+            # Play audio using subprocess
+            import subprocess
+            subprocess.run(["afplay", str(audio_file)], check=False)
             
         except Exception as e:
             print(f"❌ Error in announcement: {str(e)}")

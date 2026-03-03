@@ -471,7 +471,7 @@ class WhaleAgent(BaseAgent):
                         matches = re.findall(r'(\d+)%', line)
                         if matches:
                             confidence = int(matches[0])
-                    except:
+                    except Exception:
                         print("⚠️ Could not parse confidence, using default")
             
             return {
@@ -591,8 +591,9 @@ class WhaleAgent(BaseAgent):
             
             response.stream_to_file(audio_file)
             
-            # Play audio using system command
-            os.system(f"afplay {audio_file}")
+            # Play audio using subprocess
+            import subprocess
+            subprocess.run(["afplay", str(audio_file)], check=False)
             
         except Exception as e:
             print(f"❌ Error in announcement: {str(e)}")
