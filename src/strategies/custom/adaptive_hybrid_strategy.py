@@ -23,6 +23,7 @@ import json
 import threading
 import pandas as pd
 import numpy as np
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from termcolor import cprint
@@ -52,6 +53,10 @@ try:
         ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES,
         ADAPTIVE_HYBRID_MIN_RR_RATIO,
         ADAPTIVE_HYBRID_RESET_PAPER,
+        ADAPTIVE_HYBRID_ATR_PROFILES,
+        ADAPTIVE_HYBRID_WEIGHT_PROFILES,
+        ADAPTIVE_HYBRID_RANGING_TOKENS,
+        ADAPTIVE_HYBRID_TRENDING_TOKENS,
         SNIPER_ASSETS,
     )
 except ImportError:
@@ -70,14 +75,33 @@ except ImportError:
     ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2
     ADAPTIVE_HYBRID_MIN_RR_RATIO = 2.0
     ADAPTIVE_HYBRID_RESET_PAPER = True
+    ADAPTIVE_HYBRID_ATR_PROFILES = {
+        'major': {'sl_mult': 1.8, 'tp_mult': 3.6, 'tokens': ['BTC', 'ETH']},
+        'mid': {'sl_mult': 1.5, 'tp_mult': 3.0, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
+        'alt': {'sl_mult': 1.2, 'tp_mult': 2.4, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
+    }
     ADAPTIVE_HYBRID_WEIGHTS = {
         'mean_reversion': 0.15, 'momentum_breakout': 0.12,
         'ema_crossover': 0.10, 'funding_contrarian': 0.10,
         'rsi_divergence': 0.10, 'sniper_lite': 0.18,
         'trend_rider_lite': 0.15, 'ramf_lite': 0.10,
     }
-    SNIPER_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK',
-                     'DOT', 'MATIC', 'ARB', 'OP', 'RENDER', 'AAVE', 'CRV', 'FIL']
+    ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
+        'ranging': {
+            'mean_reversion': 0.20, 'momentum_breakout': 0.08, 'ema_crossover': 0.10,
+            'funding_contrarian': 0.12, 'rsi_divergence': 0.12, 'sniper_lite': 0.18,
+            'trend_rider_lite': 0.10, 'ramf_lite': 0.10,
+        },
+        'trending': {
+            'mean_reversion': 0.08, 'momentum_breakout': 0.18, 'ema_crossover': 0.12,
+            'funding_contrarian': 0.10, 'rsi_divergence': 0.08, 'sniper_lite': 0.14,
+            'trend_rider_lite': 0.20, 'ramf_lite': 0.10,
+        },
+    }
+    ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
+    ADAPTIVE_HYBRID_TRENDING_TOKENS = ['DOGE', 'kPEPE', 'SUI', 'TAO']
+    SNIPER_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR',
+                     'AAVE', 'ENA', 'LINK', 'DOGE', 'kPEPE', 'ADA']
 
 
 class AdaptiveHybridStrategy(BaseStrategy):
@@ -102,6 +126,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self.daily_pnl = 0.0
         self.last_trade_date = None
         self.last_trade_time = None
+        self.last_trade_time_per_token = {}  # {symbol: datetime} — per-token urgency tracking
 
         # Paper trading state
         self.paper_balance = PAPER_TRADING_BALANCE
@@ -118,9 +143,19 @@ class AdaptiveHybridStrategy(BaseStrategy):
         except Exception as e:
             cprint(f"[AdaptiveHybrid] Warning: Market data provider unavailable ({type(e).__name__}: {e})", "yellow")
 
+        # Funding rate history for per-token Z-score
+        self._funding_history = {}  # {symbol: deque(maxlen=200)}
+        self._funding_last_rate = {}  # {symbol: float} — dedup consecutive identical rates
+
+        # Lock for caches accessed by ThreadPoolExecutor workers
+        self._cache_lock = threading.Lock()
+
         # BTC trend cache (15-minute TTL)
         self._btc_trend_cache = None
         self._btc_trend_timestamp = None
+
+        # BTC correlation cache per-symbol: {symbol: (corr, timestamp)}
+        self._btc_correlation_cache = {}  # {symbol: (float, datetime)}
 
         # Data directory
         self.data_dir = os.path.join(
@@ -272,6 +307,18 @@ class AdaptiveHybridStrategy(BaseStrategy):
         typical_price = (high + low + close) / 3
         df['vwap'] = (typical_price * volume).cumsum() / volume.cumsum().replace(0, 1)
 
+        # Dynamic RSI thresholds (percentile-based)
+        rsi_series = rsi_ind.rsi().dropna()
+        if len(rsi_series) >= 30:
+            rsi_p15 = float(np.percentile(rsi_series, 15))
+            rsi_p85 = float(np.percentile(rsi_series, 85))
+            # Clamp to reasonable bounds
+            rsi_oversold = max(25, min(40, rsi_p15))
+            rsi_overbought = max(60, min(75, rsi_p85))
+        else:
+            rsi_oversold = 30
+            rsi_overbought = 70
+
         # Return last row values as dict for easy access
         last = df.iloc[-1]
         return {
@@ -280,6 +327,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
             'low': float(last['low']),
             'volume': float(last['volume']),
             'rsi': float(last['rsi']) if pd.notna(last['rsi']) else 50,
+            'rsi_oversold': rsi_oversold,
+            'rsi_overbought': rsi_overbought,
             'adx': float(last['adx']) if pd.notna(last['adx']) else 20,
             'ema_9': float(last['ema_9']) if pd.notna(last['ema_9']) else float(last['close']),
             'ema_21': float(last['ema_21']) if pd.notna(last['ema_21']) else float(last['close']),
@@ -318,9 +367,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
             long_score += 25
 
         # RSI confirmation
-        if ind['rsi'] < 30:
+        if ind['rsi'] < ind['rsi_oversold']:
             long_score += 35
-        elif ind['rsi'] < 40:
+        elif ind['rsi'] < (ind['rsi_oversold'] + 50) / 2:
             long_score += 20
 
         # Ranging market bonus (ADX < 25)
@@ -335,9 +384,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
         elif bb_pct > 0.75:
             short_score += 25
 
-        if ind['rsi'] > 70:
+        if ind['rsi'] > ind['rsi_overbought']:
             short_score += 35
-        elif ind['rsi'] > 60:
+        elif ind['rsi'] > (ind['rsi_overbought'] + 50) / 2:
             short_score += 20
 
         if ind['adx'] < 20:
@@ -440,13 +489,54 @@ class AdaptiveHybridStrategy(BaseStrategy):
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'EMA9={ema_9_now:.2f} EMA21={ema_21_now:.2f} MACD={ind["macd_diff"]:.4f}'}
 
+    def _get_funding_zscore_per_token(self, symbol: str) -> float:
+        """Calculate per-token historical funding Z-score."""
+        if not self._market_data:
+            return 0.0
+
+        try:
+            rate_data = self._market_data.get_funding_rate(symbol)
+            if rate_data is None or rate_data.get('funding_rate') is None:
+                return 0.0
+
+            rate = rate_data['funding_rate']
+            if rate == 0:
+                return 0.0
+
+            # Initialize ring buffer and dedup tracker under lock
+            with self._cache_lock:
+                if symbol not in self._funding_history:
+                    self._funding_history[symbol] = deque(maxlen=200)
+
+                # Only store when rate changes (funding rates update every 8h)
+                last_rate = self._funding_last_rate.get(symbol)
+                if last_rate is None or abs(rate - last_rate) > 1e-10:
+                    self._funding_history[symbol].append(rate)
+                    self._funding_last_rate[symbol] = rate
+
+                history = list(self._funding_history[symbol])
+
+            if len(history) < 10:
+                # Not enough history: fall back to cross-sectional Z-score
+                return self._market_data.get_funding_zscore(symbol)
+
+            arr = np.array(history)
+            mean = float(arr.mean())
+            std = float(arr.std())
+            if std < 1e-8:
+                return 0.0
+
+            return float((rate - mean) / std)
+        except Exception:
+            return 0.0
+
     def _score_funding_contrarian(self, symbol: str, ind: dict) -> dict:
         """Module 4: Contrarian signal based on extreme funding rates."""
         if not self._market_data:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No market data provider'}
 
         try:
-            zscore = self._market_data.get_funding_zscore(symbol)
+            zscore = self._get_funding_zscore_per_token(symbol)
         except Exception:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Funding data unavailable'}
 
@@ -499,12 +589,15 @@ class AdaptiveHybridStrategy(BaseStrategy):
         price_min_idx = np.argmin(prices[-5:])
         price_prev_min_idx = np.argmin(prices[:5])
 
+        oversold_mid = (ind['rsi_oversold'] + 50) / 2
+        overbought_mid = (ind['rsi_overbought'] + 50) / 2
+
         if prices[-5:][price_min_idx] < prices[:5][price_prev_min_idx]:
             # Price is lower
             if rsis[-5:].min() > rsis[:5].min():
                 # RSI is higher = bullish divergence
                 long_score += 60
-                if ind['rsi'] < 40:
+                if ind['rsi'] < oversold_mid:
                     long_score += 25
 
         # Bearish divergence: price making higher highs but RSI making lower highs
@@ -514,7 +607,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if prices[-5:][price_max_idx] > prices[:5][price_prev_max_idx]:
             if rsis[-5:].max() < rsis[:5].max():
                 short_score += 60
-                if ind['rsi'] > 60:
+                if ind['rsi'] > overbought_mid:
                     short_score += 25
 
         best = max(long_score, short_score)
@@ -582,12 +675,15 @@ class AdaptiveHybridStrategy(BaseStrategy):
         bullish_trend = ind['ema_9'] > ind['ema_50'] and ind['adx'] > 25
         bearish_trend = ind['ema_9'] < ind['ema_50'] and ind['adx'] > 25
 
+        oversold_mid = (ind['rsi_oversold'] + 50) / 2
+        overbought_mid = (ind['rsi_overbought'] + 50) / 2
+
         if bullish_trend:
             long_score += 35
-            # Pullback to EMA (relaxed RSI zone: 35-50 instead of 30-45)
-            if 35 <= ind['rsi'] <= 50:
+            # Pullback zone: between oversold and neutral (50)
+            if ind['rsi_oversold'] + 5 <= ind['rsi'] <= 50:
                 long_score += 30
-            elif 30 <= ind['rsi'] <= 55:
+            elif ind['rsi_oversold'] <= ind['rsi'] <= 55:
                 long_score += 15
             # Price near EMA 21 (within 1%)
             ema_dist = abs(ind['close'] - ind['ema_21']) / ind['ema_21']
@@ -601,9 +697,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         if bearish_trend:
             short_score += 35
-            if 50 <= ind['rsi'] <= 65:
+            # Pullback zone: between neutral (50) and overbought
+            if 50 <= ind['rsi'] <= ind['rsi_overbought'] - 5:
                 short_score += 30
-            elif 45 <= ind['rsi'] <= 70:
+            elif 45 <= ind['rsi'] <= ind['rsi_overbought']:
                 short_score += 15
             ema_dist = abs(ind['close'] - ind['ema_21']) / ind['ema_21']
             if ema_dist < 0.01:
@@ -729,13 +826,56 @@ class AdaptiveHybridStrategy(BaseStrategy):
             cprint(f"[AdaptiveHybrid] Error checking BTC trend: {e}", "yellow")
             return True  # Default to allowing trades
 
+    def _get_btc_correlation(self, symbol: str):
+        """Get Pearson correlation of token returns with BTC returns (4h cache per-symbol).
+        Returns float or None if data unavailable."""
+        now = datetime.now()
+        with self._cache_lock:
+            cached = self._btc_correlation_cache.get(symbol)
+            if cached and (now - cached[1]).total_seconds() < 14400:
+                return cached[0]
+
+        try:
+            # Fetch candles outside lock (I/O)
+            btc_df = self._fetch_candles('BTC', interval='1h', candles=170)
+            token_df = self._fetch_candles(symbol, interval='1h', candles=170)
+
+            if btc_df is None or token_df is None or len(btc_df) < 50 or len(token_df) < 50:
+                return None  # Skip penalty when data unavailable
+
+            n = min(len(btc_df), len(token_df))
+            btc_returns = btc_df['close'].tail(n).pct_change().dropna()
+            token_returns = token_df['close'].tail(n).pct_change().dropna()
+
+            n_common = min(len(btc_returns), len(token_returns))
+            if n_common < 30:
+                return None
+
+            corr = float(btc_returns.tail(n_common).corr(token_returns.tail(n_common)))
+            if np.isnan(corr):
+                return None
+
+            with self._cache_lock:
+                self._btc_correlation_cache[symbol] = (corr, now)
+            return corr
+        except Exception:
+            return None
+
     # =========================================================================
     # AGGREGATION
     # =========================================================================
 
-    def _aggregate_scores(self, module_results: dict) -> dict:
+    def _get_weights_for_symbol(self, symbol: str) -> dict:
+        """Get module weights for this token's behavior class."""
+        if symbol in ADAPTIVE_HYBRID_RANGING_TOKENS:
+            return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('ranging', self.weights)
+        elif symbol in ADAPTIVE_HYBRID_TRENDING_TOKENS:
+            return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('trending', self.weights)
+        return self.weights
+
+    def _aggregate_scores(self, module_results: dict, symbol: str = None) -> dict:
         """Aggregate all module scores into a final trading decision."""
-        weights = self.weights
+        weights = self._get_weights_for_symbol(symbol) if symbol else self.weights
 
         # Separate by direction
         long_modules = {}
@@ -788,15 +928,25 @@ class AdaptiveHybridStrategy(BaseStrategy):
         coverage = active_weight_total / sum(weights.values())
         final_score = raw_score * (0.5 + 0.5 * coverage)
 
-        # BTC macro filter: penalize trades against BTC trend by 30%
-        btc_bullish = self._check_btc_trend()
+        # BTC macro filter: penalize signals against BTC trend, proportional to correlation
+        btc_trend = self._check_btc_trend()
         btc_penalty = 1.0
-        if direction == 'BUY' and not btc_bullish:
-            btc_penalty = 0.70
-            final_score *= btc_penalty
-        elif direction == 'SELL' and btc_bullish:
-            btc_penalty = 0.70
-            final_score *= btc_penalty
+        details = ""
+        if btc_trend is not None and symbol:
+            corr = self._get_btc_correlation(symbol)
+            if corr is not None:
+                # Clamp correlation to [0.33, 1.0] for penalty range
+                corr_clamped = max(0.33, min(1.0, abs(corr)))
+                btc_penalty_amount = 0.30 * corr_clamped  # 10% to 30% penalty
+
+                if not btc_trend and direction == 'BUY':
+                    btc_penalty = 1.0 - btc_penalty_amount
+                    final_score *= btc_penalty
+                    details = f" | BTC bearish penalty -{btc_penalty_amount:.0%} (corr={corr:.2f})"
+                elif btc_trend and direction == 'SELL':
+                    btc_penalty = 1.0 - btc_penalty_amount
+                    final_score *= btc_penalty
+                    details = f" | BTC bullish penalty -{btc_penalty_amount:.0%} (corr={corr:.2f})"
 
         # Conflict penalty: if opposing direction has significant weight
         if losing_weight > 0.25 * winning_weight:
@@ -821,7 +971,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             'total_modules_fired': len(long_modules) + len(short_modules),
             'agreement': round(coverage, 2),
             'details': f"{direction} score={final_score:.1f} ({len(winning_modules)} modules: {', '.join(module_details)})"
-                       + (f" [BTC filter: {btc_penalty:.0%}]" if btc_penalty < 1.0 else ""),
+                       + details,
             'module_scores': {n: r['score'] for n, r in module_results.items() if r['score'] > 0},
         }
 
@@ -829,13 +979,25 @@ class AdaptiveHybridStrategy(BaseStrategy):
     # URGENCY SYSTEM
     # =========================================================================
 
-    def _get_urgency_multiplier(self) -> float:
-        """Progressive threshold relaxation if no trades recently."""
-        if self.last_trade_time is None:
-            # Never traded = maximum urgency
-            hours_since = 24
+    def _get_urgency_multiplier(self, symbol: str = None) -> float:
+        """Progressive threshold relaxation if no trades recently (per-token)."""
+        # Read trade times under lock (written by execute_paper_trade under lock)
+        with self._position_lock:
+            per_token_time = self.last_trade_time_per_token.get(symbol) if symbol else None
+            global_time = self.last_trade_time
+
+        if per_token_time is not None:
+            last_trade = per_token_time
+        elif global_time is not None:
+            last_trade = global_time
         else:
-            hours_since = (datetime.now() - self.last_trade_time).total_seconds() / 3600
+            last_trade = None
+
+        if last_trade is None:
+            # Never traded = no urgency relaxation (conservative startup)
+            return 1.0
+        else:
+            hours_since = (datetime.now() - last_trade).total_seconds() / 3600
 
         start = ADAPTIVE_HYBRID_URGENCY_START_HOURS
         if hours_since < start:
@@ -846,12 +1008,20 @@ class AdaptiveHybridStrategy(BaseStrategy):
         reduction = min(steps * 0.05, 0.30)  # Max 30% reduction
         return max(0.70, 1.0 - reduction)
 
-    def _get_effective_threshold(self) -> float:
+    def _get_effective_threshold(self, symbol: str = None) -> float:
         """Get current threshold adjusted by urgency."""
         base = ADAPTIVE_HYBRID_BASE_THRESHOLD
-        urgency = self._get_urgency_multiplier()
+        urgency = self._get_urgency_multiplier(symbol)
         effective = base * urgency
         return max(effective, ADAPTIVE_HYBRID_URGENCY_FLOOR)
+
+    def _get_atr_profile(self, symbol: str) -> tuple:
+        """Get (sl_mult, tp_mult) for this token's class."""
+        for profile in ADAPTIVE_HYBRID_ATR_PROFILES.values():
+            if symbol in profile['tokens']:
+                return profile['sl_mult'], profile['tp_mult']
+        # Default to global config
+        return ADAPTIVE_HYBRID_ATR_SL_MULT, ADAPTIVE_HYBRID_ATR_TP_MULT
 
     # =========================================================================
     # MAIN SIGNAL GENERATION
@@ -897,11 +1067,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
         }
 
         # Aggregate scores
-        aggregated = self._aggregate_scores(module_results)
+        aggregated = self._aggregate_scores(module_results, symbol=symbol)
 
         # Get threshold
-        threshold = self._get_effective_threshold()
-        urgency = self._get_urgency_multiplier()
+        threshold = self._get_effective_threshold(symbol)
+        urgency = self._get_urgency_multiplier(symbol)
 
         # Log analysis
         fired_modules = {n: r for n, r in module_results.items() if r['score'] > 0 and r['direction'] != 'NEUTRAL'}
@@ -923,8 +1093,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
             # Calculate ATR-based SL/TP
             atr = ind['atr']
             if atr > 0:
-                sl_pct = (atr * ADAPTIVE_HYBRID_ATR_SL_MULT / ind['close']) * 100
-                tp_pct = (atr * ADAPTIVE_HYBRID_ATR_TP_MULT / ind['close']) * 100
+                sl_mult, tp_mult = self._get_atr_profile(symbol)
+                sl_pct = (atr * sl_mult / ind['close']) * 100
+                tp_pct = (atr * tp_mult / ind['close']) * 100
             else:
                 sl_pct = 1.5
                 tp_pct = 2.5
@@ -1064,8 +1235,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
             available_margin = max(0, self.paper_balance - used_margin)
 
             # Position sizing: 2% risk per trade
+            # The ATR-based sl_pct already adjusts for volatility naturally:
+            # high vol → wide SL → smaller position; low vol → tight SL → larger position.
+            # No additional vol_scalar needed (avoids double-counting ATR).
             risk_amount = self.paper_balance * 0.02
-            position_size = risk_amount / (sl_pct / 100) * ADAPTIVE_HYBRID_LEVERAGE
+            sl_fraction = max(sl_pct / 100, 0.001)  # Guard against near-zero SL
+            position_size = risk_amount / sl_fraction * ADAPTIVE_HYBRID_LEVERAGE
             max_position_by_margin = available_margin * 0.9 * ADAPTIVE_HYBRID_LEVERAGE
             # Cap on notional exposure (not margin) — intentionally conservative
             max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100)
@@ -1100,6 +1275,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             self.paper_positions[position_id] = trade
             self.daily_trades += 1
             self.last_trade_time = datetime.now()
+            self.last_trade_time_per_token[symbol] = datetime.now()
 
         # Log to file
         log_file = os.path.join(self.data_dir, 'paper_trades.csv')
@@ -1111,6 +1287,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         cprint(f"\n[ADAPTIVE HYBRID] Opened {direction} {symbol} (ID: {position_id})", "magenta", attrs=['bold'])
         cprint(f"  Entry: ${price:,.2f} | Size: ${position_size:,.2f} | Score: {metadata.get('score', 0):.1f}", "white")
+        cprint(f"  Risk: ${risk_amount:,.2f} | SL: {sl_pct:.2f}%", "white")
         cprint(f"  SL: ${trade['stop_loss']:,.2f} ({sl_pct:.2f}%)", "white")
         cprint(f"  TP: ${trade['take_profit']:,.2f} ({tp_pct:.2f}%)", "white")
 

@@ -25,11 +25,8 @@ MONITORED_TOKENS = [
 tokens_to_trade = MONITORED_TOKENS  # Using the same list for trading
 
 # ⚡ HyperLiquid Configuration
-# Extended to include all SNIPER_ASSETS for the Sniper strategy
-HYPERLIQUID_SYMBOLS = [
-    'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'DOT', 'MATIC',
-    'ARB', 'OP', 'RENDER', 'AAVE', 'CRV', 'FIL',  # Added for Sniper strategy
-]
+# HYPERLIQUID_SYMBOLS is derived from SNIPER_ASSETS (single source of truth)
+# Defined after SNIPER_ASSETS below
 HYPERLIQUID_LEVERAGE = 5  # Default leverage for HyperLiquid trades (1-50)
 
 # 🔄 Exchange-Specific Token Lists
@@ -246,21 +243,21 @@ ACTIVE_STRATEGY = 'adaptive_hybrid'  # Options: 'multifactor', 'ramf', 'sniper',
 # Target: 1-2 trades/day with 80%+ win rate.
 # Philosophy: "Fewer trades, but quasi-certain trades"
 
-# Assets to trade (expanded set with dynamic threshold calibration)
+# Assets to trade - univers de 14 tokens sélectionnés par OI HyperLiquid
+# Retirés : MATIC (OI=$0), RENDER (OI<$1M), DOT (OI faible), FIL ($2M), ARB ($3M), OP ($3M), CRV (remplacé par ENA)
+# Ajoutés : SUI ($22M OI), TAO ($15M OI), NEAR ($16M OI), ENA ($15M OI), kPEPE ($10M OI)
 SNIPER_ASSETS = [
-    # Majors (battle-tested)
-    'BTC', 'ETH', 'SOL',
-    # L1 établis avec bonne liquidité HyperLiquid
-    'AVAX', 'LINK', 'DOT', 'ADA',
-    # L2 populaires
-    'ARB', 'OP',
-    # AI tokens
-    'RENDER',
-    # DeFi blue chips
-    'AAVE', 'CRV',
-    # Infrastructure
-    'FIL',
+    'BTC', 'ETH', 'SOL',           # Majors
+    'XRP', 'AVAX', 'SUI',          # L1 établis + émergent
+    'TAO', 'NEAR',                  # AI
+    'AAVE', 'ENA',                  # DeFi
+    'LINK',                         # Oracle
+    'DOGE', 'kPEPE',               # Memes
+    'ADA',                          # L1 value
 ]
+
+# Single source of truth for HyperLiquid symbols
+HYPERLIQUID_SYMBOLS = SNIPER_ASSETS
 
 # Position sizing
 SNIPER_LEVERAGE = 3                    # Conservative leverage
@@ -423,6 +420,13 @@ ADAPTIVE_HYBRID_SKIP_LLM = True          # Skip LLM re-evaluation (strategy has 
 ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25    # Max position size as % of paper balance
 ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2  # Minimum modules agreeing for a trade signal
 ADAPTIVE_HYBRID_MIN_RR_RATIO = 2.0       # Minimum reward:risk ratio (TP must be >= SL * this)
+
+# ATR SL/TP profiles by token class
+ADAPTIVE_HYBRID_ATR_PROFILES = {
+    'major':  {'sl_mult': 1.8, 'tp_mult': 3.6, 'tokens': ['BTC', 'ETH']},
+    'mid':    {'sl_mult': 1.5, 'tp_mult': 3.0, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
+    'alt':    {'sl_mult': 1.2, 'tp_mult': 2.4, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
+}
 ADAPTIVE_HYBRID_RESET_PAPER = True       # One-shot flag: reset paper trading state on next startup
 
 # Module weights (must sum to 1.0)
@@ -436,6 +440,22 @@ ADAPTIVE_HYBRID_WEIGHTS = {
     'trend_rider_lite': 0.15,    # Relaxed trend following (ADX>25)
     'ramf_lite': 0.10,           # Volatility regime (no dead zone)
 }
+
+# Weight profiles by token behavior class
+ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
+    'ranging': {  # BTC, ETH — often range-bound
+        'mean_reversion': 0.20, 'momentum_breakout': 0.08, 'ema_crossover': 0.10,
+        'funding_contrarian': 0.12, 'rsi_divergence': 0.12, 'sniper_lite': 0.18,
+        'trend_rider_lite': 0.10, 'ramf_lite': 0.10,
+    },
+    'trending': {  # DOGE, kPEPE, SUI, TAO — strong momentum
+        'mean_reversion': 0.08, 'momentum_breakout': 0.18, 'ema_crossover': 0.12,
+        'funding_contrarian': 0.10, 'rsi_divergence': 0.08, 'sniper_lite': 0.14,
+        'trend_rider_lite': 0.20, 'ramf_lite': 0.10,
+    },
+}
+ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
+ADAPTIVE_HYBRID_TRENDING_TOKENS = ['DOGE', 'kPEPE', 'SUI', 'TAO']
 
 # ============================================================================
 # Risk Agent Settings (for paper trading mode)
