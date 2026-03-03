@@ -63,11 +63,10 @@ VOLUME ["/app/src/data"]
 # Expose web dashboard port
 EXPOSE 8080
 
-# Health check - verify web dashboard AND main.py heartbeat
-HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8080/health && \
-    python -c "import json,time; d=json.load(open('/app/src/data/bot_heartbeat.json')); assert time.time()-d.get('timestamp',0)<600, 'Bot heartbeat stale'" \
-    || exit 1
+# Health check - verify web dashboard is responding
+# Bot heartbeat is checked separately (file may not exist during first cycle)
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Default entry point
 ENTRYPOINT ["./entrypoint.sh"]

@@ -36,7 +36,7 @@ import traceback
 load_dotenv()
 
 # Determine API URL based on USE_TESTNET environment variable
-HL_API_URL = constants.TESTNET_API_URL if os.getenv('USE_TESTNET', 'false').lower() == 'true' else HL_API_URL
+HL_API_URL = constants.TESTNET_API_URL if os.getenv('USE_TESTNET', 'false').lower() == 'true' else constants.MAINNET_API_URL
 
 # Hide all warnings
 import warnings
