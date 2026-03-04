@@ -14,7 +14,10 @@ from .base_model import BaseModel
 from .claude_model import ClaudeModel
 from .groq_model import GroqModel
 from .openai_model import OpenAIModel
-from .gemini_model import GeminiModel  # Re-enabled with Gemini 2.5 models
+try:
+    from .gemini_model import GeminiModel  # Re-enabled with Gemini 2.5 models
+except ImportError:
+    GeminiModel = None
 from .deepseek_model import DeepSeekModel
 from .ollama_model import OllamaModel
 from .xai_model import XAIModel
@@ -68,12 +71,13 @@ class ModelFactory:
         "claude": ClaudeModel,
         "groq": GroqModel,
         "openai": OpenAIModel,
-        "gemini": GeminiModel,  # Re-enabled with Gemini 2.5 models
         "deepseek": DeepSeekModel,
         "ollama": OllamaModel,  # Add Ollama implementation
         "xai": XAIModel,  # xAI Grok models
         "openrouter": OpenRouterModel  # 🌙 Moon Dev: OpenRouter - 200+ models!
     }
+    if GeminiModel is not None:
+        MODEL_IMPLEMENTATIONS["gemini"] = GeminiModel
     
     # Default models for each type
     DEFAULT_MODELS = {
