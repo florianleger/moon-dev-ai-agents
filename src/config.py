@@ -409,24 +409,33 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 # Multi-module scoring strategy that aggregates 8 independent signal generators.
 # Target: 1-3 trades/day with 55%+ win rate.
 
-ADAPTIVE_HYBRID_BASE_THRESHOLD = 45      # Base score threshold (0-100) to trigger a trade
+ADAPTIVE_HYBRID_BASE_THRESHOLD = 55      # Base score threshold (0-100) - optimized from 45 via backtest grid search
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
-ADAPTIVE_HYBRID_URGENCY_FLOOR = 42       # Minimum threshold (never go below this)
+ADAPTIVE_HYBRID_URGENCY_FLOOR = 50       # Minimum threshold (never go below this) - raised from 42
 ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5     # Max trades per day
 ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30  # Daily loss limit in USD
 ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
-ADAPTIVE_HYBRID_ATR_SL_MULT = 1.5       # Stop loss = 1.5x ATR
-ADAPTIVE_HYBRID_ATR_TP_MULT = 3.0       # Take profit = 3.0x ATR (must be >= SL_MULT * MIN_RR_RATIO)
+ADAPTIVE_HYBRID_ATR_SL_MULT = 2.8       # Stop loss = 2.8x ATR (was 1.5 - widened to reduce premature SL exits)
+ADAPTIVE_HYBRID_ATR_TP_MULT = 4.2       # Take profit = 4.2x ATR (was 3.0 - adjusted for new R:R)
 ADAPTIVE_HYBRID_SKIP_LLM = True          # Skip LLM re-evaluation (strategy has own filters)
+
+# LLM-Enhanced Pipeline Settings
+ADAPTIVE_HYBRID_LLM_CONFIRMATION = True  # Enable LLM trade confirmation before entry
+ADAPTIVE_HYBRID_LLM_REGIME = True        # Enable LLM market regime classifier
+ADAPTIVE_HYBRID_LLM_LEARNER = True       # Enable post-trade LLM learning
+ADAPTIVE_HYBRID_MTF_CONFLUENCE = True    # Enable multi-timeframe confluence scoring
+ADAPTIVE_HYBRID_LLM_PROVIDER = 'groq'   # LLM provider for fast calls ('groq', 'anthropic', etc.)
+ADAPTIVE_HYBRID_LLM_TIMEOUT_S = 5       # Max seconds to wait for LLM response
 ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25    # Max position size as % of paper balance
 ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2  # Minimum modules agreeing for a trade signal
-ADAPTIVE_HYBRID_MIN_RR_RATIO = 2.0       # Minimum reward:risk ratio (TP must be >= SL * this)
+ADAPTIVE_HYBRID_MIN_RR_RATIO = 1.5       # Minimum reward:risk ratio (was 2.0 - lowered to capture more TP exits)
 
 # ATR SL/TP profiles by token class
 ADAPTIVE_HYBRID_ATR_PROFILES = {
-    'major':  {'sl_mult': 1.8, 'tp_mult': 3.6, 'tokens': ['BTC', 'ETH']},
-    'mid':    {'sl_mult': 1.5, 'tp_mult': 3.0, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
-    'alt':    {'sl_mult': 1.2, 'tp_mult': 2.4, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
+    'btc':    {'sl_mult': 2.8, 'tp_mult': 4.2, 'tokens': ['BTC']},        # Optimized: was 1.8/3.6
+    'eth':    {'sl_mult': 4.0, 'tp_mult': 8.0, 'tokens': ['ETH']},        # ETH needs wider stops due to higher volatility
+    'mid':    {'sl_mult': 2.2, 'tp_mult': 3.3, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},  # Was 1.5/3.0
+    'alt':    {'sl_mult': 1.8, 'tp_mult': 2.7, 'tokens': ['DOGE', 'kPEPE', 'ENA']},  # Was 1.2/2.4
 }
 ADAPTIVE_HYBRID_RESET_PAPER = False       # One-shot flag: reset paper trading state on next startup
 
@@ -445,47 +454,54 @@ ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 24  # Close if <50% TP after 24h
 # Paper trading fees simulation
 PAPER_TAKER_FEE = 0.00035  # HyperLiquid taker fee 0.035%
 PAPER_SLIPPAGE = {
-    'major': 0.001,   # 0.1% for BTC, ETH
+    'btc': 0.001,     # 0.1% for BTC
+    'eth': 0.001,     # 0.1% for ETH
     'mid': 0.002,     # 0.2% for SOL, XRP, AVAX, etc.
     'alt': 0.005,     # 0.5% for DOGE, kPEPE, ENA
 }
 
 # Leverage profiles by token class
 ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {
-    'major': 3,   # BTC, ETH
+    'btc': 3,     # BTC
+    'eth': 3,     # ETH
     'mid': 3,     # SOL, XRP, AVAX, etc.
     'alt': 2,     # DOGE, kPEPE, ENA — lower leverage for volatile alts
 }
 
 # Module weights (must sum to 1.0)
 ADAPTIVE_HYBRID_WEIGHTS = {
-    'mean_reversion': 0.12,      # Bollinger Bands + RSI in ranging markets
-    'momentum_breakout': 0.10,   # Range breakout + volume confirmation
-    'ema_trend': 0.10,           # EMA trend (merged ema_crossover + trend_rider)
-    'funding_contrarian': 0.08,  # Extreme funding rate contrarian
-    'rsi_divergence': 0.08,      # Price vs RSI divergence
-    'sniper_lite': 0.14,         # Relaxed Sniper (extreme move + volume)
+    'mean_reversion': 0.10,      # Bollinger Bands + RSI in ranging markets
+    'momentum_breakout': 0.08,   # Range breakout + volume confirmation
+    'ema_trend': 0.08,           # EMA trend (merged ema_crossover + trend_rider)
+    'funding_contrarian': 0.07,  # Extreme funding rate contrarian
+    'rsi_divergence': 0.07,      # Price vs RSI divergence
+    'sniper_lite': 0.12,         # Relaxed Sniper (extreme move + volume)
     'trend_rider_lite': 0.00,    # Merged into ema_trend
-    'ramf_lite': 0.08,           # Volatility regime (no dead zone)
-    'oi_delta': 0.10,            # NEW: Open Interest delta
-    'sentiment': 0.08,           # NEW: Sentiment composite
-    'squeeze_detector': 0.06,    # NEW: Squeeze detection
-    'order_imbalance': 0.06,     # NEW: Order book imbalance
+    'ramf_lite': 0.07,           # Volatility regime (no dead zone)
+    'oi_delta': 0.08,            # Open Interest delta
+    'sentiment': 0.06,           # Sentiment composite (Fear & Greed + Twitter)
+    'squeeze_detector': 0.05,    # Squeeze detection
+    'order_imbalance': 0.05,     # Order book imbalance
+    'crowd_positioning': 0.07,   # Binance L/S ratio + Taker volume (contrarian)
+    'social_hype': 0.05,         # CoinGecko trending + global macro
+    'funding_divergence': 0.05,  # Cross-exchange funding HL vs Binance
 }
 
 # Weight profiles by token behavior class
 ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
     'ranging': {  # BTC, ETH — often range-bound
-        'mean_reversion': 0.16, 'momentum_breakout': 0.06, 'ema_trend': 0.08,
-        'funding_contrarian': 0.10, 'rsi_divergence': 0.10, 'sniper_lite': 0.14,
-        'trend_rider_lite': 0.00, 'ramf_lite': 0.08,
-        'oi_delta': 0.08, 'sentiment': 0.08, 'squeeze_detector': 0.06, 'order_imbalance': 0.06,
+        'mean_reversion': 0.14, 'momentum_breakout': 0.05, 'ema_trend': 0.06,
+        'funding_contrarian': 0.08, 'rsi_divergence': 0.08, 'sniper_lite': 0.12,
+        'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
+        'oi_delta': 0.07, 'sentiment': 0.06, 'squeeze_detector': 0.05, 'order_imbalance': 0.05,
+        'crowd_positioning': 0.07, 'social_hype': 0.05, 'funding_divergence': 0.05,
     },
     'trending': {  # DOGE, kPEPE, SUI, TAO — strong momentum
-        'mean_reversion': 0.06, 'momentum_breakout': 0.14, 'ema_trend': 0.10,
-        'funding_contrarian': 0.08, 'rsi_divergence': 0.06, 'sniper_lite': 0.12,
-        'trend_rider_lite': 0.00, 'ramf_lite': 0.08,
-        'oi_delta': 0.12, 'sentiment': 0.08, 'squeeze_detector': 0.08, 'order_imbalance': 0.08,
+        'mean_reversion': 0.05, 'momentum_breakout': 0.12, 'ema_trend': 0.08,
+        'funding_contrarian': 0.06, 'rsi_divergence': 0.05, 'sniper_lite': 0.10,
+        'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
+        'oi_delta': 0.10, 'sentiment': 0.06, 'squeeze_detector': 0.06, 'order_imbalance': 0.06,
+        'crowd_positioning': 0.08, 'social_hype': 0.06, 'funding_divergence': 0.05,
     },
 }
 ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
@@ -502,4 +518,14 @@ RISK_MAX_POSITIONS = 4           # Maximum simultaneous open positions
 RISK_COOLING_OFF_HOURS = 4        # Wait 4h after drawdown breach before resuming
 RISK_RECOVERY_SIZE_PCT = 50       # Resume with 50% size for 24h after recovery
 RISK_RECOVERY_DURATION_HOURS = 24 # Duration of reduced-size recovery period
+
+# Portfolio Correlation
+CORRELATION_HIGH_THRESHOLD = 0.75  # Above this, reduce sizing
+CORRELATION_SIZING_FACTOR = 0.5   # Reduce to 50% when correlated
+
+# Regime Detection
+REGIME_ADX_TRENDING = 30
+REGIME_ADX_RANGING = 20
+REGIME_VOL_HIGH = 1.2
+REGIME_VOL_LOW = 0.8
 

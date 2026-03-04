@@ -24,7 +24,7 @@ import openai
 from pathlib import Path
 from src import nice_funcs as n
 from src import nice_funcs_hyperliquid as hl  # Add import for hyperliquid functions
-from src.agents.api import MoonDevAPI
+from src.data_providers.market_data import MarketDataProvider
 from collections import deque
 from src.agents.base_agent import BaseAgent
 from src.data.signals.signal_pipeline import SignalPipeline
@@ -124,8 +124,9 @@ class WhaleAgent(BaseAgent):
             self.deepseek_client = None
             print(f"🎯 Moon Dev's Whale Agent using Claude model: {self.ai_model}!")
         
-        # Initialize Moon Dev API with correct base URL
-        self.api = MoonDevAPI(base_url="http://api.moondev.com:8000")
+        # Initialize MarketDataProvider (HyperLiquid)
+        self.market_data = MarketDataProvider(start_liquidation_stream=False)
+        print("Using MarketDataProvider (HyperLiquid) for OI data")
         
         # Create data directories if they don't exist
         self.audio_dir = PROJECT_ROOT / "src" / "audio"
@@ -257,36 +258,30 @@ class WhaleAgent(BaseAgent):
         return f"{millions:.2f} million"
 
     def _get_current_oi(self):
-        """Get current open interest data from API"""
+        """Get current open interest data from MarketDataProvider (HyperLiquid)"""
         try:
-            print("\n🔍 Fetching fresh OI data from API...")
-            df = self.api.get_oi_data()  # Changed from get_open_interest to get_oi_data
-            
-            if df is None:
-                print("❌ Failed to get current OI data")
+            print("\n🔍 Fetching fresh OI data from HyperLiquid...")
+            btc_data = self.market_data.get_open_interest('BTC')
+            eth_data = self.market_data.get_open_interest('ETH')
+
+            if btc_data is None and eth_data is None:
+                print("❌ Failed to get current OI data from HyperLiquid")
                 return None
-                
-            print(f"✨ Successfully fetched {len(df)} OI records")
-            
-            # Process the latest data point for each symbol
-            if not df.empty:
-                # Get latest BTC and ETH data
-                btc_data = df[df['symbol'] == 'BTCUSDT'].iloc[-1]
-                eth_data = df[df['symbol'] == 'ETHUSDT'].iloc[-1]
-                
-                # Use the most recent timestamp between BTC and ETH
-                current_time = pd.to_datetime(max(btc_data['time'], eth_data['time']))
-                
-                # Calculate OI values (openInterest * price)
-                btc_oi = float(btc_data['openInterest']) * float(btc_data['price'])
-                eth_oi = float(eth_data['openInterest']) * float(eth_data['price'])
-                total_oi = btc_oi + eth_oi
-                
-                # Save the data point
-                self._save_oi_data(current_time, btc_oi, eth_oi, total_oi)
-                
+
+            current_time = pd.Timestamp.now()
+
+            # OI from HyperLiquid is in contracts; multiply by mark_price for USD value
+            btc_oi = btc_data['open_interest'] * btc_data['mark_price'] if btc_data else 0.0
+            eth_oi = eth_data['open_interest'] * eth_data['mark_price'] if eth_data else 0.0
+            total_oi = btc_oi + eth_oi
+
+            print(f"✨ BTC OI: ${btc_oi:,.2f} | ETH OI: ${eth_oi:,.2f}")
+
+            # Save the data point
+            self._save_oi_data(current_time, btc_oi, eth_oi, total_oi)
+
             return self.oi_history
-            
+
         except Exception as e:
             print(f"❌ Error getting OI data: {str(e)}")
             print(f"Stack trace: {traceback.format_exc()}")

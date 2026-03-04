@@ -21,6 +21,8 @@ from src.config import (
     RISK_RECOVERY_SIZE_PCT,
     RISK_RECOVERY_DURATION_HOURS,
     MINIMUM_BALANCE_USD,
+    CORRELATION_HIGH_THRESHOLD,
+    CORRELATION_SIZING_FACTOR,
 )
 from src.agents.base_agent import BaseAgent
 
@@ -215,6 +217,72 @@ class RiskAgent(BaseAgent):
             return False
 
         return True
+
+    # Static correlation table for major crypto pairs
+    _CORRELATION_TABLE = {
+        ('BTC', 'ETH'): 0.85, ('ETH', 'BTC'): 0.85,
+        ('BTC', 'SOL'): 0.75, ('SOL', 'BTC'): 0.75,
+        ('ETH', 'SOL'): 0.80, ('SOL', 'ETH'): 0.80,
+        ('BTC', 'XRP'): 0.70, ('XRP', 'BTC'): 0.70,
+        ('ETH', 'XRP'): 0.65, ('XRP', 'ETH'): 0.65,
+        ('BTC', 'ADA'): 0.70, ('ADA', 'BTC'): 0.70,
+        ('BTC', 'AVAX'): 0.70, ('AVAX', 'BTC'): 0.70,
+        ('BTC', 'LINK'): 0.70, ('LINK', 'BTC'): 0.70,
+        ('ETH', 'AVAX'): 0.75, ('AVAX', 'ETH'): 0.75,
+        ('ETH', 'LINK'): 0.75, ('LINK', 'ETH'): 0.75,
+    }
+    _DEFAULT_MAJOR_ALT_CORR = 0.60
+
+    def _get_pair_correlation(self, sym_a: str, sym_b: str) -> float:
+        """Get static correlation between two symbols."""
+        if sym_a == sym_b:
+            return 1.0
+        return self._CORRELATION_TABLE.get((sym_a, sym_b), self._DEFAULT_MAJOR_ALT_CORR)
+
+    def check_portfolio_correlation(self) -> float:
+        """Check correlation across open positions.
+        Returns a sizing factor: 1.0 = OK, <1.0 = high correlation detected.
+        """
+        strategy = self._get_strategy()
+        if not strategy or not hasattr(strategy, 'paper_positions'):
+            return 1.0
+
+        positions = list(strategy.paper_positions.values())
+        if len(positions) <= 1:
+            return 1.0
+
+        symbols = [p['symbol'] for p in positions]
+        max_corr = 0.0
+        for i in range(len(symbols)):
+            for j in range(i + 1, len(symbols)):
+                corr = self._get_pair_correlation(symbols[i], symbols[j])
+                max_corr = max(max_corr, corr)
+
+        if max_corr >= CORRELATION_HIGH_THRESHOLD:
+            cprint(f"[RiskAgent] High portfolio correlation detected: {max_corr:.2f} "
+                   f"(threshold: {CORRELATION_HIGH_THRESHOLD})", "yellow")
+            return CORRELATION_SIZING_FACTOR
+
+        return 1.0
+
+    def get_correlation_sizing_factor(self, new_symbol: str, positions: list) -> float:
+        """Get sizing factor for a new position given existing positions.
+        Args:
+            new_symbol: Symbol of the new position to open.
+            positions: List of dicts with at least 'symbol' key.
+        Returns:
+            float: 1.0 = OK, CORRELATION_SIZING_FACTOR if too correlated.
+        """
+        if not positions:
+            return 1.0
+
+        for pos in positions:
+            corr = self._get_pair_correlation(new_symbol, pos['symbol'])
+            if corr >= CORRELATION_HIGH_THRESHOLD:
+                cprint(f"[RiskAgent] New {new_symbol} correlated with {pos['symbol']}: {corr:.2f}", "yellow")
+                return CORRELATION_SIZING_FACTOR
+
+        return 1.0
 
     def run(self):
         """Run risk checks. Returns True if a limit was breached."""

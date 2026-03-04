@@ -27,7 +27,7 @@ import anthropic
 from pathlib import Path
 from src import nice_funcs as n
 from src import nice_funcs_hyperliquid as hl
-from src.agents.api import MoonDevAPI
+from src.data_providers.market_data import MarketDataProvider
 from collections import deque
 from src.agents.base_agent import BaseAgent
 from src.data.signals.signal_pipeline import SignalPipeline
@@ -132,7 +132,9 @@ class FundingAgent(BaseAgent):
             self.deepseek_client = None
             cprint(f"🎯 Moon Dev's Funding Agent using Claude model: {self.active_model}!", "green")
         
-        self.api = MoonDevAPI()
+        # Initialize MarketDataProvider (HyperLiquid)
+        self.market_data = MarketDataProvider(start_liquidation_stream=False)
+        cprint("Using MarketDataProvider (HyperLiquid) for funding data", "green")
         
         # Create data directories if they don't exist
         self.audio_dir = PROJECT_ROOT / "src" / "audio"
@@ -403,25 +405,39 @@ class FundingAgent(BaseAgent):
             self.funding_history = pd.DataFrame(columns=['timestamp', 'symbol', 'funding_rate', 'annual_rate'])
             
     def _get_current_funding(self):
-        """Get current funding rate data"""
+        """Get current funding rate data from MarketDataProvider (HyperLiquid)"""
         try:
-            df = self.api.get_funding_data()
-            
-            if df is not None and not df.empty:
-                # Get latest data for each symbol
-                current_data = df.sort_values('event_time').groupby('symbol').last().reset_index()
-                
-                # Ensure funding_rate and yearly_funding_rate are numeric
-                numeric_cols = ['funding_rate', 'yearly_funding_rate']
-                for col in numeric_cols:
-                    current_data[col] = pd.to_numeric(current_data[col], errors='coerce')
-                
-                # Rename yearly_funding_rate to annual_rate for consistency
-                current_data = current_data.rename(columns={'yearly_funding_rate': 'annual_rate'})
-                
-                return current_data
-            return None
-            
+            # Fetch all prices in one API call (cached internally)
+            self.market_data._fetch_all_prices()
+            cache = self.market_data._all_prices_cache
+
+            if not cache:
+                print("❌ Failed to get funding data from HyperLiquid")
+                return None
+
+            rows = []
+            now = datetime.now().isoformat()
+
+            # Build rows for symbols in SYMBOL_NAMES (the monitored list)
+            for symbol in SYMBOL_NAMES:
+                data = cache.get(symbol)
+                if data:
+                    hourly_rate = data['funding_rate']
+                    annual_rate = hourly_rate * 24 * 365 * 100  # Convert to annual %
+                    rows.append({
+                        'event_time': now,
+                        'symbol': symbol,
+                        'funding_rate': hourly_rate,
+                        'annual_rate': annual_rate,
+                    })
+
+            if not rows:
+                print("⚠️ No funding data found for monitored symbols")
+                return None
+
+            current_data = pd.DataFrame(rows)
+            return current_data
+
         except Exception as e:
             print(f"❌ Error getting funding data: {str(e)}")
             traceback.print_exc()

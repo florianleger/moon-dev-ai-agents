@@ -7,7 +7,9 @@ No API key required for public market data.
 WebSocket endpoint: wss://fstream.binance.com/ws/!forceOrder@arr
 """
 
+import csv
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -15,6 +17,12 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 import pandas as pd
 from termcolor import cprint
+
+# CSV persistence for liquidation history
+LIQUIDATION_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'liquidations')
+LIQUIDATION_LOG_FILE = os.path.join(LIQUIDATION_LOG_DIR, 'liquidations_log.csv')
+LIQUIDATION_CSV_COLUMNS = ['timestamp', 'symbol', 'side', 'price', 'quantity', 'usd_value']
+LIQUIDATION_RETENTION_DAYS = 7
 
 try:
     import websocket
@@ -54,6 +62,71 @@ class BinanceLiquidationStream:
         self.last_message_time: Optional[datetime] = None
         self._last_message_epoch: float = 0.0
         self._lock = threading.Lock()
+
+        # Initialize CSV persistence
+        self._init_csv_log()
+
+    def _init_csv_log(self):
+        """Initialize CSV log file and clean old entries."""
+        os.makedirs(LIQUIDATION_LOG_DIR, exist_ok=True)
+        if not os.path.exists(LIQUIDATION_LOG_FILE):
+            with open(LIQUIDATION_LOG_FILE, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(LIQUIDATION_CSV_COLUMNS)
+            cprint("[BinanceFutures] Created liquidation log CSV", "green")
+        else:
+            self._rotate_csv_log()
+
+    def _rotate_csv_log(self):
+        """Remove entries older than LIQUIDATION_RETENTION_DAYS."""
+        try:
+            cutoff = datetime.now() - timedelta(days=LIQUIDATION_RETENTION_DAYS)
+            df = pd.read_csv(LIQUIDATION_LOG_FILE, parse_dates=['timestamp'])
+            before = len(df)
+            df = df[df['timestamp'] >= cutoff]
+            after = len(df)
+            if before > after:
+                df.to_csv(LIQUIDATION_LOG_FILE, index=False)
+                cprint(f"[BinanceFutures] Rotated CSV: removed {before - after} old entries", "yellow")
+        except Exception as e:
+            cprint(f"[BinanceFutures] CSV rotation error: {e}", "yellow")
+
+    def _append_to_csv(self, liquidation: Dict):
+        """Append a single liquidation to the CSV log."""
+        try:
+            with open(LIQUIDATION_LOG_FILE, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    liquidation['timestamp'].isoformat(),
+                    liquidation['symbol'],
+                    liquidation['side'],
+                    liquidation['price'],
+                    liquidation['quantity'],
+                    liquidation['usd_value'],
+                ])
+        except Exception as e:
+            cprint(f"[BinanceFutures] CSV write error: {e}", "yellow")
+
+    def get_historical_liquidations(self, hours: int = 24) -> pd.DataFrame:
+        """
+        Read historical liquidations from the CSV log.
+
+        Args:
+            hours: How many hours back to read
+
+        Returns:
+            DataFrame with liquidation records
+        """
+        if not os.path.exists(LIQUIDATION_LOG_FILE):
+            return pd.DataFrame(columns=LIQUIDATION_CSV_COLUMNS)
+        try:
+            df = pd.read_csv(LIQUIDATION_LOG_FILE, parse_dates=['timestamp'])
+            cutoff = datetime.now() - timedelta(hours=hours)
+            df = df[df['timestamp'] >= cutoff]
+            return df
+        except Exception as e:
+            cprint(f"[BinanceFutures] CSV read error: {e}", "yellow")
+            return pd.DataFrame(columns=LIQUIDATION_CSV_COLUMNS)
 
     def start_stream(self) -> bool:
         """
@@ -219,6 +292,9 @@ class BinanceLiquidationStream:
                     self.liquidations.append(liquidation)
                     self.last_message_time = datetime.now()
                     self._last_message_epoch = time.time()
+
+                # Persist to disk (outside lock to avoid blocking WS)
+                self._append_to_csv(liquidation)
 
         except Exception as e:
             cprint(f"[BinanceFutures] Error parsing message: {e}", "yellow")

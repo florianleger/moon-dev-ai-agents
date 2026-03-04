@@ -14,11 +14,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import time
 from dotenv import load_dotenv
-import anthropic
 import openai
 from src import nice_funcs as n
 from src import nice_funcs_hyperliquid as hl
 from src.agents.base_agent import BaseAgent
+from src.models.model_factory import ModelFactory
 import traceback
 import base64
 from io import BytesIO
@@ -53,20 +53,28 @@ VOICE_MODEL = "tts-1"
 VOICE_NAME = "shimmer" # Options: alloy, echo, fable, onyx, nova, shimmer
 VOICE_SPEED = 1.0
 
-# AI Analysis Prompt
-CHART_ANALYSIS_PROMPT = """You must respond in exactly 3 lines:
-Line 1: Only write BUY, SELL, or NOTHING
-Line 2: One short reason why
-Line 3: Only write "Confidence: X%" where X is 0-100
+# AI Analysis Prompt with Chain-of-Thought
+CHART_ANALYSIS_SYSTEM_PROMPT = """You are an expert technical analyst. Analyze chart data systematically and provide actionable trading signals. Always respond in exactly 3 lines as specified."""
 
-Analyze the chart data for {symbol} {timeframe}:
+CHART_ANALYSIS_PROMPT = """Analyze the chart data systematically for {symbol} {timeframe}:
 
 {chart_data}
 
-Remember:
-- Look for confluence between multiple indicators
-- Volume should confirm price action
-- Consider the timeframe context
+Think through these steps internally before answering:
+1. PRICE ACTION: Key support/resistance levels, candlestick patterns, trend direction
+2. INDICATORS: What are SMA crossovers, RSI, volume ratios saying?
+3. VOLUME: Is volume confirming or diverging from the price move?
+4. SYNTHESIS: What is the overall trading implication?
+
+You must respond in exactly 3 lines:
+Line 1: Only write BUY, SELL, or NOTHING
+Line 2: One short reason why (reference specific indicators)
+Line 3: Only write "Confidence: X%" where X is 0-100
+
+Example response:
+BUY
+Price above SMA20/SMA50 with increasing volume and bullish engulfing pattern
+Confidence: 72%
 """
 
 class ChartAnalysisAgent(BaseAgent):
@@ -84,25 +92,26 @@ class ChartAnalysisAgent(BaseAgent):
         
         # Load environment variables
         load_dotenv()
-        
+
         # Initialize API clients
         openai_key = os.getenv("OPENAI_KEY")
-        anthropic_key = os.getenv("ANTHROPIC_KEY")
-        
-        if not openai_key or not anthropic_key:
-            raise ValueError("🚨 API keys not found in environment variables!")
-            
+        if not openai_key:
+            raise ValueError("OPENAI_KEY not found in environment variables (needed for TTS)")
+
         self.openai_client = openai.OpenAI(api_key=openai_key)  # For TTS only
-        self.client = anthropic.Anthropic(api_key=anthropic_key)
-        
+        self.model = ModelFactory.create_model_with_fallback('anthropic')
+
         # Set AI parameters - use config values unless overridden
-        self.ai_model = AI_MODEL if AI_MODEL else config.AI_MODEL
         self.ai_temperature = AI_TEMPERATURE if AI_TEMPERATURE > 0 else config.AI_TEMPERATURE
         self.ai_max_tokens = AI_MAX_TOKENS if AI_MAX_TOKENS > 0 else config.AI_MAX_TOKENS
+        # Ensure enough tokens for CoT analysis
+        if self.ai_max_tokens < 200:
+            self.ai_max_tokens = 200
         
         print("📊 Chuck the Chart Agent initialized!")
-        print(f"🤖 Using AI Model: {self.ai_model}")
-        if AI_MODEL or AI_TEMPERATURE > 0 or AI_MAX_TOKENS > 0:
+        model_name = self.model.model_name if self.model and hasattr(self.model, 'model_name') else 'unavailable'
+        print(f"🤖 Using AI Model: {model_name} (via ModelFactory)")
+        if AI_TEMPERATURE > 0 or AI_MAX_TOKENS > 0:
             print("⚠️ Note: Using some override settings instead of config.py defaults")
         print(f"🎯 Analyzing {len(TIMEFRAMES)} timeframes: {', '.join(TIMEFRAMES)}")
         print(f"📈 Using indicators: {', '.join(INDICATORS)}")
@@ -178,35 +187,29 @@ class ChartAnalysisAgent(BaseAgent):
             )
             
             print(f"\n🤖 Analyzing {symbol} with AI...")
-            
-            # Get AI analysis using instance settings
-            message = self.client.messages.create(
-                model=self.ai_model,
-                max_tokens=self.ai_max_tokens,
-                temperature=self.ai_temperature,
-                messages=[{
-                    "role": "user",
-                    "content": context
-                }]
-            )
-            
-            if not message or not message.content:
-                print("❌ No response from AI")
+
+            if not self.model:
+                print("❌ LLM model unavailable")
                 return None
-                
+
+            # Get AI analysis using ModelFactory with retry
+            model_response = self.model.generate_response_with_retry(
+                CHART_ANALYSIS_SYSTEM_PROMPT,
+                context,
+                temperature=self.ai_temperature,
+                max_tokens=self.ai_max_tokens
+            )
+
+            if not model_response:
+                print("❌ No response from AI after retries")
+                return None
+
+            # ModelResponse.content is already a clean string
+            content = model_response.content if hasattr(model_response, 'content') else str(model_response)
+
             # Debug: Print raw response
             print("\n🔍 Raw response:")
-            print(repr(message.content))
-            
-            # Get the raw content and convert to string
-            content = str(message.content)
-            
-            # Clean up TextBlock formatting - new format handling
-            if 'TextBlock' in content:
-                # Extract just the text content between quotes
-                match = re.search(r"text='([^']*)'", content, re.IGNORECASE)
-                if match:
-                    content = match.group(1)
+            print(repr(content))
             
             # Clean up any remaining formatting
             content = content.replace('\\n', '\n')

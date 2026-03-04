@@ -11,8 +11,40 @@ Required:
 2. Make sure your .env has the Twitter credentials, example added to .env.example
 '''
 
+# Dynamic token mapping: HyperLiquid symbol -> Twitter search keywords
+# Falls back to defaults if config import fails
+SYMBOL_TO_KEYWORDS = {
+    'BTC': 'bitcoin',
+    'ETH': 'ethereum',
+    'SOL': 'solana',
+    'XRP': 'XRP',
+    'AVAX': 'avalanche AVAX',
+    'SUI': 'SUI crypto',
+    'TAO': 'bittensor TAO',
+    'NEAR': 'NEAR protocol',
+    'AAVE': 'AAVE',
+    'ENA': 'ethena ENA',
+    'LINK': 'chainlink LINK',
+    'DOGE': 'dogecoin',
+    'ADA': 'cardano ADA',
+    'kPEPE': 'PEPE memecoin',
+}
+
+def _load_tokens_to_track():
+    """Load token list from config (SNIPER_ASSETS), map to search keywords."""
+    try:
+        from src.config import SNIPER_ASSETS
+        tokens = []
+        for symbol in SNIPER_ASSETS:
+            keyword = SYMBOL_TO_KEYWORDS.get(symbol, symbol)
+            tokens.append(keyword)
+        return tokens
+    except Exception:
+        # Fallback to hardcoded defaults
+        return ["solana", "bitcoin", "ethereum"]
+
 # Configuration
-TOKENS_TO_TRACK = ["solana", "bitcoin", "ethereum"]  # Add tokens you want to track
+TOKENS_TO_TRACK = _load_tokens_to_track()
 TWEETS_PER_RUN = 30  # Number of tweets to collect per run
 DATA_FOLDER = "src/data/sentiment"  # Where to store sentiment data
 SENTIMENT_HISTORY_FILE = "src/data/sentiment_history.csv"  # Store sentiment scores over time
@@ -485,14 +517,52 @@ class SentimentAgent:
         except Exception as e:
             cprint(f"❌ Error saving to CSV: {str(e)}", "red")
 
+    def _keyword_to_symbol(self, keyword):
+        """Reverse lookup: search keyword -> HyperLiquid symbol."""
+        for sym, kw in SYMBOL_TO_KEYWORDS.items():
+            if kw.lower() == keyword.lower():
+                return sym
+        return keyword.upper()
+
+    def _analyze_per_token(self, token_keyword, tweets):
+        """Analyze sentiment for a single token and write per-symbol signal."""
+        if not tweets:
+            return
+        texts = [tweet.text for tweet in tweets]
+        sentiment_score = self.analyze_sentiment(texts)
+        symbol = self._keyword_to_symbol(token_keyword)
+
+        if sentiment_score > 0.1:
+            direction = 'BUY'
+        elif sentiment_score < -0.1:
+            direction = 'SELL'
+        else:
+            direction = 'NOTHING'
+
+        signal_confidence = min(100, abs(sentiment_score) * 100)
+
+        SignalPipeline.write_signal(
+            source='sentiment_agent',
+            symbol=symbol,
+            direction=direction,
+            confidence=signal_confidence,
+            reasoning=f"Sentiment for {symbol} ({token_keyword}): {sentiment_score:.2f} from {len(texts)} tweets",
+            metadata={
+                'sentiment_score': sentiment_score,
+                'num_tweets': len(texts),
+                'keyword': token_keyword,
+            }
+        )
+        cprint(f"[Sentiment] {symbol}: {direction} conf={signal_confidence:.0f} (score={sentiment_score:.2f}, {len(texts)} tweets)", "cyan")
+
     async def run_async(self):
         """Async function to run sentiment analysis"""
         cprint("🤖 Moon Dev's Sentiment Analysis running...", "cyan")
-        
+
         # Initialize client if not already done
         if not self.client:
             self.client = self.init_twitter_client()
-        
+
         all_tweets = []
         for token in TOKENS_TO_TRACK:
             try:
@@ -500,16 +570,18 @@ class SentimentAgent:
                 tweets = await self.get_tweets(token)
                 if tweets:
                     self.save_tweets(tweets, token)
+                    # Per-symbol signal
+                    self._analyze_per_token(token, tweets)
                     all_tweets.extend(tweets)
                     cprint(f"✅ Saved {len(tweets)} tweets for {token}", "green")
                 else:
                     cprint(f"⚠️ No tweets found for {token}", "yellow")
-                    
+
             except Exception as e:
                 cprint(f"❌ Error processing {token}: {str(e)}", "red")
                 continue
 
-        # Analyze sentiment for all collected tweets
+        # Global MARKET signal from all tweets combined
         if all_tweets:
             self.analyze_and_announce_sentiment(all_tweets)
 

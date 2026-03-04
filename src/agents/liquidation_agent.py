@@ -18,7 +18,7 @@ import anthropic
 from pathlib import Path
 from src import nice_funcs as n
 from src import nice_funcs_hyperliquid as hl
-from src.agents.api import MoonDevAPI
+from src.data_providers.binance_futures import get_liquidation_stream, BinanceLiquidationStream
 from collections import deque
 from src.agents.base_agent import BaseAgent
 from src.data.signals.signal_pipeline import SignalPipeline
@@ -130,7 +130,12 @@ class LiquidationAgent(BaseAgent):
         openai.api_key = openai_key
         self.client = anthropic.Anthropic(api_key=anthropic_key)
         
-        self.api = MoonDevAPI()
+        # Initialize Binance Futures liquidation stream
+        self.liq_stream = get_liquidation_stream()
+        if not self.liq_stream.is_connected:
+            self.liq_stream.start_stream()
+            time.sleep(2)  # Give WebSocket time to connect
+        cprint("Using BinanceFuturesProvider (WebSocket) for liquidation data", "green")
         
         # Create data directories if they don't exist
         self.audio_dir = PROJECT_ROOT / "src" / "audio"
@@ -178,130 +183,91 @@ class LiquidationAgent(BaseAgent):
             self.liquidation_history = pd.DataFrame(columns=['timestamp', 'long_size', 'short_size', 'total_size'])
             
     def _get_current_liquidations(self):
-        """Get current liquidation data"""
+        """Get current liquidation data from Binance Futures WebSocket"""
         try:
-            print("\n🔍 Fetching fresh liquidation data...")
-            df = self.api.get_liquidation_data(limit=LIQUIDATION_ROWS)
+            print("\n🔍 Fetching liquidation data from Binance WebSocket...")
 
-            if df is not None and not df.empty:
-                # Debug: Print actual column count and types
-                print(f"🔍 Moon Dev Debug: DataFrame has {len(df.columns)} columns")
-                print(f"📋 Original column names: {list(df.columns)}")
-                print(f"📊 First row sample: {df.iloc[0].tolist()}")
+            if not self.liq_stream.is_connected:
+                print("⚠️ WebSocket not connected, attempting reconnect...")
+                self.liq_stream.start_stream()
+                time.sleep(3)
 
-                # The CSV has no header! First row is being used as column names
-                # We need to assign proper column names based on position
-                if len(df.columns) == 13:
-                    # Assign proper column names
-                    df.columns = ['symbol', 'side', 'type', 'time_in_force',
-                                'quantity', 'price', 'price2', 'status',
-                                'filled_qty', 'total_qty', 'timestamp', 'usd_value', 'datetime']
-                    print(f"✅ Assigned proper column names (13 columns)")
-                elif len(df.columns) == 12:
-                    df.columns = ['symbol', 'side', 'type', 'time_in_force',
-                                'quantity', 'price', 'price2', 'status',
-                                'filled_qty', 'total_qty', 'timestamp', 'usd_value']
-                    print(f"✅ Assigned proper column names (12 columns)")
-                else:
-                    print(f"⚠️ Unexpected column count: {len(df.columns)}")
-                    return None
+            # Fetch liquidations for each time window
+            df_15m = self.liq_stream.get_recent_liquidations(minutes=15)
+            df_1h = self.liq_stream.get_recent_liquidations(minutes=60)
+            df_4h = self.liq_stream.get_recent_liquidations(minutes=240)
 
-                # Ensure datetime column exists
-                if 'datetime' not in df.columns:
-                    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    print(f"✅ Created datetime from timestamp column")
+            # Helper to compute long/short totals and event counts from a DataFrame
+            def _split(df):
+                if df.empty:
+                    return 0.0, 0.0, 0, 0
+                longs_usd = float(df[df['side'] == 'SELL']['usd_value'].sum())   # SELL = long liq
+                shorts_usd = float(df[df['side'] == 'BUY']['usd_value'].sum())   # BUY  = short liq
+                long_events = len(df[df['side'] == 'SELL'])
+                short_events = len(df[df['side'] == 'BUY'])
+                return longs_usd, shorts_usd, long_events, short_events
 
-                # Convert usd_value to numeric if it's not
-                df['usd_value'] = pd.to_numeric(df['usd_value'], errors='coerce')
+            fifteen_min_longs, fifteen_min_shorts, fifteen_min_long_events, fifteen_min_short_events = _split(df_15m)
+            one_hour_longs, one_hour_shorts, one_hour_long_events, one_hour_short_events = _split(df_1h)
+            four_hour_longs, four_hour_shorts, four_hour_long_events, four_hour_short_events = _split(df_4h)
 
-                print(f"✅ Using columns: side='side', usd_value='usd_value'")
-
-                current_time = datetime.utcnow()
-
-                # Calculate time windows
-                fifteen_min = current_time - timedelta(minutes=15)
-                one_hour = current_time - timedelta(hours=1)
-                four_hours = current_time - timedelta(hours=4)
-
-                # Separate long and short liquidations
-                longs = df[df['side'] == 'SELL']  # SELL side = long liquidation
-                shorts = df[df['side'] == 'BUY']  # BUY side = short liquidation
-
-                # Calculate totals for each time window and type
-                fifteen_min_longs = longs[longs['datetime'] >= fifteen_min]['usd_value'].sum()
-                fifteen_min_shorts = shorts[shorts['datetime'] >= fifteen_min]['usd_value'].sum()
-                one_hour_longs = longs[longs['datetime'] >= one_hour]['usd_value'].sum()
-                one_hour_shorts = shorts[shorts['datetime'] >= one_hour]['usd_value'].sum()
-                four_hour_longs = longs[longs['datetime'] >= four_hours]['usd_value'].sum()
-                four_hour_shorts = shorts[shorts['datetime'] >= four_hours]['usd_value'].sum()
-                
-                # Get event counts
-                fifteen_min_long_events = len(longs[longs['datetime'] >= fifteen_min])
-                fifteen_min_short_events = len(shorts[shorts['datetime'] >= fifteen_min])
-                one_hour_long_events = len(longs[longs['datetime'] >= one_hour])
-                one_hour_short_events = len(shorts[shorts['datetime'] >= one_hour])
-                four_hour_long_events = len(longs[longs['datetime'] >= four_hours])
-                four_hour_short_events = len(shorts[shorts['datetime'] >= four_hours])
-                
-                # Calculate percentage change for active window
-                pct_change_longs = 0
-                pct_change_shorts = 0
-                if not self.liquidation_history.empty:
-                    previous_record = self.liquidation_history.iloc[-1]
-                    if COMPARISON_WINDOW == 60:
-                        current_longs = one_hour_longs
-                        current_shorts = one_hour_shorts
-                    elif COMPARISON_WINDOW == 240:
-                        current_longs = four_hour_longs
-                        current_shorts = four_hour_shorts
-                    else:
-                        current_longs = fifteen_min_longs
-                        current_shorts = fifteen_min_shorts
-                        
-                    if 'long_size' in previous_record and previous_record['long_size'] > 0:
-                        pct_change_longs = ((current_longs - previous_record['long_size']) / previous_record['long_size']) * 100
-                    if 'short_size' in previous_record and previous_record['short_size'] > 0:
-                        pct_change_shorts = ((current_shorts - previous_record['short_size']) / previous_record['short_size']) * 100
-                
-                # Print fun box with liquidation info
-                print("\n" + "╔" + "═" * 70 + "╗")
-                print("║                🌙 Moon Dev's Liquidation Party 💦                 ║")
-                print("╠" + "═" * 70 + "╣")
-                
-                # Format each line based on which window is active
-                if COMPARISON_WINDOW == 15:
-                    print(f"║  Last 15min LONGS:  ${fifteen_min_longs:,.2f} ({fifteen_min_long_events} events) [{pct_change_longs:+.1f}%]".ljust(71) + "║")
-                    print(f"║  Last 15min SHORTS: ${fifteen_min_shorts:,.2f} ({fifteen_min_short_events} events) [{pct_change_shorts:+.1f}%]".ljust(71) + "║")
-                    print(f"║  Last 1hr LONGS:    ${one_hour_longs:,.2f} ({one_hour_long_events} events)".ljust(71) + "║")
-                    print(f"║  Last 1hr SHORTS:   ${one_hour_shorts:,.2f} ({one_hour_short_events} events)".ljust(71) + "║")
-                    print(f"║  Last 4hrs LONGS:   ${four_hour_longs:,.2f} ({four_hour_long_events} events)".ljust(71) + "║")
-                    print(f"║  Last 4hrs SHORTS:  ${four_hour_shorts:,.2f} ({four_hour_short_events} events)".ljust(71) + "║")
-                elif COMPARISON_WINDOW == 60:
-                    print(f"║  Last 15min LONGS:  ${fifteen_min_longs:,.2f} ({fifteen_min_long_events} events)".ljust(71) + "║")
-                    print(f"║  Last 15min SHORTS: ${fifteen_min_shorts:,.2f} ({fifteen_min_short_events} events)".ljust(71) + "║")
-                    print(f"║  Last 1hr LONGS:    ${one_hour_longs:,.2f} ({one_hour_long_events} events) [{pct_change_longs:+.1f}%]".ljust(71) + "║")
-                    print(f"║  Last 1hr SHORTS:   ${one_hour_shorts:,.2f} ({one_hour_short_events} events) [{pct_change_shorts:+.1f}%]".ljust(71) + "║")
-                    print(f"║  Last 4hrs LONGS:   ${four_hour_longs:,.2f} ({four_hour_long_events} events)".ljust(71) + "║")
-                    print(f"║  Last 4hrs SHORTS:  ${four_hour_shorts:,.2f} ({four_hour_short_events} events)".ljust(71) + "║")
-                else:  # 240 minutes (4 hours)
-                    print(f"║  Last 15min LONGS:  ${fifteen_min_longs:,.2f} ({fifteen_min_long_events} events)".ljust(71) + "║")
-                    print(f"║  Last 15min SHORTS: ${fifteen_min_shorts:,.2f} ({fifteen_min_short_events} events)".ljust(71) + "║")
-                    print(f"║  Last 1hr LONGS:    ${one_hour_longs:,.2f} ({one_hour_long_events} events)".ljust(71) + "║")
-                    print(f"║  Last 1hr SHORTS:   ${one_hour_shorts:,.2f} ({one_hour_short_events} events)".ljust(71) + "║")
-                    print(f"║  Last 4hrs LONGS:   ${four_hour_longs:,.2f} ({four_hour_long_events} events) [{pct_change_longs:+.1f}%]".ljust(71) + "║")
-                    print(f"║  Last 4hrs SHORTS:  ${four_hour_shorts:,.2f} ({four_hour_short_events} events) [{pct_change_shorts:+.1f}%]".ljust(71) + "║")
-                
-                print("╚" + "═" * 70 + "╝")
-                
-                # Return the totals based on selected comparison window
+            # Calculate percentage change for active window
+            pct_change_longs = 0
+            pct_change_shorts = 0
+            if not self.liquidation_history.empty:
+                previous_record = self.liquidation_history.iloc[-1]
                 if COMPARISON_WINDOW == 60:
-                    return one_hour_longs, one_hour_shorts
+                    current_longs = one_hour_longs
+                    current_shorts = one_hour_shorts
                 elif COMPARISON_WINDOW == 240:
-                    return four_hour_longs, four_hour_shorts
-                else:  # Default to 15 minutes
-                    return fifteen_min_longs, fifteen_min_shorts
-            return None, None
-            
+                    current_longs = four_hour_longs
+                    current_shorts = four_hour_shorts
+                else:
+                    current_longs = fifteen_min_longs
+                    current_shorts = fifteen_min_shorts
+
+                if 'long_size' in previous_record and previous_record['long_size'] > 0:
+                    pct_change_longs = ((current_longs - previous_record['long_size']) / previous_record['long_size']) * 100
+                if 'short_size' in previous_record and previous_record['short_size'] > 0:
+                    pct_change_shorts = ((current_shorts - previous_record['short_size']) / previous_record['short_size']) * 100
+
+            # Print fun box with liquidation info
+            print("\n" + "╔" + "═" * 70 + "╗")
+            print("║                🌙 Moon Dev's Liquidation Party 💦                 ║")
+            print("╠" + "═" * 70 + "╣")
+
+            if COMPARISON_WINDOW == 15:
+                print(f"║  Last 15min LONGS:  ${fifteen_min_longs:,.2f} ({fifteen_min_long_events} events) [{pct_change_longs:+.1f}%]".ljust(71) + "║")
+                print(f"║  Last 15min SHORTS: ${fifteen_min_shorts:,.2f} ({fifteen_min_short_events} events) [{pct_change_shorts:+.1f}%]".ljust(71) + "║")
+                print(f"║  Last 1hr LONGS:    ${one_hour_longs:,.2f} ({one_hour_long_events} events)".ljust(71) + "║")
+                print(f"║  Last 1hr SHORTS:   ${one_hour_shorts:,.2f} ({one_hour_short_events} events)".ljust(71) + "║")
+                print(f"║  Last 4hrs LONGS:   ${four_hour_longs:,.2f} ({four_hour_long_events} events)".ljust(71) + "║")
+                print(f"║  Last 4hrs SHORTS:  ${four_hour_shorts:,.2f} ({four_hour_short_events} events)".ljust(71) + "║")
+            elif COMPARISON_WINDOW == 60:
+                print(f"║  Last 15min LONGS:  ${fifteen_min_longs:,.2f} ({fifteen_min_long_events} events)".ljust(71) + "║")
+                print(f"║  Last 15min SHORTS: ${fifteen_min_shorts:,.2f} ({fifteen_min_short_events} events)".ljust(71) + "║")
+                print(f"║  Last 1hr LONGS:    ${one_hour_longs:,.2f} ({one_hour_long_events} events) [{pct_change_longs:+.1f}%]".ljust(71) + "║")
+                print(f"║  Last 1hr SHORTS:   ${one_hour_shorts:,.2f} ({one_hour_short_events} events) [{pct_change_shorts:+.1f}%]".ljust(71) + "║")
+                print(f"║  Last 4hrs LONGS:   ${four_hour_longs:,.2f} ({four_hour_long_events} events)".ljust(71) + "║")
+                print(f"║  Last 4hrs SHORTS:  ${four_hour_shorts:,.2f} ({four_hour_short_events} events)".ljust(71) + "║")
+            else:  # 240 minutes (4 hours)
+                print(f"║  Last 15min LONGS:  ${fifteen_min_longs:,.2f} ({fifteen_min_long_events} events)".ljust(71) + "║")
+                print(f"║  Last 15min SHORTS: ${fifteen_min_shorts:,.2f} ({fifteen_min_short_events} events)".ljust(71) + "║")
+                print(f"║  Last 1hr LONGS:    ${one_hour_longs:,.2f} ({one_hour_long_events} events)".ljust(71) + "║")
+                print(f"║  Last 1hr SHORTS:   ${one_hour_shorts:,.2f} ({one_hour_short_events} events)".ljust(71) + "║")
+                print(f"║  Last 4hrs LONGS:   ${four_hour_longs:,.2f} ({four_hour_long_events} events) [{pct_change_longs:+.1f}%]".ljust(71) + "║")
+                print(f"║  Last 4hrs SHORTS:  ${four_hour_shorts:,.2f} ({four_hour_short_events} events) [{pct_change_shorts:+.1f}%]".ljust(71) + "║")
+
+            print("╚" + "═" * 70 + "╝")
+
+            # Return the totals based on selected comparison window
+            if COMPARISON_WINDOW == 60:
+                return one_hour_longs, one_hour_shorts
+            elif COMPARISON_WINDOW == 240:
+                return four_hour_longs, four_hour_shorts
+            else:  # Default to 15 minutes
+                return fifteen_min_longs, fifteen_min_shorts
+
         except Exception as e:
             print(f"❌ Error getting liquidation data: {str(e)}")
             traceback.print_exc()

@@ -22,7 +22,47 @@ from .openrouter_model import OpenRouterModel  # 🌙 Moon Dev: OpenRouter - acc
 
 class ModelFactory:
     """Factory for creating and managing AI models"""
-    
+
+    # Fallback chain for provider resilience
+    FALLBACK_CHAIN = ['anthropic', 'openai', 'deepseek', 'groq']
+
+    # Provider name aliases (maps common names to internal model type keys)
+    _PROVIDER_ALIASES = {
+        'anthropic': 'claude',
+        'claude': 'claude',
+        'openai': 'openai',
+        'gpt': 'openai',
+        'deepseek': 'deepseek',
+        'groq': 'groq',
+        'gemini': 'gemini',
+        'ollama': 'ollama',
+        'xai': 'xai',
+        'grok': 'xai',
+        'openrouter': 'openrouter',
+    }
+
+    # Simple call tracking
+    _call_stats = {'total': 0, 'errors': 0, 'by_provider': {}}
+
+    @classmethod
+    def log_call(cls, provider, success, latency_ms=0):
+        """Track LLM call statistics."""
+        cls._call_stats['total'] += 1
+        if not success:
+            cls._call_stats['errors'] += 1
+        if provider not in cls._call_stats['by_provider']:
+            cls._call_stats['by_provider'][provider] = {'calls': 0, 'errors': 0, 'total_latency_ms': 0}
+        stats = cls._call_stats['by_provider'][provider]
+        stats['calls'] += 1
+        if not success:
+            stats['errors'] += 1
+        stats['total_latency_ms'] += latency_ms
+
+    @classmethod
+    def get_stats(cls):
+        """Return current call statistics."""
+        return cls._call_stats
+
     # Map model types to their implementations
     MODEL_IMPLEMENTATIONS = {
         "claude": ClaudeModel,
@@ -136,6 +176,37 @@ class ModelFactory:
     def is_model_available(self, model_type: str) -> bool:
         """Check if a specific model type is available"""
         return model_type in self._models and self._models[model_type].is_available()
+
+    @classmethod
+    def create_model(cls, provider='anthropic', model_name=None):
+        """Convenience class method to get a model from the singleton factory.
+
+        Args:
+            provider: Provider name (e.g. 'anthropic', 'claude', 'openai', 'deepseek', 'groq')
+            model_name: Optional specific model name override
+        Returns:
+            BaseModel instance or None
+        """
+        model_type = cls._PROVIDER_ALIASES.get(provider, provider)
+        return model_factory.get_model(model_type, model_name=model_name)
+
+    @classmethod
+    def create_model_with_fallback(cls, preferred_provider='anthropic'):
+        """Try preferred provider, fall back to alternatives if unavailable."""
+        preferred_type = cls._PROVIDER_ALIASES.get(preferred_provider, preferred_provider)
+        providers = [preferred_type] + [
+            cls._PROVIDER_ALIASES.get(p, p) for p in cls.FALLBACK_CHAIN
+            if cls._PROVIDER_ALIASES.get(p, p) != preferred_type
+        ]
+        for provider in providers:
+            try:
+                model = model_factory.get_model(provider)
+                if model:
+                    return model
+            except Exception:
+                continue
+        cprint("All LLM providers unavailable", "red")
+        return None
 
 # Create a singleton instance
 model_factory = ModelFactory() 

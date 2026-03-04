@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an experimental AI trading system that orchestrates 48+ specialized AI agents to analyze markets, execute strategies, and manage risk across cryptocurrency markets (primarily Solana). The project uses a modular agent architecture with unified LLM provider abstraction supporting Claude, GPT-4, DeepSeek, Groq, Gemini, and local Ollama models.
+This is an experimental AI trading system that orchestrates 48+ specialized AI agents to analyze markets, execute strategies, and manage risk across cryptocurrency markets (HyperLiquid perpetuals + Solana). The project uses a modular agent architecture with unified LLM provider abstraction supporting Claude, GPT-4, DeepSeek, Groq, Gemini, and local Ollama models.
+
+**Primary strategy:** Adaptive Hybrid Strategy with 14 scoring modules, LLM-enhanced pipeline (trade confirmation, Wyckoff regime classification, post-trade learning), and multi-timeframe confluence. See `STRATEGY_OPTIMIZATION.md` for full details.
 
 ## Key Development Commands
 
@@ -46,9 +48,29 @@ python src/agents/chat_agent.py
 
 ### Backtesting
 ```bash
-# Use backtesting.py library with pandas_ta or talib for indicators
+# Run Adaptive Hybrid backtest (fetches live data from HyperLiquid)
+python src/backtesting/backtest_adaptive_hybrid.py --symbol BTC --timeframe 1h --days 180
+
+# Walk-forward validation
+python src/backtesting/backtest_adaptive_hybrid.py --symbol BTC --timeframe 1h --days 180 --walk-forward
+
+# Grid search optimization
+python src/backtesting/optimize_params.py
+python src/backtesting/optimize_params_v2.py
+
+# Legacy: Use backtesting.py library with pandas_ta or talib for indicators
 # Sample OHLCV data available at:
 # /Users/md/Dropbox/dev/github/moon-dev-ai-agents-for-trading/src/data/rbi/BTC-USD-15m.csv
+```
+
+### Running Tests
+```bash
+conda activate tflow
+python -m pytest tests/ -q                           # All tests
+python -m pytest tests/test_adaptive_hybrid_scoring.py  # Strategy scoring
+python -m pytest tests/test_signal_pipeline.py          # Signal pipeline
+python -m pytest tests/test_risk_agent.py               # Risk agent
+python -m pytest tests/test_data_providers.py           # Data providers
 ```
 
 ### Coolify Deployment
@@ -66,14 +88,26 @@ Deployments are triggered automatically on push to `main` branch.
 src/
 ├── agents/              # 48+ specialized AI agents (each <800 lines)
 ├── models/              # LLM provider abstraction (ModelFactory pattern)
-├── strategies/          # User-defined trading strategies
-├── scripts/             # Standalone utility scripts
+├── strategies/
+│   ├── custom/          # Strategy implementations
+│   │   └── adaptive_hybrid_strategy.py  # Primary strategy (14 modules)
+│   └── modules/         # Scoring modules (independent, testable)
+│       ├── mean_reversion.py, momentum.py, ema_trend.py, ...  # Technical (7)
+│       ├── crowd_positioning.py, social_hype.py, funding_divergence.py  # Sentiment (3)
+│       ├── llm_confirmation.py, llm_regime.py, trade_learner.py  # LLM pipeline (3)
+│       └── mtf_confluence.py  # Multi-timeframe (1)
+├── backtesting/         # Backtest engine + strategy-specific runners + optimizers
+├── execution/           # LiveOrderManager (HyperLiquid SDK native orders)
+├── data_providers/      # Market data (HyperLiquid, Binance, CoinGecko, Fear&Greed, etc.)
 ├── data/                # Agent outputs, memory, analysis results
+│   └── trade_memory.py  # SQLite-based trade journal + lesson storage
+├── utils/               # Logging (structured) + alerting (Discord/Telegram)
 ├── config.py            # Global configuration (positions, risk limits, API settings)
 ├── main.py              # Main orchestrator for multi-agent loop
 ├── nice_funcs.py        # ~1,200 lines of shared trading utilities
 ├── nice_funcs_hl.py     # Hyperliquid-specific utilities
-└── ezbot.py             # Legacy trading controller
+└── scripts/             # Standalone utility scripts
+tests/                   # 80+ pytest tests (scoring, pipeline, risk, data providers)
 ```
 
 ### Agent Ecosystem
@@ -107,6 +141,8 @@ response = model.generate_response(system_prompt, user_content, temperature, max
 - Risk management: `CASH_PERCENTAGE`, `MAX_POSITION_PERCENTAGE`, `MAX_LOSS_USD`, `MAX_GAIN_USD`, `MINIMUM_BALANCE_USD`
 - Agent behavior: `SLEEP_BETWEEN_RUNS_MINUTES`, `ACTIVE_AGENTS` dict in `main.py`
 - AI settings: `AI_MODEL`, `AI_MAX_TOKENS`, `AI_TEMPERATURE`
+- **Adaptive Hybrid Strategy**: `ADAPTIVE_HYBRID_*` parameters (threshold, ATR profiles, module weights, LLM pipeline flags)
+- **LLM Pipeline Flags**: `ADAPTIVE_HYBRID_LLM_CONFIRMATION`, `_LLM_REGIME`, `_LLM_LEARNER`, `_MTF_CONFLUENCE` (all True/False)
 
 **Environment Variables**: `.env` (see `.env_example`)
 - Trading APIs: `BIRDEYE_API_KEY`, `COINGECKO_API_KEY` (MOONDEV_API_KEY no longer needed)
@@ -121,8 +157,19 @@ response = model.generate_response(system_prompt, user_content, temperature, max
 - Analysis: Technical indicators, PnL calculations, rug pull detection
 
 **`src/data_providers/`**: Market data providers (replaces Moon Dev API)
-- `binance_futures.py`: Real-time liquidations via WebSocket
 - `market_data.py`: Unified interface for funding rates, OI (HyperLiquid), liquidations (Binance)
+- `binance_futures.py`: Real-time liquidations via WebSocket + CSV persistence
+- `binance_sentiment.py`: L/S ratio, Top Trader ratio, Taker Buy/Sell volume (free API)
+- `coingecko_social.py`: Trending coins, global market cap, price momentum (free API)
+- `cross_exchange_funding.py`: HyperLiquid vs Binance funding rate divergence (free API)
+- `fear_greed.py`: Alternative.me Fear & Greed Index (contrarian signal)
+- `defi_llama.py`: TVL and DEX volume data
+
+**`src/strategies/modules/`**: 14 independent scoring modules (see `STRATEGY_OPTIMIZATION.md` for full inventory)
+
+**`src/utils/`**: Infrastructure
+- `logger.py`: Structured logging (colored console + JSON file)
+- `alerting.py`: Discord/Telegram webhooks (circuit breaker alerts, daily summary)
 
 ### Data Flow Pattern
 
@@ -184,11 +231,13 @@ class YourStrategy(BaseStrategy):
 - AI confirmation for position-closing decisions (configurable via `USE_AI_CONFIRMATION`)
 
 ### Data Sources
-1. **HyperLiquid API** - Funding rates, open interest, positions (free, real-time)
-2. **Binance Futures WebSocket** - Real-time liquidation data (free)
-3. **BirdEye API** - Solana token data (price, volume, liquidity, OHLCV)
-4. **CoinGecko API** - 15,000+ token metadata, market caps, sentiment
-5. **Helius RPC** - Solana blockchain interaction
+1. **HyperLiquid API** - OHLCV, funding rates, open interest, order book, positions (free, real-time)
+2. **Binance Futures API** - Real-time liquidations (WebSocket), L/S ratios, top trader positioning, taker volume (free)
+3. **CoinGecko API** - Trending coins, global market cap, price momentum (free, 10K calls/month)
+4. **Alternative.me** - Fear & Greed Index (free)
+5. **DefiLlama** - TVL and DEX volumes (free)
+6. **BirdEye API** - Solana token data (price, volume, liquidity, OHLCV)
+7. **Helius RPC** - Solana blockchain interaction
 
 ### Autonomous Execution
 - Main loop runs every 15 minutes by default (`SLEEP_BETWEEN_RUNS_MINUTES`)
@@ -251,36 +300,34 @@ This is an **experimental, educational project** demonstrating AI agent patterns
 
 The goal is to democratize AI agent development and show practical multi-agent orchestration patterns that can be applied beyond trading.
 
-## RAMF Strategy Tuning Learnings
+## Adaptive Hybrid Strategy (Primary)
 
-### Signal Generation Bottlenecks
+The primary trading strategy uses 14 independent scoring modules, LLM-enhanced pipeline, and optimized ATR-based risk management. Full documentation in `STRATEGY_OPTIMIZATION.md`.
 
-The RAMF strategy has several configurable parameters that affect signal frequency:
+### Key Performance (Backtest BTC 1h 180d)
+- Return: +11.66% (benchmark: -34.57%), Alpha: +46.4%
+- Win Rate: 55.4%, Profit Factor: 1.46, Sharpe: 2.75, Max DD: 3.25%
+- Walk-forward: 3/3 folds profitable
 
-| Parameter | Location | Default | Impact |
-|-----------|----------|---------|--------|
-| `RAMF_VOLATILITY_HIGH_PERCENTILE` | config.py | 55 | ATR above this = HIGH regime (mean-reversion) |
-| `RAMF_VOLATILITY_LOW_PERCENTILE` | config.py | 45 | ATR below this = LOW regime (trend-following) |
-| `RAMF_MIN_CONFIDENCE` | config.py | 60 | Minimum score to generate BUY/SELL signal |
-| `RAMF_ATR_EXTENSION_THRESHOLD` | config.py | 1.5 | ATRs from VWAP for exhaustion detection |
-| `RAMF_CONSECUTIVE_BAR_THRESHOLD` | config.py | 3 | Bars in same direction for exhaustion |
+### Quick Parameter Reference
 
-**Key insight**: The "dead zone" between HIGH and LOW percentiles produces NEUTRAL signals immediately without checking any conditions. Keep this zone small (10% or less) to maximize opportunities.
+| Parameter | Value | File |
+|-----------|-------|------|
+| Score threshold | 55 | `config.py` → `ADAPTIVE_HYBRID_BASE_THRESHOLD` |
+| BTC SL/TP | 2.8 / 4.2 ATR | `config.py` → `ADAPTIVE_HYBRID_ATR_PROFILES` |
+| ETH SL/TP | 4.0 / 8.0 ATR | Same |
+| Min convergent modules | 2 | `config.py` → `ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES` |
+| LLM provider (fast) | groq | `config.py` → `ADAPTIVE_HYBRID_LLM_PROVIDER` |
 
-### Signal Debugging
+### Overfitting Awareness
 
-If no signals are being generated:
+Parameters were optimized on 180 days of bear market data. Three layers of mitigation:
+1. **Walk-forward validation** (3/3 OOS folds profitable, cross-asset on ETH)
+2. **LLM adaptation** (regime classifier, trade confirmation, post-trade learning - none existed during backtest)
+3. **Mechanical safeguards** (max daily loss, drawdown circuit breakers, position limits)
 
-1. **Check volatility regime distribution**: Run the strategy and observe console output for "High volatility mode" vs "Low volatility mode" vs "Normal volatility"
-2. **Look for near-misses**: Signals with 40-59% confidence are logged as near-misses
-3. **Verify exhaustion conditions**: In HIGH vol mode, requires both VWAP distance AND consecutive bars
+Monitor PF > 1.0 and DD < 10% during first 2-4 weeks of paper trading. See `STRATEGY_OPTIMIZATION.md` for full robustness analysis.
 
-### Configuration Trade-offs
+## Legacy: RAMF Strategy Tuning Learnings
 
-| Change | More Signals | Higher Precision |
-|--------|--------------|------------------|
-| Lower `MIN_CONFIDENCE` | ✅ | ❌ |
-| Widen volatility bands (e.g., 45/55) | ✅ | ↔ |
-| Lower `ATR_EXTENSION_THRESHOLD` | ✅ | ❌ |
-| Lower `CONSECUTIVE_BAR_THRESHOLD` | ✅ | ❌ |
-| Enable more assets in `RAMF_ASSETS` | ✅ | ↔ |
+The RAMF strategy is now integrated as the `ramf_lite` module within the Adaptive Hybrid Strategy. Its standalone settings remain in `config.py` under `RAMF_*` for backward compatibility.

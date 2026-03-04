@@ -6,12 +6,12 @@ Handles all strategy-based trading decisions
 from src.config import *
 import json
 from termcolor import cprint
-import anthropic  # TODO: Migrate to ModelFactory for unified LLM access
 import os
 import importlib
 import inspect
 import time
 import numpy as np
+from src.models.model_factory import ModelFactory
 
 # Import web state for signal logging
 try:
@@ -43,11 +43,10 @@ except ImportError:
     from src import nice_funcs as n
     USE_EXCHANGE_MANAGER = False
 
-# 🎯 Strategy Evaluation Prompt - JSON format for robust parsing
-STRATEGY_EVAL_PROMPT = """
-You are Moon Dev's Strategy Validation Assistant 🌙
+# 🎯 Strategy Evaluation Prompt - JSON format with Chain-of-Thought
+STRATEGY_EVAL_SYSTEM_PROMPT = """You are Moon Dev's Strategy Validation Assistant. You analyze trading signals and validate recommendations using systematic reasoning. You always respond with valid JSON."""
 
-Analyze the following strategy signals and validate their recommendations:
+STRATEGY_EVAL_PROMPT = """Analyze the following strategy signals and validate their recommendations.
 
 Strategy Signals:
 {strategy_signals}
@@ -55,19 +54,20 @@ Strategy Signals:
 Market Context:
 {market_data}
 
-Your task:
-1. Evaluate each strategy signal's reasoning
-2. Check if signals align with current market conditions
-3. Look for confirmation/contradiction between different strategies
-4. Consider risk factors
+Before making your decision, analyze step by step:
+1. TREND: What is the current trend direction and strength?
+2. MOMENTUM: Is momentum accelerating or decelerating?
+3. RISK: What are the key risk factors right now?
+4. CONFIRMATION: Do multiple signals agree or conflict?
+5. CONVICTION: How confident are you and why?
 
-IMPORTANT: Respond ONLY with valid JSON in this exact format:
+Then respond ONLY with valid JSON in this exact format:
 {{
   "decisions": [
-    {{"signal_index": 0, "action": "EXECUTE", "confidence": 85, "reason": "Strong momentum exhaustion with volume confirmation"}},
-    {{"signal_index": 1, "action": "REJECT", "confidence": 60, "reason": "Conflicting signals, low conviction"}}
+    {{"signal_index": 0, "action": "EXECUTE", "confidence": 85, "reason": "Strong momentum exhaustion with volume confirmation", "key_factors": ["trend alignment", "volume spike"]}},
+    {{"signal_index": 1, "action": "REJECT", "confidence": 60, "reason": "Conflicting signals, low conviction", "key_factors": ["divergence", "low volume"]}}
   ],
-  "overall_reasoning": "Summary of analysis..."
+  "overall_reasoning": "Step-by-step summary of analysis..."
 }}
 
 Rules:
@@ -75,14 +75,14 @@ Rules:
 - "signal_index" corresponds to position in signals array (0-indexed)
 - "confidence" is 0-100
 - If unsure, use REJECT (better to miss a trade than risk a bad one)
-- Moon Dev prioritizes risk management! 🛡️
+- Prioritize risk management
 """
 
 class StrategyAgent:
     def __init__(self):
         """Initialize the Strategy Agent"""
         self.enabled_strategies = []
-        self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_KEY"))
+        self.model = ModelFactory.create_model_with_fallback('anthropic')
 
         # Initialize exchange manager if available
         if USE_EXCHANGE_MANAGER:
@@ -168,22 +168,30 @@ class StrategyAgent:
                 except Exception:
                     market_data_str = "Market data available but could not be formatted"
 
-            message = self.client.messages.create(
-                model=AI_MODEL,
-                max_tokens=AI_MAX_TOKENS,
-                temperature=AI_TEMPERATURE,
-                messages=[{
-                    "role": "user",
-                    "content": STRATEGY_EVAL_PROMPT.format(
-                        strategy_signals=signals_str,
-                        market_data=market_data_str
-                    )
-                }]
+            if not self.model:
+                cprint("LLM model unavailable for signal evaluation", "red")
+                return None
+
+            user_content = STRATEGY_EVAL_PROMPT.format(
+                strategy_signals=signals_str,
+                market_data=market_data_str
             )
 
-            response = message.content
-            if isinstance(response, list):
-                response = response[0].text if hasattr(response[0], 'text') else str(response[0])
+            # Use retry for resilience; ensure enough tokens for CoT analysis
+            eval_max_tokens = max(AI_MAX_TOKENS, 500)
+            model_response = self.model.generate_response_with_retry(
+                STRATEGY_EVAL_SYSTEM_PROMPT,
+                user_content,
+                temperature=AI_TEMPERATURE,
+                max_tokens=eval_max_tokens
+            )
+
+            if model_response is None:
+                cprint("LLM returned no response after retries", "red")
+                return None
+
+            # ModelResponse has .content (str), raw SDK responses have different shapes
+            response = model_response.content if hasattr(model_response, 'content') else str(model_response)
 
             # Try to parse JSON response
             try:

@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from termcolor import cprint
 from dotenv import load_dotenv
 import time
@@ -66,6 +67,13 @@ if ACTIVE_AGENTS['copybot']:
 if ACTIVE_AGENTS['sentiment']:
     from src.agents.sentiment_agent import SentimentAgent
 
+# Import alerting for circuit breaker notifications
+try:
+    from src.utils.alerting import AlertManager
+    alert_manager = AlertManager()
+except ImportError:
+    alert_manager = None
+
 def position_monitor_loop(strategy, interval=30):
     """Dedicated thread for monitoring SL/TP every 30 seconds."""
     while True:
@@ -93,6 +101,9 @@ def run_agents():
             for strategy in strategy_agent.enabled_strategies:
                 if hasattr(strategy, 'get_paper_status'):
                     risk_agent.set_strategy(strategy)
+                    # Connect risk agent to strategy for recovery mode sizing
+                    if hasattr(strategy, 'set_risk_agent'):
+                        strategy.set_risk_agent(risk_agent)
                     monitor_strategy = strategy
                     break
 
@@ -157,6 +168,12 @@ def run_agents():
                         # Check risk agent before opening new positions
                         if risk_agent and not risk_agent.is_trading_allowed():
                             cprint(f"\n⛔ Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
+                            if alert_manager:
+                                alert_manager.alert(
+                                    "Circuit Breaker Active",
+                                    f"Trading blocked: {risk_agent.pause_reason}",
+                                    level='critical'
+                                )
                         else:
                             active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
                             tokens_to_analyze = [t for t in active_tokens if t not in EXCLUDED_TOKENS]
@@ -173,12 +190,33 @@ def run_agents():
                                         cprint(f"[Batch] Error: {e}", "yellow")
                                     break
 
-                            # Always run sequential analysis for proper signal evaluation and trade execution
+                            # Token analysis: get_signals() includes trade execution,
+                            # which mutates shared state (paper_positions, balance).
+                            # Data fetching is already parallelized by generate_signals_batch above.
+                            # Trade execution stays sequential for thread-safety.
+                            def analyze_token(token):
+                                """Analyze a single token - wrapped for parallel execution."""
+                                try:
+                                    return strategy_agent.get_signals(token)
+                                except Exception as e:
+                                    cprint(f"Error analyzing {token}: {e}", "red")
+                                    return None
+
+                            # Sequential execution: get_signals does trade execution which is not thread-safe
+                            # TODO: Separate signal generation (parallelizable) from trade execution (sequential)
+                            # to enable full parallelization. For now, batch pre-computation above handles
+                            # the IO-bound candle fetching in parallel.
                             for token in tokens_to_analyze:
                                 if risk_agent and not risk_agent.is_trading_allowed():
                                     cprint(f"\n⛔ Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
+                                    if alert_manager:
+                                        alert_manager.alert(
+                                            "Trading Paused",
+                                            f"Risk Agent paused trading: {risk_agent.pause_reason}",
+                                            level='warning'
+                                        )
                                     break
-                                strategy_agent.get_signals(token)
+                                analyze_token(token)
 
                 # Run CopyBot Analysis
                 if copybot_agent:

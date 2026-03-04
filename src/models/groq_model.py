@@ -170,9 +170,9 @@ class GroqModel(BaseModel):
             if "503" in error_str:
                 raise e
 
-            # Log other errors
+            # Log and raise other errors so retry logic can catch them
             cprint(f"❌ Groq error: {error_str}", "red")
-            return None
+            raise
     
     def is_available(self) -> bool:
         """Check if Groq is available"""

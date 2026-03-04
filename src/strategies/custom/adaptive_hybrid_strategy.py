@@ -1,7 +1,7 @@
 """
 Adaptive Hybrid Strategy
 
-Multi-module scoring strategy that aggregates 12 independent signal generators.
+Multi-module scoring strategy that aggregates 14 independent signal generators.
 Instead of requiring ALL conditions (AND logic), it requires enough convergence
 (weighted score > threshold) for a trade signal.
 
@@ -17,6 +17,9 @@ Modules:
 9. Sentiment (Fear & Greed + Twitter contrarian)
 10. Squeeze Detector (funding + OI + volatility compression)
 11. Order Imbalance (HyperLiquid L2 bid/ask depth)
+12. Crowd Positioning (Binance L/S ratio + Taker buy/sell volume)
+13. Social Hype (CoinGecko trending + global market macro)
+14. Funding Divergence (Cross-exchange HL vs Binance funding rates)
 
 Target: 1-3 trades/day with 55%+ win rate.
 """
@@ -36,6 +39,29 @@ from ta.momentum import RSIIndicator
 from ta.volume import VolumeWeightedAveragePrice
 
 from ..base_strategy import BaseStrategy
+from src.data.trade_memory import TradeMemory
+
+# Scoring modules (extracted from monolithic methods)
+from src.strategies.modules.mean_reversion import score_mean_reversion
+from src.strategies.modules.momentum import score_momentum_breakout
+from src.strategies.modules.ema_trend import score_ema_trend
+from src.strategies.modules.funding import score_funding_contrarian
+from src.strategies.modules.rsi_divergence import score_rsi_divergence
+from src.strategies.modules.sniper_lite import score_sniper_lite
+from src.strategies.modules.ramf_lite import score_ramf_lite
+from src.strategies.modules.oi_delta import score_oi_delta
+from src.strategies.modules.sentiment import score_sentiment
+from src.strategies.modules.squeeze import score_squeeze_detector
+from src.strategies.modules.order_imbalance import score_order_imbalance
+from src.strategies.modules.crowd_positioning import score_crowd_positioning
+from src.strategies.modules.social_hype import score_social_hype
+from src.strategies.modules.funding_divergence import score_funding_divergence
+
+# LLM-enhanced pipeline modules
+from src.strategies.modules.llm_confirmation import llm_confirm_trade
+from src.strategies.modules.llm_regime import classify_regime, adjust_weights_for_regime
+from src.strategies.modules.trade_learner import analyze_closed_trade, build_lessons_context
+from src.strategies.modules.mtf_confluence import score_mtf_confluence
 
 # Import config with defaults
 try:
@@ -72,50 +98,59 @@ try:
         CASH_PERCENTAGE,
         ADAPTIVE_HYBRID_OPTIMAL_HOURS,
         ADAPTIVE_HYBRID_AVOID_HOURS,
+        REGIME_ADX_TRENDING,
+        REGIME_ADX_RANGING,
+        REGIME_VOL_HIGH,
+        REGIME_VOL_LOW,
     )
 except ImportError:
     PAPER_TRADING = True
     PAPER_TRADING_BALANCE = 500
     ADAPTIVE_HYBRID_BASE_THRESHOLD = 45
     ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4
-    ADAPTIVE_HYBRID_URGENCY_FLOOR = 38
+    ADAPTIVE_HYBRID_URGENCY_FLOOR = 50
     ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5
     ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30
     ADAPTIVE_HYBRID_LEVERAGE = 3
-    ADAPTIVE_HYBRID_ATR_SL_MULT = 1.5
-    ADAPTIVE_HYBRID_ATR_TP_MULT = 3.0
+    ADAPTIVE_HYBRID_ATR_SL_MULT = 2.8
+    ADAPTIVE_HYBRID_ATR_TP_MULT = 4.2
     ADAPTIVE_HYBRID_SKIP_LLM = True
     ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25
     ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2
-    ADAPTIVE_HYBRID_MIN_RR_RATIO = 2.0
+    ADAPTIVE_HYBRID_MIN_RR_RATIO = 1.5
     ADAPTIVE_HYBRID_RESET_PAPER = True
     ADAPTIVE_HYBRID_ATR_PROFILES = {
-        'major': {'sl_mult': 1.8, 'tp_mult': 3.6, 'tokens': ['BTC', 'ETH']},
-        'mid': {'sl_mult': 1.5, 'tp_mult': 3.0, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
-        'alt': {'sl_mult': 1.2, 'tp_mult': 2.4, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
+        'btc': {'sl_mult': 2.8, 'tp_mult': 4.2, 'tokens': ['BTC']},
+        'eth': {'sl_mult': 4.0, 'tp_mult': 8.0, 'tokens': ['ETH']},
+        'mid': {'sl_mult': 2.2, 'tp_mult': 3.3, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
+        'alt': {'sl_mult': 1.8, 'tp_mult': 2.7, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
     }
     ADAPTIVE_HYBRID_WEIGHTS = {
-        'mean_reversion': 0.12, 'momentum_breakout': 0.10,
-        'ema_trend': 0.12, 'funding_contrarian': 0.08,
-        'rsi_divergence': 0.08, 'sniper_lite': 0.14,
-        'ramf_lite': 0.08, 'oi_delta': 0.08,
-        'sentiment': 0.06, 'squeeze_detector': 0.08,
-        'order_imbalance': 0.06,
+        'mean_reversion': 0.10, 'momentum_breakout': 0.08,
+        'ema_trend': 0.08, 'funding_contrarian': 0.07,
+        'rsi_divergence': 0.07, 'sniper_lite': 0.12,
+        'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
+        'oi_delta': 0.08, 'sentiment': 0.06,
+        'squeeze_detector': 0.05, 'order_imbalance': 0.05,
+        'crowd_positioning': 0.07, 'social_hype': 0.05,
+        'funding_divergence': 0.05,
     }
     ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
         'ranging': {
-            'mean_reversion': 0.16, 'momentum_breakout': 0.06, 'ema_trend': 0.10,
-            'funding_contrarian': 0.10, 'rsi_divergence': 0.10, 'sniper_lite': 0.14,
-            'ramf_lite': 0.08, 'oi_delta': 0.08,
-            'sentiment': 0.06, 'squeeze_detector': 0.06,
-            'order_imbalance': 0.06,
+            'mean_reversion': 0.14, 'momentum_breakout': 0.05, 'ema_trend': 0.06,
+            'funding_contrarian': 0.08, 'rsi_divergence': 0.08, 'sniper_lite': 0.12,
+            'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
+            'oi_delta': 0.07, 'sentiment': 0.06, 'squeeze_detector': 0.05,
+            'order_imbalance': 0.05, 'crowd_positioning': 0.07,
+            'social_hype': 0.05, 'funding_divergence': 0.05,
         },
         'trending': {
-            'mean_reversion': 0.06, 'momentum_breakout': 0.14, 'ema_trend': 0.16,
-            'funding_contrarian': 0.08, 'rsi_divergence': 0.06, 'sniper_lite': 0.12,
-            'ramf_lite': 0.08, 'oi_delta': 0.08,
-            'sentiment': 0.06, 'squeeze_detector': 0.08,
-            'order_imbalance': 0.08,
+            'mean_reversion': 0.05, 'momentum_breakout': 0.12, 'ema_trend': 0.08,
+            'funding_contrarian': 0.06, 'rsi_divergence': 0.05, 'sniper_lite': 0.10,
+            'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
+            'oi_delta': 0.10, 'sentiment': 0.06, 'squeeze_detector': 0.06,
+            'order_imbalance': 0.06, 'crowd_positioning': 0.08,
+            'social_hype': 0.06, 'funding_divergence': 0.05,
         },
     }
     ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
@@ -127,12 +162,34 @@ except ImportError:
     ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48
     ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 24
     PAPER_TAKER_FEE = 0.00035
-    PAPER_SLIPPAGE = {'major': 0.001, 'mid': 0.002, 'alt': 0.005}
-    ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {'major': 3, 'mid': 3, 'alt': 2}
+    PAPER_SLIPPAGE = {'btc': 0.001, 'eth': 0.001, 'mid': 0.002, 'alt': 0.005}
+    ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
     RISK_MAX_DRAWDOWN_PCT = 15
     CASH_PERCENTAGE = 20
     ADAPTIVE_HYBRID_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 19, 20, 21]
     ADAPTIVE_HYBRID_AVOID_HOURS = [0, 1, 2, 3, 4, 5]
+    REGIME_ADX_TRENDING = 30
+    REGIME_ADX_RANGING = 20
+    REGIME_VOL_HIGH = 1.2
+    REGIME_VOL_LOW = 0.8
+
+# LLM-enhanced pipeline config (separate try/except for graceful fallback)
+try:
+    from src.config import (
+        ADAPTIVE_HYBRID_LLM_CONFIRMATION,
+        ADAPTIVE_HYBRID_LLM_REGIME,
+        ADAPTIVE_HYBRID_LLM_LEARNER,
+        ADAPTIVE_HYBRID_MTF_CONFLUENCE,
+        ADAPTIVE_HYBRID_LLM_PROVIDER,
+        ADAPTIVE_HYBRID_LLM_TIMEOUT_S,
+    )
+except ImportError:
+    ADAPTIVE_HYBRID_LLM_CONFIRMATION = False
+    ADAPTIVE_HYBRID_LLM_REGIME = False
+    ADAPTIVE_HYBRID_LLM_LEARNER = False
+    ADAPTIVE_HYBRID_MTF_CONFLUENCE = False
+    ADAPTIVE_HYBRID_LLM_PROVIDER = 'groq'
+    ADAPTIVE_HYBRID_LLM_TIMEOUT_S = 5
 
 
 class AdaptiveHybridStrategy(BaseStrategy):
@@ -169,11 +226,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # High Water Mark
         self.peak_balance = PAPER_TRADING_BALANCE
 
+        # Risk agent reference (set externally via set_risk_agent, e.g. from main.py)
+        self._risk_agent = None
+
         # Trailing stops state: {position_id: {'highest': float, 'lowest': float, 'trailing_active': bool}}
         self.trailing_stops = {}
 
-        # OI history for delta calculation: {symbol: previous_oi_value}
-        self._oi_history = {}
+        # OI history for delta calculation: {symbol: deque of (timestamp, oi_value)}
+        self._oi_history = {}  # symbol -> deque(maxlen=50)
 
         # Market data provider (for funding rates)
         self._market_data = None
@@ -182,6 +242,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
             self._market_data = MarketDataProvider(start_liquidation_stream=False)
         except Exception as e:
             cprint(f"[AdaptiveHybrid] Warning: Market data provider unavailable ({type(e).__name__}: {e})", "yellow")
+
+        # Trade memory (persistent decision logging)
+        self._trade_memory = TradeMemory.get_instance()
+
+        # Current regime (updated each signal generation cycle)
+        self._current_regime = None
 
         # Funding rate history for per-token Z-score
         self._funding_history = {}  # {symbol: deque(maxlen=200)}
@@ -194,8 +260,32 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self._btc_trend_cache = None
         self._btc_trend_timestamp = None
 
+        # Global regime cache (15-minute TTL)
+        self._global_regime = None  # 'trending_volatile', 'trending_calm', 'ranging_volatile', 'ranging_calm'
+        self._global_regime_timestamp = None
+
+        # Benchmark tracking (BTC & ETH buy-and-hold comparison)
+        self._benchmark_start_prices = {}  # {'BTC': price, 'ETH': price}
+        self._benchmark_start_time = None
+
         # BTC correlation cache per-symbol: {symbol: (corr, timestamp)}
         self._btc_correlation_cache = {}  # {symbol: (float, datetime)}
+
+        # LLM model for confirmation/regime (lazy-loaded, fast provider)
+        self._llm_model = None
+        if ADAPTIVE_HYBRID_LLM_CONFIRMATION or ADAPTIVE_HYBRID_LLM_REGIME or ADAPTIVE_HYBRID_LLM_LEARNER:
+            try:
+                from src.models.model_factory import ModelFactory
+                self._llm_model = ModelFactory.create_model_with_fallback(ADAPTIVE_HYBRID_LLM_PROVIDER)
+                if self._llm_model:
+                    cprint(f"[AdaptiveHybrid] LLM model loaded ({ADAPTIVE_HYBRID_LLM_PROVIDER})", "green")
+                else:
+                    cprint("[AdaptiveHybrid] LLM model unavailable, pipeline modules will use rule-based fallbacks", "yellow")
+            except Exception as e:
+                cprint(f"[AdaptiveHybrid] LLM init error: {e}", "yellow")
+
+        # LLM regime cache per-symbol: {symbol: regime_result}
+        self._llm_regime_cache = {}
 
         # Data directory
         self.data_dir = os.path.join(
@@ -219,6 +309,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
         cprint(f"  - Base threshold: {ADAPTIVE_HYBRID_BASE_THRESHOLD}/100", "white")
         cprint(f"  - Paper Trading: {PAPER_TRADING}", "white")
         cprint(f"  - Balance: ${self.paper_balance:,.2f}", "white")
+        cprint(f"  - LLM Confirmation: {ADAPTIVE_HYBRID_LLM_CONFIRMATION}", "white")
+        cprint(f"  - LLM Regime: {ADAPTIVE_HYBRID_LLM_REGIME}", "white")
+        cprint(f"  - LLM Learner: {ADAPTIVE_HYBRID_LLM_LEARNER}", "white")
+        cprint(f"  - MTF Confluence: {ADAPTIVE_HYBRID_MTF_CONFLUENCE}", "white")
 
     def _preload_funding_history(self):
         """Pre-load 7 days of funding history to avoid cold start."""
@@ -235,6 +329,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     self._funding_last_rate[symbol] = rate
             except Exception:
                 pass
+
+    def set_risk_agent(self, risk_agent):
+        """Set risk agent reference for recovery mode sizing.
+        NOTE: main.py should call strategy.set_risk_agent(risk_agent) after init.
+        """
+        self._risk_agent = risk_agent
+        cprint(f"[AdaptiveHybrid] Risk agent linked", "cyan")
 
     # =========================================================================
     # PAPER TRADING RESET
@@ -421,136 +522,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
         }
 
     # =========================================================================
-    # 8 SIGNAL MODULES
+    # SIGNAL MODULES (delegated to src/strategies/modules/)
     # =========================================================================
-
-    def _score_mean_reversion(self, df: pd.DataFrame, ind: dict) -> dict:
-        """Module 1: Mean reversion using Bollinger Bands + RSI in ranging markets."""
-        long_score = 0
-        short_score = 0
-
-        bb_range = ind['bb_upper'] - ind['bb_lower']
-        if bb_range <= 0:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No BB range'}
-
-        bb_pct = (ind['close'] - ind['bb_lower']) / bb_range
-
-        # Long: Price near lower band
-        if bb_pct < 0.10:
-            long_score += 45
-        elif bb_pct < 0.25:
-            long_score += 25
-
-        # RSI confirmation
-        if ind['rsi'] < ind['rsi_oversold']:
-            long_score += 35
-        elif ind['rsi'] < (ind['rsi_oversold'] + 50) / 2:
-            long_score += 20
-
-        # Ranging market bonus (ADX < 25)
-        if ind['adx'] < 20:
-            long_score += 20
-        elif ind['adx'] < 30:
-            long_score += 10
-
-        # Short: Price near upper band
-        if bb_pct > 0.90:
-            short_score += 45
-        elif bb_pct > 0.75:
-            short_score += 25
-
-        if ind['rsi'] > ind['rsi_overbought']:
-            short_score += 35
-        elif ind['rsi'] > (ind['rsi_overbought'] + 50) / 2:
-            short_score += 20
-
-        if ind['adx'] < 20:
-            short_score += 20
-        elif ind['adx'] < 30:
-            short_score += 10
-
-        best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
-        return {'score': min(100, best), 'direction': direction,
-                'reason': f'BB%={bb_pct:.2f} RSI={ind["rsi"]:.0f} ADX={ind["adx"]:.0f}'}
-
-    def _score_momentum_breakout(self, df: pd.DataFrame, ind: dict) -> dict:
-        """Module 2: Breakout above/below recent range with volume confirmation."""
-        long_score = 0
-        short_score = 0
-
-        high_20 = df['high'].tail(20).max()
-        low_20 = df['low'].tail(20).min()
-        close = ind['close']
-        vol_ratio = ind['volume_ratio']
-
-        # Upside breakout
-        if close >= high_20:
-            long_score += 40
-            if vol_ratio > 1.5:
-                long_score += 30
-            elif vol_ratio > 1.2:
-                long_score += 15
-            if ind['adx'] > 25:
-                long_score += 20
-        elif close >= high_20 * 0.997:
-            long_score += 20
-            if vol_ratio > 1.3:
-                long_score += 15
-
-        # Downside breakout
-        if close <= low_20:
-            short_score += 40
-            if vol_ratio > 1.5:
-                short_score += 30
-            elif vol_ratio > 1.2:
-                short_score += 15
-            if ind['adx'] > 25:
-                short_score += 20
-        elif close <= low_20 * 1.003:
-            short_score += 20
-            if vol_ratio > 1.3:
-                short_score += 15
-
-        best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
-        return {'score': min(100, best), 'direction': direction,
-                'reason': f'H20={high_20:.2f} L20={low_20:.2f} Vol={vol_ratio:.1f}x'}
-
-    def _score_ema_trend(self, symbol: str, ind: dict) -> dict:
-        """Combined EMA trend module (replaces ema_crossover + absorbs trend elements)."""
-        long_score = 0
-        short_score = 0
-
-        # EMA alignment (9 > 21 > 50 for bullish)
-        bullish_alignment = ind['ema_9'] > ind['ema_21'] > ind['ema_50']
-        bearish_alignment = ind['ema_9'] < ind['ema_21'] < ind['ema_50']
-
-        if bullish_alignment:
-            long_score += 30
-            if ind['adx'] > 25:
-                long_score += 20  # Strong trend confirmation
-            if ind['macd_diff'] > 0:
-                long_score += 15
-            # Check if close is near EMA 21 (pullback entry)
-            ema_dist = abs(ind['close'] - ind['ema_21']) / ind['ema_21']
-            if ema_dist < 0.01:
-                long_score += 20  # Pullback to EMA
-
-        if bearish_alignment:
-            short_score += 30
-            if ind['adx'] > 25:
-                short_score += 20
-            if ind['macd_diff'] < 0:
-                short_score += 15
-            ema_dist = abs(ind['close'] - ind['ema_21']) / ind['ema_21']
-            if ema_dist < 0.01:
-                short_score += 20
-
-        best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
-        return {'score': min(100, best), 'direction': direction,
-                'reason': f'EMA trend alignment ADX={ind["adx"]:.1f} MACD={ind["macd_diff"]:.4f}'}
 
     def _get_funding_zscore_per_token(self, symbol: str) -> float:
         """Calculate per-token historical funding Z-score."""
@@ -593,375 +566,25 @@ class AdaptiveHybridStrategy(BaseStrategy):
         except Exception:
             return 0.0
 
-    def _score_funding_contrarian(self, symbol: str, ind: dict) -> dict:
-        """Module 4: Contrarian signal based on extreme funding rates."""
+    def _score_funding_contrarian_wrapper(self, symbol: str, ind: dict) -> dict:
+        """Wrapper for funding contrarian module (needs zscore from instance state)."""
         if not self._market_data:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No market data provider'}
-
         try:
             zscore = self._get_funding_zscore_per_token(symbol)
         except Exception:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Funding data unavailable'}
+        return score_funding_contrarian(zscore, ind)
 
-        long_score = 0
-        short_score = 0
-
-        # Extreme negative funding = shorts paying longs = go long (contrarian)
-        if zscore <= -2.0:
-            long_score += 80
-        elif zscore <= -1.5:
-            long_score += 55
-        elif zscore <= -1.0:
-            long_score += 30
-
-        # Extreme positive funding = longs paying shorts = go short (contrarian)
-        if zscore >= 2.0:
-            short_score += 80
-        elif zscore >= 1.5:
-            short_score += 55
-        elif zscore >= 1.0:
-            short_score += 30
-
-        best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
-        return {'score': min(100, best), 'direction': direction,
-                'reason': f'Funding Z={zscore:.2f}'}
-
-    def _score_rsi_divergence(self, symbol: str, ind: dict) -> dict:
-        """Module 5: RSI divergence detection using swing pivot points."""
-        lookback = 30
-        df = ind.get('_df')
-        if df is None or len(df) < lookback:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Insufficient data'}
-
-        prices = df['close'].values[-lookback:]
-        rsis = df['rsi'].values[-lookback:]
-
-        # Filter NaN from RSI
-        valid = ~np.isnan(rsis)
-        if valid.sum() < lookback // 2:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Not enough RSI data'}
-
-        # Detect swing lows (3 candles each side)
-        def find_swing_lows(arr, order=3):
-            lows = []
-            for i in range(order, len(arr) - order):
-                if all(arr[i] <= arr[i-j] for j in range(1, order+1)) and all(arr[i] <= arr[i+j] for j in range(1, order+1)):
-                    lows.append(i)
-            return lows
-
-        def find_swing_highs(arr, order=3):
-            highs = []
-            for i in range(order, len(arr) - order):
-                if all(arr[i] >= arr[i-j] for j in range(1, order+1)) and all(arr[i] >= arr[i+j] for j in range(1, order+1)):
-                    highs.append(i)
-            return highs
-
-        long_score = 0
-        short_score = 0
-
-        # Bullish divergence: price lower lows, RSI higher lows
-        price_lows = find_swing_lows(prices)
-        if len(price_lows) >= 2:
-            i, j = price_lows[-2], price_lows[-1]
-            if prices[j] < prices[i] and rsis[j] > rsis[i]:
-                long_score += 60
-                if ind['rsi'] < ind['rsi_oversold'] + 10:
-                    long_score += 25
-
-        # Bearish divergence: price higher highs, RSI lower highs
-        price_highs = find_swing_highs(prices)
-        if len(price_highs) >= 2:
-            i, j = price_highs[-2], price_highs[-1]
-            if prices[j] > prices[i] and rsis[j] < rsis[i]:
-                short_score += 60
-                if ind['rsi'] > ind['rsi_overbought'] - 10:
-                    short_score += 25
-
-        best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
-        return {'score': min(100, best), 'direction': direction,
-                'reason': f'RSI divergence (pivot-based, lookback={lookback})'}
-
-    def _score_sniper_lite(self, df: pd.DataFrame, ind: dict) -> dict:
-        """Module 6: Relaxed version of Sniper AI (extreme move + funding check)."""
-        long_score = 0
-        short_score = 0
-
-        # Check Z-score (2.0 sigma, 50-bar window)
-        window = 50
-        threshold = 2.0
-        close_series = df['close'].tail(window + 5)
-        rolling_mean = close_series.rolling(window=window).mean()
-        rolling_std = close_series.rolling(window=window).std()
-
-        current_price = ind['close']
-        mean = float(rolling_mean.iloc[-1]) if pd.notna(rolling_mean.iloc[-1]) else current_price
-        std = float(rolling_std.iloc[-1]) if pd.notna(rolling_std.iloc[-1]) else 1
-
-        z_score = (current_price - mean) / std if std > 0 else 0
-
-        # Extreme move down = potential long (fade the move)
-        if z_score <= -threshold:
-            long_score += 45
-            if z_score <= -(threshold + 0.5):
-                long_score += 15
-        # Extreme move up = potential short
-        if z_score >= threshold:
-            short_score += 45
-            if z_score >= threshold + 0.5:
-                short_score += 15
-
-        # Volume confirmation (relaxed: 2x instead of 3x)
-        if ind['volume_ratio'] > 2.0:
-            if long_score > 0:
-                long_score += 20
-            if short_score > 0:
-                short_score += 20
-        elif ind['volume_ratio'] > 1.5:
-            if long_score > 0:
-                long_score += 10
-            if short_score > 0:
-                short_score += 10
-
-        # RSI confirmation
-        if ind['rsi'] < 35 and long_score > 0:
-            long_score += 20
-        if ind['rsi'] > 65 and short_score > 0:
-            short_score += 20
-
-        best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
-        return {'score': min(100, best), 'direction': direction,
-                'reason': f'Z={z_score:.2f} Vol={ind["volume_ratio"]:.1f}x RSI={ind["rsi"]:.0f}'}
-
-    def _score_ramf_lite(self, df: pd.DataFrame, ind: dict) -> dict:
-        """Module 8: Volatility regime + momentum exhaustion (no dead zone)."""
-        long_score = 0
-        short_score = 0
-
-        if 'atr' not in df.columns or len(df) < 50:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Insufficient data'}
-
-        # Volatility regime (NO dead zone - always classify)
-        atr_values = df['atr'].dropna().tail(50)
-        if len(atr_values) < 20:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Not enough ATR data'}
-
-        current_atr = ind['atr']
-        atr_percentile = (atr_values < current_atr).sum() / len(atr_values) * 100
-
-        is_high_vol = atr_percentile >= 50
-        regime = 'HIGH' if is_high_vol else 'LOW'
-
-        if is_high_vol:
-            # High vol: mean reversion / exhaustion
-            # Check VWAP distance (relaxed: 1.0 ATR instead of 1.5)
-            vwap_dist = abs(ind['close'] - ind['vwap']) / current_atr if current_atr > 0 else 0
-
-            if vwap_dist >= 1.0:
-                if ind['close'] < ind['vwap']:
-                    long_score += 40  # Extended below VWAP
-                else:
-                    short_score += 40  # Extended above VWAP
-
-            # Consecutive bars check (relaxed: 2 instead of 3)
-            recent = df.tail(3)
-            up_bars = (recent['close'] > recent['open']).sum()
-            down_bars = (recent['close'] < recent['open']).sum()
-
-            if down_bars >= 2 and long_score > 0:
-                long_score += 30
-            if up_bars >= 2 and short_score > 0:
-                short_score += 30
-
-            # RSI confirmation
-            if ind['rsi'] < 35:
-                long_score += 30
-            elif ind['rsi'] < 45:
-                long_score += 15
-            if ind['rsi'] > 65:
-                short_score += 30
-            elif ind['rsi'] > 55:
-                short_score += 15
-        else:
-            # Low vol: trend following
-            if ind['ema_9'] > ind['ema_21']:
-                long_score += 35
-                if ind['macd_diff'] > 0:
-                    long_score += 25
-                if ind['rsi'] > 50:
-                    long_score += 20
-            elif ind['ema_9'] < ind['ema_21']:
-                short_score += 35
-                if ind['macd_diff'] < 0:
-                    short_score += 25
-                if ind['rsi'] < 50:
-                    short_score += 20
-
-        best = max(long_score, short_score)
-        direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'
-        return {'score': min(100, best), 'direction': direction,
-                'reason': f'Regime={regime} ATR%={atr_percentile:.0f} VWAP_dist={abs(ind["close"] - ind["vwap"]):.2f}'}
-
-    def _score_oi_delta(self, symbol: str, ind: dict) -> dict:
-        """Module: Open Interest delta -- detects positioning pressure."""
-        if not self._market_data:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No market data'}
-        try:
-            oi_data = self._market_data.get_open_interest(symbol)
-            if oi_data is None:
-                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No OI data'}
-
-            current_oi = oi_data.get('open_interest', 0)
-            if current_oi <= 0:
-                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'OI is zero'}
-
-            # Compute delta from stored history
-            prev_oi = self._oi_history.get(symbol, current_oi)
-            oi_change_pct = ((current_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
-            self._oi_history[symbol] = current_oi
-
-            price_change = ind.get('close', 0) - ind.get('open', ind.get('close', 0))
-
-            long_score = 0
-            short_score = 0
-
-            if oi_change_pct > 3:  # OI increasing significantly
-                if price_change > 0:
-                    long_score += 50  # New longs entering
-                else:
-                    short_score += 40  # New shorts entering
-            elif oi_change_pct < -3:  # OI decreasing
-                if price_change > 0:
-                    long_score += 30  # Short squeeze (shorts closing)
-                else:
-                    short_score += 30  # Long squeeze
-
-            best = max(long_score, short_score)
-            direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
-            return {'score': min(100, best), 'direction': direction,
-                    'reason': f'OI delta={oi_change_pct:+.1f}% (OI={current_oi:,.0f}) price_chg={price_change:+.2f}'}
-        except Exception as e:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'OI error: {e}'}
-
-    def _score_sentiment(self, symbol: str, ind: dict) -> dict:
-        """Module: Sentiment composite (Fear & Greed + token-specific Twitter)."""
-        try:
-            import sys
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-            from strategies.utils.sentiment_reader import SentimentReader
-            reader = SentimentReader()
-
-            # get_current_sentiment returns float -1 to +1 (fear to greed)
-            token_sentiment = reader.get_current_sentiment(symbol)
-            # get_fear_greed_score returns float -1 to +1
-            fg_score = reader.get_fear_greed_score()
-
-            long_score = 0
-            short_score = 0
-
-            # Fear & Greed contrarian: extreme fear = buy, extreme greed = sell
-            if fg_score < -0.5:
-                long_score += 50  # Extreme fear
-            elif fg_score < -0.2:
-                long_score += 25  # Fear
-            elif fg_score > 0.5:
-                short_score += 50  # Extreme greed
-            elif fg_score > 0.2:
-                short_score += 25  # Greed
-
-            # Token-specific sentiment (contrarian)
-            if token_sentiment < -0.3:
-                long_score += 20
-            elif token_sentiment > 0.3:
-                short_score += 20
-
-            best = max(long_score, short_score)
-            direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
-            return {'score': min(100, best), 'direction': direction,
-                    'reason': f'F&G={fg_score:+.2f} token={token_sentiment:+.2f}'}
-        except Exception as e:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'Sentiment error: {e}'}
-
-    def _score_squeeze_detector(self, symbol: str, ind: dict) -> dict:
-        """Module: Squeeze detection combining funding + OI + volatility compression."""
+    def _score_squeeze_detector_wrapper(self, symbol: str, ind: dict) -> dict:
+        """Wrapper for squeeze module (needs zscore from instance state)."""
         if not self._market_data:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No market data'}
         try:
             funding_zscore = self._get_funding_zscore_per_token(symbol)
-            bb_pct = ind.get('bb_pct', 0.5)
-
-            long_score = 0
-            short_score = 0
-
-            # Bollinger squeeze (BB width compression)
-            bb_squeeze = bb_pct > 0.3 and bb_pct < 0.7  # Price near middle = compression
-
-            # Short squeeze: very negative funding + compression
-            if funding_zscore < -1.5:
-                long_score += 40
-                if bb_squeeze:
-                    long_score += 20
-                if ind['rsi'] < ind['rsi_oversold'] + 10:
-                    long_score += 15
-
-            # Long squeeze: very positive funding + compression
-            if funding_zscore > 1.5:
-                short_score += 40
-                if bb_squeeze:
-                    short_score += 20
-                if ind['rsi'] > ind['rsi_overbought'] - 10:
-                    short_score += 15
-
-            best = max(long_score, short_score)
-            direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
-            return {'score': min(100, best), 'direction': direction,
-                    'reason': f'Squeeze: funding_z={funding_zscore:.2f} bb_pct={bb_pct:.2f}'}
+            return score_squeeze_detector(funding_zscore, ind)
         except Exception as e:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'Squeeze error: {e}'}
-
-    def _score_order_imbalance(self, symbol: str, ind: dict) -> dict:
-        """Module: Order book bid/ask imbalance from HyperLiquid L2."""
-        try:
-            from hyperliquid.info import Info
-            info = Info(skip_ws=True)
-            l2_data = info.l2_snapshot(symbol)
-
-            if not l2_data or 'levels' not in l2_data:
-                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No L2 data'}
-
-            levels = l2_data['levels']
-            if len(levels) < 2:
-                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Insufficient L2 data'}
-
-            bids = levels[0]  # [[price, size], ...]
-            asks = levels[1]
-
-            # Sum top 10 levels
-            bid_depth = sum(float(b['sz']) for b in bids[:10])
-            ask_depth = sum(float(a['sz']) for a in asks[:10])
-            total = bid_depth + ask_depth
-
-            if total == 0:
-                return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Empty book'}
-
-            imbalance = (bid_depth - ask_depth) / total  # -1 to +1
-
-            long_score = 0
-            short_score = 0
-
-            if imbalance > 0.3:
-                long_score += int(40 + imbalance * 30)  # 40-70
-            elif imbalance < -0.3:
-                short_score += int(40 + abs(imbalance) * 30)
-
-            best = max(long_score, short_score)
-            direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
-            return {'score': min(100, best), 'direction': direction,
-                    'reason': f'Book imbalance={imbalance:+.2f} bid={bid_depth:.0f} ask={ask_depth:.0f}'}
-        except Exception as e:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'L2 error: {e}'}
 
     # =========================================================================
     # BTC MACRO FILTER
@@ -1005,6 +628,64 @@ class AdaptiveHybridStrategy(BaseStrategy):
             cprint(f"[AdaptiveHybrid] Error checking BTC trend: {e}", "yellow")
             return True  # Default to allowing trades
 
+    def _detect_global_regime(self) -> str:
+        """Detect global market regime based on BTC ADX and volatility ratio.
+        Returns one of: 'trending_volatile', 'trending_calm', 'ranging_volatile', 'ranging_calm'.
+        Cached for 15 minutes.
+        """
+        if self._global_regime is not None and self._global_regime_timestamp:
+            age = (datetime.now() - self._global_regime_timestamp).total_seconds()
+            if age < 900:  # 15 min cache
+                return self._global_regime
+
+        try:
+            df = self._fetch_candles('BTC', interval='1h', candles=250)
+            if df is None or len(df) < 50:
+                return 'ranging_calm'  # Default conservative
+
+            close = df['close']
+            high = df['high']
+            low = df['low']
+
+            # ADX
+            adx_ind = ADXIndicator(high=high, low=low, close=close, window=14)
+            adx_val = float(adx_ind.adx().iloc[-1]) if pd.notna(adx_ind.adx().iloc[-1]) else 20
+
+            # Volatility ratio: recent ATR(14) / historical ATR(50)
+            atr_ind = AverageTrueRange(high=high, low=low, close=close, window=14)
+            atr_series = atr_ind.average_true_range().dropna()
+            if len(atr_series) >= 50:
+                recent_atr = float(atr_series.iloc[-1])
+                hist_atr = float(atr_series.tail(50).mean())
+                vol_ratio = recent_atr / hist_atr if hist_atr > 0 else 1.0
+            else:
+                vol_ratio = 1.0
+
+            # Classify regime
+            is_trending = adx_val >= REGIME_ADX_TRENDING
+            is_ranging = adx_val < REGIME_ADX_RANGING
+            is_vol_high = vol_ratio > REGIME_VOL_HIGH
+            is_vol_low = vol_ratio < REGIME_VOL_LOW
+
+            if is_trending and is_vol_high:
+                regime = 'trending_volatile'
+            elif is_trending:
+                regime = 'trending_calm'
+            elif is_ranging and is_vol_high:
+                regime = 'ranging_volatile'
+            else:
+                regime = 'ranging_calm'
+
+            self._global_regime = regime
+            self._global_regime_timestamp = datetime.now()
+
+            cprint(f"  [Global Regime] ADX={adx_val:.1f} VolRatio={vol_ratio:.2f} -> {regime}", "cyan")
+            return regime
+
+        except Exception as e:
+            cprint(f"[AdaptiveHybrid] Error detecting global regime: {e}", "yellow")
+            return 'ranging_calm'
+
     def _get_btc_correlation(self, symbol: str):
         """Get Pearson correlation of token returns with BTC returns (4h cache per-symbol).
         Returns float or None if data unavailable."""
@@ -1045,18 +726,43 @@ class AdaptiveHybridStrategy(BaseStrategy):
     # =========================================================================
 
     def _get_weights_for_symbol(self, symbol: str, ind: dict = None) -> dict:
-        """Get module weights based on dynamic regime detection."""
+        """Get module weights based on dynamic regime detection and global regime."""
+        # Use global regime to bias weight selection
+        global_regime = self._detect_global_regime()
+
+        if global_regime in ('trending_volatile', 'trending_calm'):
+            base_profile = 'trending'
+        elif global_regime == 'ranging_volatile':
+            base_profile = 'ranging'
+        else:
+            base_profile = None
+
+        # Per-token ADX override
         if ind is not None and 'adx' in ind:
             if ind['adx'] > 30:
                 return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('trending', self.weights)
             elif ind['adx'] < 20:
                 return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('ranging', self.weights)
+
+        # Use global regime profile if available
+        if base_profile:
+            return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get(base_profile, self.weights)
+
         # Fallback: static mapping
         if symbol in ADAPTIVE_HYBRID_RANGING_TOKENS:
-            return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('ranging', self.weights)
+            selected = ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('ranging', self.weights)
         elif symbol in ADAPTIVE_HYBRID_TRENDING_TOKENS:
-            return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('trending', self.weights)
-        return self.weights
+            selected = ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('trending', self.weights)
+        else:
+            selected = self.weights
+
+        # Apply LLM regime weight adjustments (if enabled and cached)
+        if ADAPTIVE_HYBRID_LLM_REGIME and symbol in self._llm_regime_cache:
+            regime_result = self._llm_regime_cache[symbol]
+            if regime_result.get('confidence', 0) >= 50:
+                selected = adjust_weights_for_regime(selected, regime_result['regime'])
+
+        return selected
 
     def _aggregate_scores(self, module_results: dict, symbol: str = None, ind: dict = None) -> dict:
         """Aggregate all module scores into a final trading decision."""
@@ -1175,6 +881,57 @@ class AdaptiveHybridStrategy(BaseStrategy):
         }
 
     # =========================================================================
+    # BENCHMARK TRACKER
+    # =========================================================================
+
+    def _update_benchmark(self):
+        """Track BTC and ETH buy-and-hold performance for alpha calculation."""
+        benchmarks = ['BTC', 'ETH']
+        for sym in benchmarks:
+            try:
+                df = self._fetch_candles(sym, interval='1h', candles=5)
+                if df is None or len(df) == 0:
+                    continue
+                current_price = float(df['close'].iloc[-1])
+
+                if sym not in self._benchmark_start_prices:
+                    self._benchmark_start_prices[sym] = current_price
+                    if not self._benchmark_start_time:
+                        self._benchmark_start_time = datetime.now()
+            except Exception:
+                pass
+
+    def _get_benchmark_alpha(self) -> dict:
+        """Calculate alpha vs BTC and ETH buy-and-hold.
+        Returns dict with benchmark returns and strategy alpha.
+        """
+        if not self._benchmark_start_prices:
+            return {}
+
+        result = {}
+        strategy_return = (self.paper_balance - PAPER_TRADING_BALANCE) / PAPER_TRADING_BALANCE * 100
+
+        for sym, start_price in self._benchmark_start_prices.items():
+            try:
+                df = self._fetch_candles(sym, interval='1h', candles=5)
+                if df is None or len(df) == 0:
+                    continue
+                current_price = float(df['close'].iloc[-1])
+                bench_return = (current_price - start_price) / start_price * 100
+                alpha = strategy_return - bench_return
+                result[sym] = {
+                    'start_price': start_price,
+                    'current_price': current_price,
+                    'return_pct': round(bench_return, 2),
+                    'alpha': round(alpha, 2),
+                }
+            except Exception:
+                pass
+
+        result['strategy_return_pct'] = round(strategy_return, 2)
+        return result
+
+    # =========================================================================
     # URGENCY SYSTEM
     # =========================================================================
 
@@ -1208,8 +965,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
         return max(0.70, 1.0 - reduction)
 
     def _get_effective_threshold(self, symbol: str = None) -> float:
-        """Get current threshold adjusted by urgency."""
+        """Get current threshold adjusted by urgency and global regime."""
         base = ADAPTIVE_HYBRID_BASE_THRESHOLD
+
+        # Raise threshold in ranging_calm regime (reduce activity)
+        global_regime = self._detect_global_regime()
+        if global_regime == 'ranging_calm':
+            base *= 1.10  # +10% threshold in calm ranging markets
+
         urgency = self._get_urgency_multiplier(symbol)
         effective = base * urgency
         return max(effective, ADAPTIVE_HYBRID_URGENCY_FLOOR)
@@ -1229,6 +992,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
     def generate_signals(self, symbol: str = None, df: pd.DataFrame = None) -> dict:
         """Generate trading signal for the given symbol."""
         self._reset_daily_counters()
+        self._update_benchmark()
 
         # Daily limits
         if self.daily_trades >= ADAPTIVE_HYBRID_MAX_DAILY_TRADES:
@@ -1253,23 +1017,66 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Compute all indicators
         ind = self._compute_indicators(df)
 
-        # Run all 11 modules
+        # Update current regime for trade memory logging
+        self._current_regime = self._detect_global_regime()
+
+        # LLM Regime Classification (cached, runs every ~15min per symbol)
+        if ADAPTIVE_HYBRID_LLM_REGIME:
+            try:
+                funding_zscore = self._get_funding_zscore_per_token(symbol)
+                regime_result = classify_regime(
+                    symbol=symbol,
+                    indicators=ind,
+                    funding_zscore=funding_zscore,
+                    model=self._llm_model,
+                    bypass=not ADAPTIVE_HYBRID_LLM_REGIME,
+                )
+                self._llm_regime_cache[symbol] = regime_result
+                self._current_regime = regime_result.get('regime', self._current_regime)
+            except Exception as e:
+                cprint(f"  [LLM Regime] Error for {symbol}: {e}", "yellow")
+
+        # Get historical context from trade memory
+        memory_context = self._trade_memory.build_context_prompt(symbol)
+        if memory_context:
+            cprint(f"  [Memory] {symbol}: {memory_context[:200]}", "cyan")
+
+        # Run all 14 modules (delegated to pure functions)
         module_results = {
-            'mean_reversion': self._score_mean_reversion(df, ind),
-            'momentum_breakout': self._score_momentum_breakout(df, ind),
-            'ema_trend': self._score_ema_trend(symbol, ind),
-            'funding_contrarian': self._score_funding_contrarian(symbol, ind),
-            'rsi_divergence': self._score_rsi_divergence(symbol, ind),
-            'sniper_lite': self._score_sniper_lite(df, ind),
-            'ramf_lite': self._score_ramf_lite(df, ind),
-            'oi_delta': self._score_oi_delta(symbol, ind),
-            'sentiment': self._score_sentiment(symbol, ind),
-            'squeeze_detector': self._score_squeeze_detector(symbol, ind),
-            'order_imbalance': self._score_order_imbalance(symbol, ind),
+            'mean_reversion': score_mean_reversion(df, ind),
+            'momentum_breakout': score_momentum_breakout(df, ind),
+            'ema_trend': score_ema_trend(ind),
+            'funding_contrarian': self._score_funding_contrarian_wrapper(symbol, ind),
+            'rsi_divergence': score_rsi_divergence(ind),
+            'sniper_lite': score_sniper_lite(df, ind),
+            'ramf_lite': score_ramf_lite(df, ind),
+            'oi_delta': score_oi_delta(ind, self._market_data, self._oi_history, symbol, self._cache_lock),
+            'sentiment': score_sentiment(symbol, ind),
+            'squeeze_detector': self._score_squeeze_detector_wrapper(symbol, ind),
+            'order_imbalance': score_order_imbalance(symbol, ind),
+            'crowd_positioning': score_crowd_positioning(symbol, ind),
+            'social_hype': score_social_hype(symbol, ind),
+            'funding_divergence': score_funding_divergence(symbol, ind),
         }
 
-        # Aggregate scores
+        # Aggregate scores (regime-adjusted weights applied inside _get_weights_for_symbol)
         aggregated = self._aggregate_scores(module_results, symbol=symbol, ind=ind)
+
+        # Multi-Timeframe Confluence bonus/penalty
+        if ADAPTIVE_HYBRID_MTF_CONFLUENCE and aggregated['direction'] != 'NEUTRAL':
+            try:
+                mtf_result = score_mtf_confluence(
+                    symbol=symbol,
+                    primary_direction=aggregated['direction'],
+                    fetch_candles_fn=self._fetch_candles,
+                )
+                mtf_bonus = mtf_result['score']
+                if mtf_bonus != 0:
+                    aggregated['score'] = max(0, aggregated['score'] + mtf_bonus)
+                    cprint(f"    [MTF] {mtf_result['details']} -> score {'+' if mtf_bonus > 0 else ''}{mtf_bonus}", "cyan")
+                    aggregated['mtf_confluence'] = mtf_result
+            except Exception as e:
+                cprint(f"  [MTF] Error for {symbol}: {e}", "yellow")
 
         # Get threshold
         threshold = self._get_effective_threshold(symbol)
@@ -1306,6 +1113,76 @@ class AdaptiveHybridStrategy(BaseStrategy):
             if tp_pct < sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO:
                 tp_pct = sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO
 
+            # LLM Trade Confirmation (final gate before signal emission)
+            llm_decision = None
+            if ADAPTIVE_HYBRID_LLM_CONFIRMATION:
+                try:
+                    signal_metadata = {
+                        'score': score,
+                        'threshold': threshold,
+                        'signal_strength': strength,
+                        'stop_loss_pct': sl_pct,
+                        'take_profit_pct': tp_pct,
+                        'module_scores': aggregated.get('module_scores', {}),
+                    }
+                    llm_decision = llm_confirm_trade(
+                        symbol=symbol,
+                        direction=aggregated['direction'],
+                        aggregated=aggregated,
+                        indicators=ind,
+                        metadata=signal_metadata,
+                        trade_memory=self._trade_memory,
+                        model=self._llm_model,
+                        bypass=not ADAPTIVE_HYBRID_LLM_CONFIRMATION,
+                    )
+                    if llm_decision['decision'] == 'REJECT':
+                        cprint(f"  [{symbol}] LLM REJECTED: {llm_decision['reasoning']}", "red")
+                        return {
+                            'token': symbol,
+                            'signal': 0,
+                            'direction': 'NEUTRAL',
+                            'metadata': {
+                                'strategy': 'Adaptive Hybrid',
+                                'score': score,
+                                'threshold': threshold,
+                                'reason': f"LLM rejected: {llm_decision['reasoning']}",
+                                'llm_decision': llm_decision,
+                                'current_price': ind['close'],
+                            }
+                        }
+                    elif llm_decision['decision'] == 'ADJUST':
+                        if llm_decision.get('adjusted_score') is not None:
+                            old_score = score
+                            score = llm_decision['adjusted_score']
+                            aggregated['score'] = score
+                            cprint(f"  [{symbol}] LLM ADJUSTED score: {old_score:.1f} -> {score:.1f}", "yellow")
+                        if llm_decision.get('sl_adjustment') is not None:
+                            sl_pct = llm_decision['sl_adjustment']
+                        if llm_decision.get('tp_adjustment') is not None:
+                            tp_pct = llm_decision['tp_adjustment']
+                        # Re-enforce R:R after adjustment
+                        if tp_pct < sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO:
+                            tp_pct = sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO
+                        # Recalculate strength after score adjustment
+                        strength = 0.45 + (score - threshold) / score_range * 0.50
+                        strength = max(0.45, min(0.95, strength))
+                        if score < threshold:
+                            cprint(f"  [{symbol}] LLM adjusted score below threshold, rejecting", "red")
+                            return {
+                                'token': symbol,
+                                'signal': 0,
+                                'direction': 'NEUTRAL',
+                                'metadata': {
+                                    'strategy': 'Adaptive Hybrid',
+                                    'score': score,
+                                    'threshold': threshold,
+                                    'reason': f"LLM adjusted score {score:.1f} < threshold {threshold:.0f}",
+                                    'current_price': ind['close'],
+                                }
+                            }
+                except Exception as e:
+                    cprint(f"  [LLM Confirm] Error: {e}, proceeding with signal", "yellow")
+
             cprint(f"  [{symbol}] SIGNAL: {aggregated['direction']} (score={score:.1f}, "
                    f"threshold={threshold:.0f}, strength={strength:.0%})", "green", attrs=['bold'])
 
@@ -1329,6 +1206,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     'atr': atr,
                     'rsi': ind['rsi'],
                     'adx': ind['adx'],
+                    'llm_decision': llm_decision,
+                    'llm_regime': self._llm_regime_cache.get(symbol),
+                    'mtf_confluence': aggregated.get('mtf_confluence'),
                 }
             }
 
@@ -1405,6 +1285,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if not symbol or direction == 'NEUTRAL':
             return None
 
+        # Check for duplicate position on same symbol+direction
+        with self._position_lock:
+            existing = [p for p in self.paper_positions.values()
+                        if p['symbol'] == symbol and p['direction'] == direction]
+        if existing:
+            cprint(f"[AdaptiveHybrid] Already have {direction} position on {symbol}, skipping", "yellow")
+            return None
+
         # HWM Drawdown check
         self.peak_balance = max(self.peak_balance, self.paper_balance)
         hwm_drawdown_pct = (self.peak_balance - self.paper_balance) / self.peak_balance * 100
@@ -1477,6 +1365,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
             max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100)
             position_size = min(position_size, max_position_by_margin, max_position_by_pct)
 
+            # Apply recovery mode size reduction from risk agent
+            if self._risk_agent:
+                recovery_factor = self._risk_agent.get_recovery_size_factor()
+                if recovery_factor < 1.0:
+                    position_size *= recovery_factor
+                    cprint(f"[AdaptiveHybrid] Recovery mode: position size reduced by {(1-recovery_factor)*100:.0f}%", "yellow")
+
             if position_size < 10:
                 cprint(f"[AdaptiveHybrid] Insufficient margin", "red")
                 return None
@@ -1528,6 +1423,23 @@ class AdaptiveHybridStrategy(BaseStrategy):
         cprint(f"  Risk: ${risk_amount:,.2f} | SL: {sl_pct:.2f}% | Fee: ${entry_fee:.4f}", "white")
         cprint(f"  SL: ${trade['stop_loss']:,.2f} ({sl_pct:.2f}%)", "white")
         cprint(f"  TP: ${trade['take_profit']:,.2f} ({tp_pct:.2f}%)", "white")
+
+        # Log decision to trade memory
+        try:
+            module_scores = metadata.get('module_scores', {})
+            modules_firing = [m for m in module_scores if module_scores[m] != 0] if isinstance(module_scores, dict) else None
+            decision_id = self._trade_memory.log_decision(
+                symbol=symbol,
+                direction=direction,
+                confidence=signal.get('signal', 0) * 100,
+                source='adaptive_hybrid',
+                reasoning=str(metadata.get('reason', '')),
+                market_regime=self._current_regime,
+                modules_firing=modules_firing,
+            )
+            trade['memory_decision_id'] = decision_id
+        except Exception as e:
+            cprint(f"  [Memory] Warning: could not log decision: {e}", "yellow")
 
         return trade
 
@@ -1723,6 +1635,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
             self.daily_pnl += pnl
             self.paper_balance += pnl
             del self.paper_positions[position_id]
+
+            # Add benchmark alpha to trade record
+            alpha = self._get_benchmark_alpha()
+            trade['btc_alpha'] = alpha.get('BTC', {}).get('alpha', 0)
+            trade['eth_alpha'] = alpha.get('ETH', {}).get('alpha', 0)
+            trade['strategy_return_pct'] = alpha.get('strategy_return_pct', 0)
+
             self.closed_positions.append(trade)
             balance_snapshot = self.paper_balance
 
@@ -1732,9 +1651,45 @@ class AdaptiveHybridStrategy(BaseStrategy):
         cprint(f"  PnL: ${pnl:+,.2f} ({price_change_pct*100:+.2f}%) | Fees: ${total_fees:.4f} | Slip: {slippage:.3%}", color)
         cprint(f"  Balance: ${balance_snapshot:,.2f}", "white")
 
+        # Update trade memory with outcome
+        if 'memory_decision_id' in trade:
+            try:
+                entry_time = trade.get('entry_time')
+                if isinstance(entry_time, str):
+                    try:
+                        entry_time = datetime.fromisoformat(entry_time)
+                    except (ValueError, TypeError):
+                        entry_time = None
+                hold_hours = (datetime.now() - entry_time).total_seconds() / 3600 if entry_time else None
+
+                self._trade_memory.update_outcome(
+                    decision_id=trade['memory_decision_id'],
+                    pnl=pnl,
+                    hold_duration_hours=hold_hours,
+                    max_adverse=trade.get('max_adverse_excursion', 0),
+                    max_favorable=trade.get('max_favorable_excursion', 0),
+                    close_reason=reason,
+                )
+            except Exception as e:
+                cprint(f"  [Memory] Warning: could not update outcome: {e}", "yellow")
+
         # I/O operations outside the lock
         self._log_closed_trade(trade)
         self._update_position_status_in_csv(position_id, trade)
+
+        # Post-trade learning (LLM analyzes what happened)
+        if ADAPTIVE_HYBRID_LLM_LEARNER:
+            try:
+                trade_for_learning = trade.copy()
+                trade_for_learning['market_regime'] = self._current_regime
+                analyze_closed_trade(
+                    trade=trade_for_learning,
+                    trade_memory=self._trade_memory,
+                    model=self._llm_model,
+                    bypass=not ADAPTIVE_HYBRID_LLM_LEARNER,
+                )
+            except Exception as e:
+                cprint(f"  [Trade Learner] Error: {e}", "yellow")
 
         return trade
 

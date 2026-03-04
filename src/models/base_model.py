@@ -5,6 +5,7 @@ Built with love by Moon Dev 🚀
 This module defines the base interface for all AI models.
 """
 
+import time
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
@@ -32,26 +33,33 @@ class BaseModel(ABC):
         pass
     
     def generate_response(self, system_prompt, user_content, temperature=0.7, max_tokens=None):
-        """Generate a response from the model"""
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens if max_tokens else self.max_tokens
-            )
+        """Generate a response from the model. Raises on failure so retry logic can catch it."""
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens if max_tokens else self.max_tokens
+        )
 
-            return response.choices[0].message
-
-        except Exception as e:
-            if "503" in str(e):
-                raise e  # Let the retry logic handle 503s
-            cprint(f"❌ Model error: {str(e)}", "red")
-            return None
+        return response.choices[0].message
     
+    def generate_response_with_retry(self, system_prompt, user_content, temperature=None, max_tokens=None):
+        """Generate a response with exponential backoff retry (3 attempts, delays 1s, 3s, 9s)"""
+        last_error = None
+        for attempt in range(3):
+            try:
+                return self.generate_response(system_prompt, user_content, temperature, max_tokens)
+            except Exception as e:
+                last_error = e
+                wait = (3 ** attempt)  # 1s, 3s, 9s
+                cprint(f"LLM call failed (attempt {attempt+1}/3): {e}. Retrying in {wait}s...", "yellow")
+                time.sleep(wait)
+        cprint(f"LLM call failed after 3 attempts: {last_error}", "red")
+        return None
+
     @abstractmethod
     def is_available(self) -> bool:
         """Check if the model is available and properly configured"""
