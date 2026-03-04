@@ -11,21 +11,18 @@ class ClaudeModel(BaseModel):
     """Implementation for Anthropic's Claude models"""
     
     AVAILABLE_MODELS = {
-        # Claude 4 Series (New Generation) - 🌙 Moon Dev's Latest Models!
-        "claude-opus-4-5-20251101": "Claude Opus 4.5 - Most powerful model with superior reasoning and creativity",
-        "claude-opus-4-1": "Most powerful Claude 4 model with advanced reasoning",
-        "claude-sonnet-4-5": "Balanced Claude 4.5 model with improved capabilities",
-        "claude-haiku-4-5": "Fast, efficient Claude 4.5 model for rapid responses",
+        # Claude 4 Series (Latest Generation)
+        "claude-opus-4-6": "Claude Opus 4.6 - Most powerful model",
+        "claude-sonnet-4-6": "Claude Sonnet 4.6 - Latest balanced model",
+        "claude-sonnet-4-5": "Claude Sonnet 4.5 - Strong reasoning, great for trading",
+        "claude-haiku-4-5-20251001": "Claude Haiku 4.5 - Fast and efficient",
 
-        # Claude 3 Series (Current Stable)
-        "claude-3-5-sonnet-latest": "Latest Claude 3.5 Sonnet with enhanced performance",
-        "claude-3-5-haiku-latest": "Latest Claude 3.5 Haiku - blazing fast",
-        "claude-3-opus": "Most powerful Claude 3 model",
-        "claude-3-sonnet": "Balanced Claude 3 model",
-        "claude-3-haiku": "Fast, efficient Claude 3 model"
+        # Legacy (deprecated, kept for compatibility)
+        "claude-3-5-sonnet-latest": "Claude 3.5 Sonnet (deprecated)",
+        "claude-3-5-haiku-latest": "Claude 3.5 Haiku (deprecated)",
     }
-    
-    def __init__(self, api_key: str, model_name: str = "claude-3-haiku", **kwargs):
+
+    def __init__(self, api_key: str, model_name: str = "claude-sonnet-4-5", **kwargs):
         self.model_name = model_name
         super().__init__(api_key, **kwargs)
     

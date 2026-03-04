@@ -50,7 +50,7 @@ TOKEN_EXCHANGE_MAP = {
 
 # Token and wallet settings
 symbol = '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump'
-WALLET_ADDRESS = os.getenv('SOLANA_WALLET_ADDRESS', '4wgfCBf2WwLSRKLef9iW7JXZ2AfkxUxGM4XcKpHm3Sin')
+WALLET_ADDRESS = os.getenv('SOLANA_WALLET_ADDRESS', '')
 address = WALLET_ADDRESS  # Backward compatibility alias
 
 # Position sizing 🎯
@@ -97,10 +97,11 @@ DATA_TIMEFRAME = '1H'  # 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 6H, 8H, 12H, 1D, 3D, 
 SAVE_OHLCV_DATA = False  # 🌙 Set to True to save data permanently, False will only use temp data during run
 
 # AI Model Settings 🤖
-AI_MODEL = "claude-3-haiku-20240307"  # Model Options:
-                                     # - claude-3-5-haiku-latest (Fast, efficient Claude model)
-                                     # - claude-sonnet-4-6 (Balanced Claude 4.x model)
-                                     # - claude-opus-4-6 (Most powerful Claude 4.x model)
+AI_MODEL = "claude-sonnet-4-5"            # Model Options:
+                                           # - claude-haiku-4-5-20251001 (Fast, efficient)
+                                           # - claude-sonnet-4-5 (Balanced, strong reasoning)
+                                           # - claude-sonnet-4-6 (Latest balanced model)
+                                           # - claude-opus-4-6 (Most powerful, expensive)
 AI_MAX_TOKENS = 1024  # Max tokens for response
 AI_TEMPERATURE = 0.7  # Creativity vs precision (0-1)
 
@@ -281,7 +282,7 @@ SNIPER_ALLOW_NORMAL_HOURS = True       # 24/7 trading enabled - all hours allowe
 
 # AI Validation settings
 SNIPER_AI_MIN_CONFIDENCE = 85          # Minimum AI confidence to execute
-SNIPER_AI_MODEL = 'claude-3-5-sonnet-latest'  # Use capable model for reasoning
+SNIPER_AI_MODEL = 'claude-sonnet-4-5'  # Use capable model for reasoning
 SNIPER_AI_TEMPERATURE = 0.3            # Low temp for analytical responses
 SNIPER_AI_MAX_TOKENS = 1024
 
@@ -378,7 +379,7 @@ TREND_RIDER_MAX_DAILY_TRADES = 3
 TREND_RIDER_MAX_DAILY_LOSS_USD = 25
 
 # AI Validation
-TREND_RIDER_AI_MODEL = 'claude-3-5-sonnet-latest'
+TREND_RIDER_AI_MODEL = 'claude-sonnet-4-5'
 TREND_RIDER_AI_MIN_CONFIDENCE = 70
 TREND_RIDER_AI_TEMPERATURE = 0.3
 

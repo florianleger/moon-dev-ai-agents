@@ -168,9 +168,9 @@ Help Moon Dev keep track of the trading journey! 🎯
 """
 
 # 🤖 Agent Model Selection
-AGENT_ONE_MODEL = MODEL_OVERRIDE if MODEL_OVERRIDE != "0" else "claude-3-haiku-20240307"
-AGENT_TWO_MODEL = MODEL_OVERRIDE if MODEL_OVERRIDE != "0" else "claude-3-sonnet-20240229"
-TOKEN_EXTRACTOR_MODEL = MODEL_OVERRIDE if MODEL_OVERRIDE != "0" else "claude-3-haiku-20240307"
+AGENT_ONE_MODEL = MODEL_OVERRIDE if MODEL_OVERRIDE != "0" else "claude-haiku-4-5-20251001"
+AGENT_TWO_MODEL = MODEL_OVERRIDE if MODEL_OVERRIDE != "0" else "claude-sonnet-4-5"
+TOKEN_EXTRACTOR_MODEL = MODEL_OVERRIDE if MODEL_OVERRIDE != "0" else "claude-haiku-4-5-20251001"
 
 # 🎮 Game Configuration
 MINUTES_BETWEEN_ROUNDS = 30  # Time to wait between trading rounds (in minutes)
@@ -192,11 +192,10 @@ SYNOPSIS_TEMP = 0.3     # Low creativity for consistent summaries (0.2-0.4)
 TOKEN_LOG_FILE = Path("src/data/agent_discussed_tokens.csv")
 
 # Available Models:
-# - claude-3-opus-20240229    (Most powerful, longest responses)
-# - claude-3-sonnet-20240229  (Balanced performance)
-# - claude-3-haiku-20240307   (Fastest, shorter responses)
-# - claude-2.1                (Previous generation)
-# - claude-2.0                (Previous generation)
+# - claude-opus-4-6           (Most powerful, expensive)
+# - claude-sonnet-4-6         (Latest balanced model)
+# - claude-sonnet-4-5         (Strong reasoning, great for trading)
+# - claude-haiku-4-5-20251001 (Fastest, shorter responses)
 
 """
 Response Length Guide (max_tokens):
@@ -634,7 +633,7 @@ class MultiAgentSystem:
         """Generate a brief synopsis of the round's key points using Synopsis Agent"""
         try:
             message = self.agent_one.client.messages.create(
-                model="claude-3-haiku-20240307",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=SYNOPSIS_MAX_TOKENS,
                 temperature=SYNOPSIS_TEMP,
                 system=SYNOPSIS_AGENT_PROMPT,  # Use the synopsis agent prompt

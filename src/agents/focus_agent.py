@@ -64,9 +64,9 @@ cprint(f"📝 .env Path: {env_path}", "cyan")
 # - "o3-mini": Brand new fast reasoning model
 
 # Claude Models:
-# - "claude-3-opus-20240229": Most powerful Claude
-# - "claude-3-sonnet-20240229": Balanced Claude
-# - "claude-3-haiku-20240307": Fast, efficient Claude
+# - "claude-opus-4-6": Most powerful Claude
+# - "claude-sonnet-4-5": Balanced Claude, strong reasoning
+# - "claude-haiku-4-5-20251001": Fast, efficient Claude
 
 # Gemini Models:
 # - "gemini-2.0-flash-exp": Next-gen multimodal
@@ -92,7 +92,7 @@ cprint(f"📝 .env Path: {env_path}", "cyan")
 
 # Model override settings
 MODEL_TYPE = "claude"  # Choose from model types above
-MODEL_NAME = "claude-3-haiku-20240307"  # Choose from models above
+MODEL_NAME = "claude-haiku-4-5-20251001"  # Choose from models above
 
 # Configuration for faster testing
 MIN_INTERVAL_MINUTES = 2  # Less than a second

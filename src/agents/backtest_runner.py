@@ -14,17 +14,45 @@ from pathlib import Path
 BACKTEST_FILE = "/Users/md/Dropbox/dev/github/moon-dev-ai-agents-for-trading/src/agents/test_backtest_working.py"
 CONDA_ENV = "tflow"  # Your conda environment name
 
-FORBIDDEN_IMPORTS = ['os', 'subprocess', 'socket', 'shutil', 'pathlib', 'requests', 'urllib']
+import ast
+
+FORBIDDEN_IMPORTS = [
+    'os', 'subprocess', 'socket', 'shutil', 'pathlib', 'requests', 'urllib',
+    'sys', 'ctypes', 'multiprocessing', 'signal', 'importlib', 'builtins',
+    'http', 'ftplib', 'smtplib',
+]
+
+FORBIDDEN_CALLS = ['eval', 'exec', 'compile', 'open', '__import__', 'getattr', 'globals', 'locals']
 
 def validate_generated_code(code_path):
-    """Validate that generated backtest code does not contain forbidden imports or constructs"""
+    """Validate that generated backtest code does not contain forbidden imports or constructs.
+    Uses AST parsing for reliable detection that cannot be bypassed by string tricks."""
     with open(code_path, 'r') as f:
         code = f.read()
-    for forbidden in FORBIDDEN_IMPORTS:
-        if f'import {forbidden}' in code or f'from {forbidden}' in code:
-            raise ValueError(f"Generated code contains forbidden import: {forbidden}")
-    if 'eval(' in code or 'exec(' in code or '__import__' in code:
-        raise ValueError("Generated code contains forbidden construct")
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        raise ValueError(f"Generated code has syntax error: {e}")
+
+    for node in ast.walk(tree):
+        # Check import statements
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module_root = alias.name.split('.')[0]
+                if module_root in FORBIDDEN_IMPORTS:
+                    raise ValueError(f"Forbidden import: {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                module_root = node.module.split('.')[0]
+                if module_root in FORBIDDEN_IMPORTS:
+                    raise ValueError(f"Forbidden import: from {node.module}")
+        # Check function calls
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_CALLS:
+                raise ValueError(f"Forbidden call: {node.func.id}()")
+            elif isinstance(node.func, ast.Attribute) and node.func.attr in FORBIDDEN_CALLS:
+                raise ValueError(f"Forbidden call: .{node.func.attr}()")
 
 def run_backtest_in_conda(file_path: str, conda_env: str = "tflow"):
     """

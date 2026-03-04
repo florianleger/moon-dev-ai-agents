@@ -1834,6 +1834,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
                                 'tp_pct': float(row.get('tp_pct', 2.5)),
                                 'confidence': float(row.get('confidence', 0)),
                                 'status': 'OPEN',
+                                'entry_time': row.get('timestamp', datetime.now().isoformat()),
                             }
 
                     if self.paper_positions:

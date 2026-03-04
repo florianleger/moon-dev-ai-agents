@@ -108,7 +108,7 @@ LONG_ONLY = True  # True = Long positions only (works on all exchanges)
 
 # 🤖 SINGLE MODEL SETTINGS (only used when USE_SWARM_MODE = False)
 AI_MODEL_TYPE = 'xai'  # Options: 'groq', 'openai', 'claude', 'deepseek', 'xai', 'ollama'
-AI_MODEL_NAME = None   # None = use default, or specify: 'grok-4-fast-reasoning', 'claude-3-5-sonnet-latest', etc.
+AI_MODEL_NAME = None   # None = use default, or specify: 'grok-4-fast-reasoning', 'claude-sonnet-4-5', etc.
 AI_TEMPERATURE = 0.7   # Creativity vs precision (0-1)
 AI_MAX_TOKENS = 1024   # Max tokens for AI response
 

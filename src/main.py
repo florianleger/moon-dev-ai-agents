@@ -43,6 +43,11 @@ ACTIVE_AGENTS = {
     'sentiment': False, # Sentiment agent (disabled)
 }
 
+# Safety: Force risk agent ON when live trading
+if not ACTIVE_AGENTS['risk'] and not PAPER_TRADING:
+    cprint("⚠️ CRITICAL: Risk Agent forced ON for live trading safety", "red", attrs=['bold'])
+    ACTIVE_AGENTS['risk'] = True
+
 # Import agents conditionally to avoid loading unnecessary dependencies
 TradingAgent = None
 RiskAgent = None
@@ -123,13 +128,7 @@ def run_agents():
                     else:
                         cprint("\n📊 Running Strategy Analysis...", "cyan")
 
-                    # Always monitor existing paper positions for SL/TP hits (even when paused)
                     for strategy in strategy_agent.enabled_strategies:
-                        if hasattr(strategy, 'monitor_paper_positions'):
-                            closed = strategy.monitor_paper_positions()
-                            if closed:
-                                cprint(f"📉 Closed {len(closed)} paper positions", "magenta")
-
                         # Show paper trading status and sync to web dashboard
                         if hasattr(strategy, 'get_paper_status'):
                             status = strategy.get_paper_status()
@@ -200,6 +199,7 @@ def run_agents():
                     with open(heartbeat_path, 'w') as f:
                         json.dump({
                             'last_cycle': datetime.now().isoformat(),
+                            'timestamp': time.time(),
                             'status': 'running',
                             'cycle_duration_s': round(cycle_duration, 1)
                         }, f)

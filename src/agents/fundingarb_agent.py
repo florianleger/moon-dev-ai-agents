@@ -83,7 +83,7 @@ class FundingArbAgent(BaseAgent):
         super().__init__('fundingarb')  # Initialize base agent with type
         
         # Set AI parameters - use config values unless overridden
-        self.ai_model = AI_MODEL if AI_MODEL else "claude-3-haiku-20240307"
+        self.ai_model = AI_MODEL if AI_MODEL else "claude-haiku-4-5-20251001"
         self.ai_temperature = AI_TEMPERATURE if AI_TEMPERATURE > 0 else 0.5
         self.ai_max_tokens = AI_MAX_TOKENS if AI_MAX_TOKENS > 0 else 150
         

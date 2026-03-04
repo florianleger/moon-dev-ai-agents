@@ -8,6 +8,7 @@ Key behaviors:
 - State persists via Docker volume at /app/data/web_state.json
 """
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -61,7 +62,11 @@ def _load_state() -> Dict:
     _ensure_dir()
     try:
         with open(STATE_FILE, "r") as f:
-            return json.load(f)
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            try:
+                return json.load(f)
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except (json.JSONDecodeError, FileNotFoundError):
         return _default_state()
 
@@ -103,11 +108,15 @@ def ensure_state_initialized() -> Dict:
 
 
 def _save_state(state: Dict):
-    """Save state to file."""
+    """Save state to file with file locking."""
     _ensure_dir()
     state["last_updated"] = datetime.now().isoformat()
     with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2, default=str)
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            json.dump(state, f, indent=2, default=str)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def get_strategy_state() -> Dict:

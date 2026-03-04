@@ -118,7 +118,7 @@ def chat_with_deepseek(system_prompt, user_content, model_name="deepseek-chat"):
     )
     return response.choices[0].message.content
 
-def chat_with_claude(system_prompt, user_content, model_name="claude-3-opus-20240229"):
+def chat_with_claude(system_prompt, user_content, model_name="claude-opus-4-6"):
     """Direct Claude API call"""
     response = claude_client.messages.create(
         model=model_name,
@@ -219,7 +219,7 @@ def create_backtest(strategy, strategy_name="UnknownStrategy"):
         "Backtest AI",
         BACKTEST_PROMPT,
         f"Create a backtest for this strategy:\n\n{strategy}",
-        "claude-3-opus-20240229"  # Use Claude Opus for complex coding
+        "claude-opus-4-6"  # Use Claude Opus for complex coding
     )
     
     output = clean_model_output(output, "code")

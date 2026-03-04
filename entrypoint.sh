@@ -40,7 +40,7 @@ echo ""
 ALL_REQUIRED_SET=true
 
 # Required for HyperLiquid trading
-if ! check_env "HYPER_LIQUID_KEY" "required"; then
+if ! check_env "HYPER_LIQUID_ETH_PRIVATE_KEY" "required"; then
     ALL_REQUIRED_SET=false
 fi
 

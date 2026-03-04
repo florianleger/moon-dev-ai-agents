@@ -58,7 +58,7 @@ AD_COUNTDOWN_SECONDS = AD_COUNTDOWN_MINUTES * 60
 
 # Model override settings
 MODEL_TYPE = "claude"  # Using Claude for chat responses ,, groq 
-MODEL_NAME = "claude-3-haiku-20240307"  # Fast, efficient model llama-3.1-8b-instant
+MODEL_NAME = "claude-haiku-4-5-20251001"  # Fast, efficient model llama-3.1-8b-instant
 
 # Configuration - All in one place! 🎯
 RESTREAM_CHECK_INTERVAL = 0.1  # Reduce to 100ms for more responsive chat

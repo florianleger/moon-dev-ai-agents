@@ -352,9 +352,31 @@ async def update_settings(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+import re as _re
+
+
+def _validate_config_value(key: str, value: str) -> str:
+    """Validate config value to prevent code injection."""
+    # Boolean values
+    if value in ('True', 'False'):
+        return value
+    # Integer values
+    if _re.fullmatch(r'-?\d+', value):
+        return value
+    # Float values
+    if _re.fullmatch(r'-?\d+\.?\d*', value):
+        return value
+    # List of uppercase alpha strings (for assets like ['BTC', 'ETH'])
+    if _re.fullmatch(r"\[('[A-Za-z0-9]+',?\s*)*\]", value):
+        return value
+    raise ValueError(f"Invalid config value for {key}: {value!r}")
+
+
 def _replace_config_value(content: str, key: str, value: str) -> str:
     """Replace a config value in the content."""
     import re
+
+    _validate_config_value(key, value)
 
     # Pattern to match: KEY = value  or  KEY=value
     pattern = rf"^({key}\s*=\s*).*$"
