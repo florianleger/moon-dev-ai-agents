@@ -174,21 +174,52 @@ class RiskAgent(BaseAgent):
             cprint(f"[RiskAgent] Force-closed {len(closed)} positions", "red", attrs=['bold'])
         return closed
 
+    def get_drawdown_scaling_factor(self) -> float:
+        """Returns position sizing factor based on current drawdown from HWM.
+
+        Linearly scales from 1.0 (no drawdown) to 0.25 (at max drawdown threshold).
+        This is an anti-martingale approach: reduce exposure as losses mount.
+        """
+        current_balance = self._get_current_balance()
+
+        # Update HWM
+        if current_balance > self.peak_balance:
+            self.peak_balance = current_balance
+            self._save_state()
+
+        if self.peak_balance <= 0:
+            return 1.0
+
+        drawdown_pct = (self.peak_balance - current_balance) / self.peak_balance * 100
+
+        if drawdown_pct <= 0:
+            return 1.0
+
+        # Linear scaling: 0% DD -> 1.0, RISK_MAX_DRAWDOWN_PCT -> 0.25
+        scaling = max(0.25, 1.0 - (drawdown_pct / RISK_MAX_DRAWDOWN_PCT) * 0.75)
+
+        if scaling < 1.0:
+            cprint(f"[RiskAgent] Drawdown-adjusted sizing: {scaling:.0%} (DD={drawdown_pct:.1f}%)", "yellow")
+
+        return scaling
+
     def get_recovery_size_factor(self) -> float:
-        """Returns position size multiplier. 1.0 = full size, <1.0 = reduced (recovery mode)."""
+        """Returns position size multiplier combining recovery mode AND drawdown scaling."""
+        recovery_factor = 1.0
         if self.recovery_mode and self.recovery_start:
             elapsed = (datetime.now() - self.recovery_start).total_seconds() / 3600
             if elapsed < RISK_RECOVERY_DURATION_HOURS:
-                factor = RISK_RECOVERY_SIZE_PCT / 100.0
+                recovery_factor = RISK_RECOVERY_SIZE_PCT / 100.0
                 cprint(f"[RiskAgent] Recovery mode: {RISK_RECOVERY_SIZE_PCT}% size "
                        f"({elapsed:.1f}h / {RISK_RECOVERY_DURATION_HOURS}h)", "yellow")
-                return factor
             else:
                 self.recovery_mode = False
                 self.recovery_start = None
                 self._save_state()
                 cprint("[RiskAgent] Recovery period ended, full size restored", "green")
-        return 1.0
+
+        drawdown_factor = self.get_drawdown_scaling_factor()
+        return min(recovery_factor, drawdown_factor)
 
     def is_trading_allowed(self) -> bool:
         """Check if trading is allowed (used by strategy agent before opening new positions)."""

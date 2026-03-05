@@ -439,9 +439,9 @@ ADAPTIVE_HYBRID_ATR_PROFILES = {
 }
 ADAPTIVE_HYBRID_RESET_PAPER = False       # One-shot flag: reset paper trading state on next startup
 
-# Trailing Stop (conservative)
-ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR = 1.5  # Activate trailing after +1.5 ATR profit
-ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR = 2.0  # Trail at 2 ATR from high/low
+# Legacy trailing stop (replaced by ADAPTIVE_HYBRID_TRAILING_LEVELS progressive trailing)
+ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR = 1.5  # Deprecated: use TRAILING_LEVELS instead
+ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR = 2.0  # Deprecated: use TRAILING_LEVELS instead
 
 # Session filter (UTC hours)
 ADAPTIVE_HYBRID_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 19, 20, 21]  # London + NY + Asia open
@@ -451,9 +451,9 @@ ADAPTIVE_HYBRID_AVOID_HOURS = [0, 1, 2, 3, 4, 5]  # Low liquidity
 ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48  # Force close after 48h
 ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 24  # Close if <50% TP after 24h
 
-# Paper trading fees simulation
-PAPER_TAKER_FEE = 0.00035  # HyperLiquid taker fee 0.035%
-PAPER_SLIPPAGE = {
+# Legacy paper trading fees (used by backtester; live paper uses V2 below)
+PAPER_TAKER_FEE = 0.00035  # Deprecated: use PAPER_TAKER_FEE_V2
+PAPER_SLIPPAGE = {          # Deprecated: use PAPER_SLIPPAGE_V2
     'btc': 0.001,     # 0.1% for BTC
     'eth': 0.001,     # 0.1% for ETH
     'mid': 0.002,     # 0.2% for SOL, XRP, AVAX, etc.
@@ -470,38 +470,48 @@ ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {
 
 # Module weights (must sum to 1.0)
 ADAPTIVE_HYBRID_WEIGHTS = {
-    'mean_reversion': 0.10,      # Bollinger Bands + RSI in ranging markets
-    'momentum_breakout': 0.08,   # Range breakout + volume confirmation
-    'ema_trend': 0.08,           # EMA trend (merged ema_crossover + trend_rider)
-    'funding_contrarian': 0.07,  # Extreme funding rate contrarian
-    'rsi_divergence': 0.07,      # Price vs RSI divergence
-    'sniper_lite': 0.12,         # Relaxed Sniper (extreme move + volume)
-    'trend_rider_lite': 0.00,    # Merged into ema_trend
-    'ramf_lite': 0.07,           # Volatility regime (no dead zone)
-    'oi_delta': 0.08,            # Open Interest delta
-    'sentiment': 0.06,           # Sentiment composite (Fear & Greed + Twitter)
-    'squeeze_detector': 0.05,    # Squeeze detection
-    'order_imbalance': 0.05,     # Order book imbalance
-    'crowd_positioning': 0.07,   # Binance L/S ratio + Taker volume (contrarian)
-    'social_hype': 0.05,         # CoinGecko trending + global macro
-    'funding_divergence': 0.05,  # Cross-exchange funding HL vs Binance
+    'mean_reversion': 0.08,      # was 0.10 — Bollinger Bands + RSI in ranging markets
+    'momentum_breakout': 0.06,   # was 0.08 — Range breakout + volume confirmation
+    'ema_trend': 0.06,           # was 0.08 — EMA trend (merged ema_crossover + trend_rider)
+    'funding_contrarian': 0.06,  # was 0.07 — Extreme funding rate contrarian
+    'rsi_divergence': 0.06,      # was 0.07 — Price vs RSI divergence
+    'sniper_lite': 0.10,         # was 0.12 — Relaxed Sniper (extreme move + volume)
+    'trend_rider_lite': 0.00,    # still 0.00 — Merged into ema_trend
+    'ramf_lite': 0.05,           # was 0.07 — Volatility regime (no dead zone)
+    'oi_delta': 0.05,            # was 0.08 — Open Interest delta
+    'sentiment': 0.04,           # was 0.06 — Sentiment composite (Fear & Greed + Twitter)
+    'squeeze_detector': 0.04,    # was 0.05 — Squeeze detection
+    'order_imbalance': 0.04,     # was 0.05 — Order book imbalance
+    'crowd_positioning': 0.06,   # was 0.07 — Binance L/S ratio + Taker volume (contrarian)
+    'social_hype': 0.04,         # was 0.05 — CoinGecko trending + global macro
+    'funding_divergence': 0.04,  # was 0.05 — Cross-exchange funding HL vs Binance
+    # New modules (Phase 2)
+    'cvd': 0.07,                 # CVD - highest impact new signal
+    'vwap_deviation': 0.05,      # VWAP deviation bands
+    'market_memory': 0.04,       # Hurst exponent + ACF
+    'stablecoin_flow': 0.03,     # Macro liquidity proxy
+    'options_sentiment': 0.03,   # Deribit P/C + max pain (BTC/ETH only)
 }
 
 # Weight profiles by token behavior class
 ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
     'ranging': {  # BTC, ETH — often range-bound
-        'mean_reversion': 0.14, 'momentum_breakout': 0.05, 'ema_trend': 0.06,
-        'funding_contrarian': 0.08, 'rsi_divergence': 0.08, 'sniper_lite': 0.12,
-        'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
-        'oi_delta': 0.07, 'sentiment': 0.06, 'squeeze_detector': 0.05, 'order_imbalance': 0.05,
-        'crowd_positioning': 0.07, 'social_hype': 0.05, 'funding_divergence': 0.05,
+        'mean_reversion': 0.11, 'momentum_breakout': 0.04, 'ema_trend': 0.05,
+        'funding_contrarian': 0.06, 'rsi_divergence': 0.06, 'sniper_lite': 0.09,
+        'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
+        'oi_delta': 0.05, 'sentiment': 0.04, 'squeeze_detector': 0.04, 'order_imbalance': 0.04,
+        'crowd_positioning': 0.06, 'social_hype': 0.04, 'funding_divergence': 0.04,
+        # New modules (Phase 2)
+        'cvd': 0.07, 'vwap_deviation': 0.06, 'market_memory': 0.04, 'stablecoin_flow': 0.03, 'options_sentiment': 0.03,
     },
     'trending': {  # DOGE, kPEPE, SUI, TAO — strong momentum
-        'mean_reversion': 0.05, 'momentum_breakout': 0.12, 'ema_trend': 0.08,
-        'funding_contrarian': 0.06, 'rsi_divergence': 0.05, 'sniper_lite': 0.10,
-        'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
-        'oi_delta': 0.10, 'sentiment': 0.06, 'squeeze_detector': 0.06, 'order_imbalance': 0.06,
-        'crowd_positioning': 0.08, 'social_hype': 0.06, 'funding_divergence': 0.05,
+        'mean_reversion': 0.04, 'momentum_breakout': 0.09, 'ema_trend': 0.06,
+        'funding_contrarian': 0.05, 'rsi_divergence': 0.04, 'sniper_lite': 0.08,
+        'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
+        'oi_delta': 0.08, 'sentiment': 0.05, 'squeeze_detector': 0.05, 'order_imbalance': 0.05,
+        'crowd_positioning': 0.06, 'social_hype': 0.05, 'funding_divergence': 0.04,
+        # New modules (Phase 2)
+        'cvd': 0.09, 'vwap_deviation': 0.04, 'market_memory': 0.03, 'stablecoin_flow': 0.03, 'options_sentiment': 0.02,
     },
 }
 ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
@@ -528,4 +538,47 @@ REGIME_ADX_TRENDING = 30
 REGIME_ADX_RANGING = 20
 REGIME_VOL_HIGH = 1.2
 REGIME_VOL_LOW = 0.8
+
+# ============================================================================
+# PHASE 2-4: Enhanced Trading Improvements
+# ============================================================================
+
+# --- Trailing Stop Progressive (Phase 1) ---
+ADAPTIVE_HYBRID_TRAILING_LEVELS = [
+    {'activate_atr': 1.0, 'distance_atr': None, 'breakeven': True},   # Lock breakeven
+    {'activate_atr': 2.0, 'distance_atr': 1.5},                       # Wide trail
+    {'activate_atr': 3.5, 'distance_atr': 1.0},                       # Tight trail
+]
+
+# --- Scale-Out Partial Take Profit (Phase 3) ---
+ADAPTIVE_HYBRID_SCALE_OUT_LEVELS = [
+    {'tp_pct': 0.40, 'close_pct': 0.33},  # 40% of TP path -> close 33%
+    {'tp_pct': 0.70, 'close_pct': 0.50},  # 70% of TP path -> close 50% of remainder
+]
+
+# --- Volatility Targeting (Phase 3) ---
+ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT = 1.0  # Target 1% daily vol per position
+ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD = 10   # Min position size in USD
+
+# --- Monitoring Enhancement (Phase 1) ---
+ADAPTIVE_HYBRID_USE_REALTIME_PRICE = True  # Use ask_bid() instead of 15m candles for monitoring
+
+# --- Slippage Correction (Phase 1) ---
+# Updated to be more realistic + applied symmetrically (entry AND exit)
+PAPER_SLIPPAGE_V2 = {
+    'btc': 0.0003,    # 0.03% (was 0.1%)
+    'eth': 0.0005,    # 0.05% (was 0.1%)
+    'mid': 0.0012,    # 0.12% (was 0.2%)
+    'alt': 0.003,     # 0.30% (was 0.5%)
+}
+PAPER_TAKER_FEE_V2 = 0.00045  # HyperLiquid taker fee 0.045% (was 0.035%)
+
+# --- Adaptive Weights (Phase 3) ---
+ADAPTIVE_HYBRID_USE_BAYESIAN_WEIGHTS = True  # Enable Thompson Sampling weight adaptation
+ADAPTIVE_HYBRID_BAYESIAN_MIN_TRADES = 15     # Min trades before adaptive weights activate
+ADAPTIVE_HYBRID_BAYESIAN_DECAY = 0.95        # Decay factor for recency bias
+
+# --- Anomaly Filter (Phase 4) ---
+ADAPTIVE_HYBRID_USE_ANOMALY_FILTER = True    # Enable Isolation Forest anomaly detection
+ADAPTIVE_HYBRID_ANOMALY_SCORE_DIVISOR = 2    # Divide signal score by this if anomaly detected
 

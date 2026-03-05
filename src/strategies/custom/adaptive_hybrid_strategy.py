@@ -60,8 +60,20 @@ from src.strategies.modules.funding_divergence import score_funding_divergence
 # LLM-enhanced pipeline modules
 from src.strategies.modules.llm_confirmation import llm_confirm_trade
 from src.strategies.modules.llm_regime import classify_regime, adjust_weights_for_regime
-from src.strategies.modules.trade_learner import analyze_closed_trade, build_lessons_context
+from src.strategies.modules.trade_learner import analyze_closed_trade
 from src.strategies.modules.mtf_confluence import score_mtf_confluence
+
+# New scoring modules (Phase 2)
+from src.strategies.modules.cvd import score_cvd
+from src.strategies.modules.vwap_deviation import score_vwap_deviation
+from src.strategies.modules.market_memory import score_market_memory
+from src.strategies.modules.stablecoin_signal import score_stablecoin_flow
+from src.strategies.modules.options_sentiment import score_options_sentiment
+from src.strategies.modules.anomaly_filter import observe as anomaly_observe, is_anomalous
+
+# ML infrastructure (Phase 3)
+from src.strategies.modules.adaptive_weights import BayesianWeightOptimizer
+from src.strategies.modules.quantitative_feedback import QuantitativeFeedback
 
 # Import config with defaults
 try:
@@ -76,7 +88,6 @@ try:
         ADAPTIVE_HYBRID_LEVERAGE,
         ADAPTIVE_HYBRID_ATR_SL_MULT,
         ADAPTIVE_HYBRID_ATR_TP_MULT,
-        ADAPTIVE_HYBRID_SKIP_LLM,
         ADAPTIVE_HYBRID_WEIGHTS,
         ADAPTIVE_HYBRID_MAX_POSITION_PCT,
         ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES,
@@ -87,12 +98,8 @@ try:
         ADAPTIVE_HYBRID_RANGING_TOKENS,
         ADAPTIVE_HYBRID_TRENDING_TOKENS,
         SNIPER_ASSETS,
-        ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR,
-        ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR,
         ADAPTIVE_HYBRID_MAX_HOLD_HOURS,
         ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS,
-        PAPER_TAKER_FEE,
-        PAPER_SLIPPAGE,
         ADAPTIVE_HYBRID_LEVERAGE_PROFILES,
         RISK_MAX_DRAWDOWN_PCT,
         CASH_PERCENTAGE,
@@ -102,19 +109,30 @@ try:
         REGIME_ADX_RANGING,
         REGIME_VOL_HIGH,
         REGIME_VOL_LOW,
+        ADAPTIVE_HYBRID_TRAILING_LEVELS,
+        ADAPTIVE_HYBRID_SCALE_OUT_LEVELS,
+        ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT,
+        ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD,
+        ADAPTIVE_HYBRID_USE_REALTIME_PRICE,
+        PAPER_SLIPPAGE_V2,
+        PAPER_TAKER_FEE_V2,
+        ADAPTIVE_HYBRID_USE_BAYESIAN_WEIGHTS,
+        ADAPTIVE_HYBRID_BAYESIAN_MIN_TRADES,
+        ADAPTIVE_HYBRID_BAYESIAN_DECAY,
+        ADAPTIVE_HYBRID_USE_ANOMALY_FILTER,
+        ADAPTIVE_HYBRID_ANOMALY_SCORE_DIVISOR,
     )
 except ImportError:
     PAPER_TRADING = True
     PAPER_TRADING_BALANCE = 500
-    ADAPTIVE_HYBRID_BASE_THRESHOLD = 45
+    ADAPTIVE_HYBRID_BASE_THRESHOLD = 42
     ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4
-    ADAPTIVE_HYBRID_URGENCY_FLOOR = 50
+    ADAPTIVE_HYBRID_URGENCY_FLOOR = 35
     ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5
     ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30
     ADAPTIVE_HYBRID_LEVERAGE = 3
     ADAPTIVE_HYBRID_ATR_SL_MULT = 2.8
     ADAPTIVE_HYBRID_ATR_TP_MULT = 4.2
-    ADAPTIVE_HYBRID_SKIP_LLM = True
     ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25
     ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2
     ADAPTIVE_HYBRID_MIN_RR_RATIO = 1.5
@@ -126,43 +144,48 @@ except ImportError:
         'alt': {'sl_mult': 1.8, 'tp_mult': 2.7, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
     }
     ADAPTIVE_HYBRID_WEIGHTS = {
-        'mean_reversion': 0.10, 'momentum_breakout': 0.08,
-        'ema_trend': 0.08, 'funding_contrarian': 0.07,
-        'rsi_divergence': 0.07, 'sniper_lite': 0.12,
-        'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
-        'oi_delta': 0.08, 'sentiment': 0.06,
-        'squeeze_detector': 0.05, 'order_imbalance': 0.05,
-        'crowd_positioning': 0.07, 'social_hype': 0.05,
-        'funding_divergence': 0.05,
+        'mean_reversion': 0.08, 'momentum_breakout': 0.06,
+        'ema_trend': 0.06, 'funding_contrarian': 0.06,
+        'rsi_divergence': 0.06, 'sniper_lite': 0.10,
+        'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
+        'oi_delta': 0.05, 'sentiment': 0.04,
+        'squeeze_detector': 0.04, 'order_imbalance': 0.04,
+        'crowd_positioning': 0.06, 'social_hype': 0.04,
+        'funding_divergence': 0.04,
+        'cvd': 0.07, 'vwap_deviation': 0.05,
+        'market_memory': 0.04, 'stablecoin_flow': 0.03,
+        'options_sentiment': 0.03,
     }
     ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
         'ranging': {
-            'mean_reversion': 0.14, 'momentum_breakout': 0.05, 'ema_trend': 0.06,
-            'funding_contrarian': 0.08, 'rsi_divergence': 0.08, 'sniper_lite': 0.12,
-            'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
-            'oi_delta': 0.07, 'sentiment': 0.06, 'squeeze_detector': 0.05,
-            'order_imbalance': 0.05, 'crowd_positioning': 0.07,
-            'social_hype': 0.05, 'funding_divergence': 0.05,
+            'mean_reversion': 0.11, 'momentum_breakout': 0.04, 'ema_trend': 0.05,
+            'funding_contrarian': 0.06, 'rsi_divergence': 0.06, 'sniper_lite': 0.09,
+            'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
+            'oi_delta': 0.05, 'sentiment': 0.04, 'squeeze_detector': 0.04,
+            'order_imbalance': 0.04, 'crowd_positioning': 0.06,
+            'social_hype': 0.04, 'funding_divergence': 0.04,
+            'cvd': 0.07, 'vwap_deviation': 0.06,
+            'market_memory': 0.04, 'stablecoin_flow': 0.03,
+            'options_sentiment': 0.03,
         },
         'trending': {
-            'mean_reversion': 0.05, 'momentum_breakout': 0.12, 'ema_trend': 0.08,
-            'funding_contrarian': 0.06, 'rsi_divergence': 0.05, 'sniper_lite': 0.10,
-            'trend_rider_lite': 0.00, 'ramf_lite': 0.07,
-            'oi_delta': 0.10, 'sentiment': 0.06, 'squeeze_detector': 0.06,
-            'order_imbalance': 0.06, 'crowd_positioning': 0.08,
-            'social_hype': 0.06, 'funding_divergence': 0.05,
+            'mean_reversion': 0.04, 'momentum_breakout': 0.09, 'ema_trend': 0.06,
+            'funding_contrarian': 0.05, 'rsi_divergence': 0.04, 'sniper_lite': 0.08,
+            'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
+            'oi_delta': 0.08, 'sentiment': 0.05, 'squeeze_detector': 0.05,
+            'order_imbalance': 0.05, 'crowd_positioning': 0.06,
+            'social_hype': 0.05, 'funding_divergence': 0.04,
+            'cvd': 0.09, 'vwap_deviation': 0.04,
+            'market_memory': 0.03, 'stablecoin_flow': 0.03,
+            'options_sentiment': 0.02,
         },
     }
     ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
     ADAPTIVE_HYBRID_TRENDING_TOKENS = ['DOGE', 'kPEPE', 'SUI', 'TAO']
     SNIPER_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR',
                      'AAVE', 'ENA', 'LINK', 'DOGE', 'kPEPE', 'ADA']
-    ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR = 1.5
-    ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR = 2.0
     ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48
     ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 24
-    PAPER_TAKER_FEE = 0.00035
-    PAPER_SLIPPAGE = {'btc': 0.001, 'eth': 0.001, 'mid': 0.002, 'alt': 0.005}
     ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
     RISK_MAX_DRAWDOWN_PCT = 15
     CASH_PERCENTAGE = 20
@@ -172,6 +195,25 @@ except ImportError:
     REGIME_ADX_RANGING = 20
     REGIME_VOL_HIGH = 1.2
     REGIME_VOL_LOW = 0.8
+    ADAPTIVE_HYBRID_TRAILING_LEVELS = [
+        {'activate_atr': 1.0, 'distance_atr': None, 'breakeven': True},
+        {'activate_atr': 2.0, 'distance_atr': 1.5},
+        {'activate_atr': 3.5, 'distance_atr': 1.0},
+    ]
+    ADAPTIVE_HYBRID_SCALE_OUT_LEVELS = [
+        {'tp_pct': 0.40, 'close_pct': 0.33},
+        {'tp_pct': 0.70, 'close_pct': 0.50},
+    ]
+    ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT = 1.0
+    ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD = 10
+    ADAPTIVE_HYBRID_USE_REALTIME_PRICE = True
+    PAPER_SLIPPAGE_V2 = {'btc': 0.0003, 'eth': 0.0005, 'mid': 0.0012, 'alt': 0.003}
+    PAPER_TAKER_FEE_V2 = 0.00045
+    ADAPTIVE_HYBRID_USE_BAYESIAN_WEIGHTS = True
+    ADAPTIVE_HYBRID_BAYESIAN_MIN_TRADES = 15
+    ADAPTIVE_HYBRID_BAYESIAN_DECAY = 0.95
+    ADAPTIVE_HYBRID_USE_ANOMALY_FILTER = True
+    ADAPTIVE_HYBRID_ANOMALY_SCORE_DIVISOR = 2
 
 # LLM-enhanced pipeline config (separate try/except for graceful fallback)
 try:
@@ -245,6 +287,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Trade memory (persistent decision logging)
         self._trade_memory = TradeMemory.get_instance()
+
+        # ML adaptive components
+        self._weight_optimizer = BayesianWeightOptimizer(
+            module_names=list(ADAPTIVE_HYBRID_WEIGHTS.keys()),
+            decay=ADAPTIVE_HYBRID_BAYESIAN_DECAY,
+            min_trades=ADAPTIVE_HYBRID_BAYESIAN_MIN_TRADES,
+        )
+        self._feedback = QuantitativeFeedback(window_size=30)
 
         # Current regime (updated each signal generation cycle)
         self._current_regime = None
@@ -785,6 +835,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
             if regime_result.get('confidence', 0) >= 50:
                 selected = adjust_weights_for_regime(selected, regime_result['regime'])
 
+        # Bayesian weight adaptation (Phase 3)
+        if ADAPTIVE_HYBRID_USE_BAYESIAN_WEIGHTS:
+            selected = self._weight_optimizer.get_weights(selected)
+
         return selected
 
     def _aggregate_scores(self, module_results: dict, symbol: str = None, ind: dict = None) -> dict:
@@ -998,7 +1052,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         urgency = self._get_urgency_multiplier(symbol)
         effective = base * urgency
-        return max(effective, ADAPTIVE_HYBRID_URGENCY_FLOOR)
+        threshold = max(effective, ADAPTIVE_HYBRID_URGENCY_FLOOR)
+
+        # Adaptive threshold from quantitative feedback
+        if hasattr(self, '_feedback'):
+            threshold = self._feedback.suggest_threshold_adjustment(threshold)
+
+        return threshold
 
     def _get_atr_profile(self, symbol: str) -> tuple:
         """Get (sl_mult, tp_mult) for this token's class."""
@@ -1082,6 +1142,26 @@ class AdaptiveHybridStrategy(BaseStrategy):
             'funding_divergence': score_funding_divergence(symbol, ind),
         }
 
+        # Add new modules (Phase 2) - each wrapped for resilience
+        _neutral = {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Error'}
+        for _name, _fn, _args in [
+            ('cvd', score_cvd, (symbol, ind)),
+            ('vwap_deviation', score_vwap_deviation, (df, ind)),
+            ('market_memory', score_market_memory, (df, ind)),
+            ('stablecoin_flow', score_stablecoin_flow, (symbol, ind)),
+            ('options_sentiment', score_options_sentiment, (symbol, ind)),
+        ]:
+            try:
+                module_results[_name] = _fn(*_args)
+            except Exception as e:
+                module_results[_name] = {**_neutral, 'reason': f'{_name}: {e}'}
+
+        # Anomaly observation (feed data to Isolation Forest)
+        try:
+            anomaly_observe(ind)
+        except Exception:
+            pass
+
         # Aggregate scores (regime-adjusted weights applied inside _get_weights_for_symbol)
         aggregated = self._aggregate_scores(module_results, symbol=symbol, ind=ind)
 
@@ -1100,6 +1180,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     aggregated['mtf_confluence'] = mtf_result
             except Exception as e:
                 cprint(f"  [MTF] Error for {symbol}: {e}", "yellow")
+
+        # Anomaly filter (Phase 4)
+        if ADAPTIVE_HYBRID_USE_ANOMALY_FILTER:
+            is_anom, anom_score = is_anomalous(ind)
+            if is_anom:
+                original_score = aggregated['score']
+                aggregated['score'] = aggregated['score'] / ADAPTIVE_HYBRID_ANOMALY_SCORE_DIVISOR
+                cprint(f"  ⚠️ [{symbol}] ANOMALY detected (score={anom_score:.2f}), score {original_score:.1f} -> {aggregated['score']:.1f}", "red")
 
         # Get threshold
         threshold = self._get_effective_threshold(symbol)
@@ -1364,7 +1452,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 break
         leverage = ADAPTIVE_HYBRID_LEVERAGE_PROFILES.get(token_class, ADAPTIVE_HYBRID_LEVERAGE)
 
-        # Calculate SL/TP prices (pure math, no shared state)
+        # Apply entry slippage BEFORE SL/TP calculation so levels are relative to actual fill price
+        entry_slippage = PAPER_SLIPPAGE_V2.get(token_class, 0.001)
+        if direction == 'BUY':
+            price = price * (1 + entry_slippage)
+        else:
+            price = price * (1 - entry_slippage)
+
+        # Calculate SL/TP prices from slippage-adjusted entry price
         if direction == 'BUY':
             stop_loss_price = price * (1 - sl_pct / 100)
             take_profit_price = price * (1 + tp_pct / 100)
@@ -1394,6 +1489,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
             max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100)
             position_size = min(position_size, max_position_by_margin, max_position_by_pct)
 
+            # Volatility targeting: cap position so daily vol contribution stays under target
+            if atr > 0 and price > 0:
+                daily_vol_pct = atr / price  # ATR as % of price ≈ daily vol
+                vol_target_usd = self.paper_balance * (ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT / 100)
+                if daily_vol_pct > 0:
+                    vol_target_size = vol_target_usd / daily_vol_pct
+                    position_size = min(position_size, vol_target_size)
+
             # Apply recovery mode size reduction from risk agent
             if self._risk_agent:
                 recovery_factor = self._risk_agent.get_recovery_size_factor()
@@ -1401,12 +1504,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     position_size *= recovery_factor
                     cprint(f"[AdaptiveHybrid] Recovery mode: position size reduced by {(1-recovery_factor)*100:.0f}%", "yellow")
 
-            if position_size < 10:
-                cprint(f"[AdaptiveHybrid] Insufficient margin", "red")
+            if position_size < ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD:
+                cprint(f"[AdaptiveHybrid] Insufficient margin (${position_size:.0f} < ${ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD})", "red")
                 return None
 
-            # Deduct entry fee
-            entry_fee = position_size * PAPER_TAKER_FEE
+            # Use V2 fees (more realistic)
+            entry_fee = position_size * PAPER_TAKER_FEE_V2
 
             # Generate position ID (under lock to avoid counter race)
             self._position_counter += 1
@@ -1430,7 +1533,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 'confidence': round(float(signal.get('signal', 0)) * 100, 1),
                 'status': 'OPEN',
                 'score': metadata.get('score', 0),
-                'modules': str(metadata.get('module_scores', {})),
+                'modules': json.dumps(metadata.get('module_scores', {})),
+                'scale_out_level': 0,
+                'partial_pnl_realized': 0.0,
             }
 
             self.paper_positions[position_id] = trade
@@ -1482,10 +1587,18 @@ class AdaptiveHybridStrategy(BaseStrategy):
         with self._position_lock:
             symbols_to_check = set(pos['symbol'] for pos in self.paper_positions.values())
 
-        # Fetch candle data with high/low for intra-candle checks
+        # Fetch price data with high/low for intra-candle checks
         candle_data = {}  # {symbol: {'close': float, 'high': float, 'low': float}}
         for symbol in symbols_to_check:
             try:
+                if ADAPTIVE_HYBRID_USE_REALTIME_PRICE:
+                    from src.nice_funcs_hyperliquid import ask_bid
+                    ask, bid, _ = ask_bid(symbol)
+                    if ask and bid:
+                        mid = (ask + bid) / 2
+                        candle_data[symbol] = {'close': mid, 'high': ask, 'low': bid}
+                        continue
+                # Fallback to candles
                 df = self._fetch_candles(symbol, interval='15m', candles=5)
                 if df is not None and len(df) > 0:
                     last = df.iloc[-1]
@@ -1511,6 +1624,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 candle_low = cd['low']
                 direction = trade['direction']
                 entry_price = trade['entry_price']
+                token_class = 'mid'
+                for cls, profile in ADAPTIVE_HYBRID_ATR_PROFILES.items():
+                    if symbol in profile['tokens']:
+                        token_class = cls
+                        break
                 stop_loss = trade['stop_loss']
                 take_profit = trade['take_profit']
 
@@ -1533,11 +1651,47 @@ class AdaptiveHybridStrategy(BaseStrategy):
                         close_reason = 'TAKE_PROFIT'
                         close_price = take_profit
 
-                # Trailing stop management (only if not already closing)
+                # Scale-out partial take profit (Phase 3)
+                if close_reason is None and direction in ('BUY', 'SELL'):
+                    if direction == 'BUY':
+                        tp_dist = take_profit - entry_price
+                        current_progress = (candle_high - entry_price) / tp_dist if tp_dist > 0 else 0
+                    else:
+                        tp_dist = entry_price - take_profit
+                        current_progress = (entry_price - candle_low) / tp_dist if tp_dist > 0 else 0
+
+                    scale_out_level = trade.get('scale_out_level', 0)
+                    for i, level in enumerate(ADAPTIVE_HYBRID_SCALE_OUT_LEVELS):
+                        if i < scale_out_level:
+                            continue
+                        if current_progress >= level['tp_pct']:
+                            close_pct = level['close_pct']
+                            partial_size = trade['position_size'] * close_pct
+                            if partial_size >= 5:  # Min $5 partial close
+                                # Partial close: reduce position size
+                                trade['position_size'] -= partial_size
+                                trade['scale_out_level'] = i + 1
+                                # Calculate partial PnL
+                                if direction == 'BUY':
+                                    partial_price = entry_price + tp_dist * level['tp_pct']
+                                    partial_pnl = partial_size * ((partial_price - entry_price) / entry_price)
+                                else:
+                                    partial_price = entry_price - tp_dist * level['tp_pct']
+                                    partial_pnl = partial_size * ((entry_price - partial_price) / entry_price)
+                                partial_fee = partial_size * PAPER_TAKER_FEE_V2
+                                self.paper_balance += partial_pnl - partial_fee
+                                trade['partial_pnl_realized'] = trade.get('partial_pnl_realized', 0) + partial_pnl - partial_fee
+                                cprint(f"  [Scale-Out] {symbol} L{i+1}: closed {close_pct:.0%} (${partial_size:.0f}) at {level['tp_pct']:.0%} TP, PnL=${partial_pnl-partial_fee:.2f}", "green")
+                                # Persist scale-out state to CSV
+                                self._update_open_position_in_csv(position_id, trade)
+
+                # Progressive trailing stop (Phase 1)
                 if close_reason is None:
                     if position_id not in self.trailing_stops:
                         self.trailing_stops[position_id] = {
-                            'highest': entry_price, 'lowest': entry_price, 'trailing_active': False
+                            'highest': entry_price, 'lowest': entry_price,
+                            'trailing_active': False, 'breakeven_locked': False,
+                            'current_level': -1,
                         }
 
                     ts = self.trailing_stops[position_id]
@@ -1546,28 +1700,54 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
                     atr = trade.get('atr', 0)
                     if atr <= 0:
-                        atr = abs(entry_price * 0.015)  # fallback 1.5%
+                        atr = abs(entry_price * 0.015)
 
                     if direction == 'BUY':
                         profit_in_atr = (ts['highest'] - entry_price) / atr
-                        if profit_in_atr >= ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR:
-                            ts['trailing_active'] = True
-                        if ts['trailing_active']:
-                            trailing_sl = ts['highest'] - ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR * atr
-                            if trailing_sl > stop_loss:
-                                if candle_low <= trailing_sl:
-                                    close_reason = 'TRAILING_STOP'
-                                    close_price = trailing_sl
-                    elif direction == 'SELL':
+                    else:
                         profit_in_atr = (entry_price - ts['lowest']) / atr
-                        if profit_in_atr >= ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR:
-                            ts['trailing_active'] = True
-                        if ts['trailing_active']:
-                            trailing_sl = ts['lowest'] + ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR * atr
-                            if trailing_sl < stop_loss:
-                                if candle_high >= trailing_sl:
-                                    close_reason = 'TRAILING_STOP'
-                                    close_price = trailing_sl
+
+                    # Check each trailing level (highest first, never downgrade)
+                    best_trailing_sl = None
+                    for i, level in enumerate(reversed(ADAPTIVE_HYBRID_TRAILING_LEVELS)):
+                        level_idx = len(ADAPTIVE_HYBRID_TRAILING_LEVELS) - 1 - i
+                        # Ratchet: never downgrade to a lower level
+                        if level_idx < ts.get('current_level', -1):
+                            continue
+                        if profit_in_atr >= level['activate_atr']:
+                            if level.get('breakeven'):
+                                # Breakeven lock: SL at entry + estimated round-trip fees
+                                fee_offset = entry_price * 2 * (PAPER_TAKER_FEE_V2 + PAPER_SLIPPAGE_V2.get(token_class, 0.001))
+                                if direction == 'BUY':
+                                    be_sl = entry_price + fee_offset
+                                else:
+                                    be_sl = entry_price - fee_offset
+                                best_trailing_sl = be_sl
+                                ts['breakeven_locked'] = True
+                            else:
+                                dist = level['distance_atr']
+                                if direction == 'BUY':
+                                    best_trailing_sl = ts['highest'] - dist * atr
+                                else:
+                                    best_trailing_sl = ts['lowest'] + dist * atr
+                            ts['current_level'] = level_idx
+                            break
+
+                    if best_trailing_sl is not None:
+                        ts['trailing_active'] = True
+                        # Ratchet SL: never move SL in unfavorable direction
+                        if direction == 'BUY':
+                            best_trailing_sl = max(best_trailing_sl, ts.get('locked_sl', 0))
+                            ts['locked_sl'] = best_trailing_sl
+                            if best_trailing_sl > stop_loss and candle_low <= best_trailing_sl:
+                                close_reason = 'TRAILING_STOP'
+                                close_price = best_trailing_sl
+                        else:
+                            best_trailing_sl = min(best_trailing_sl, ts.get('locked_sl', float('inf')))
+                            ts['locked_sl'] = best_trailing_sl
+                            if best_trailing_sl < stop_loss and candle_high >= best_trailing_sl:
+                                close_reason = 'TRAILING_STOP'
+                                close_price = best_trailing_sl
 
                 # Time-based exit (only if not already closing)
                 if close_reason is None:
@@ -1629,8 +1809,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     token_class = cls
                     break
 
-            slippage = PAPER_SLIPPAGE.get(token_class, 0.002)
-            exit_fee = position_size * PAPER_TAKER_FEE
+            slippage = PAPER_SLIPPAGE_V2.get(token_class, 0.001)
+            exit_fee = position_size * PAPER_TAKER_FEE_V2
 
             # Apply slippage to close price (worse for trader)
             if direction == 'BUY':
@@ -1645,8 +1825,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
             pnl = position_size * price_change_pct
 
-            # Deduct fees from PnL
-            total_fees = entry_fee + exit_fee
+            # Deduct only exit fee (entry fee already deducted at open time)
+            total_fees = exit_fee
             pnl = pnl - total_fees
 
             trade['close_price'] = close_price
@@ -1655,9 +1835,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
             trade['exit_time'] = datetime.now().isoformat()
             trade['close_reason'] = reason
             trade['exit_fee'] = round(exit_fee, 4)
-            trade['total_fees'] = round(total_fees, 4)
+            trade['total_fees'] = round(entry_fee + exit_fee, 4)
             trade['slippage'] = slippage
             trade['pnl'] = round(pnl, 2)
+            trade['total_pnl'] = round(pnl + trade.get('partial_pnl_realized', 0), 2)
             trade['pnl_pct'] = round(price_change_pct * 100, 2)
             trade['status'] = 'CLOSED'
 
@@ -1714,6 +1895,25 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self._log_closed_trade(trade)
         self._update_position_status_in_csv(position_id, trade)
 
+        # Feed ML components
+        try:
+            module_scores = {}
+            modules_str = trade.get('modules', '{}')
+            if modules_str and modules_str != '{}':
+                module_scores = json.loads(modules_str) if isinstance(modules_str, str) else modules_str
+
+            trade_result = {
+                'pnl': pnl,
+                'module_scores': module_scores,
+                'market_regime': self._current_regime,
+                'symbol': symbol,
+                'direction': direction,
+            }
+            self._weight_optimizer.update(trade_result)
+            self._feedback.record_trade(trade_result)
+        except Exception as e:
+            cprint(f"  [ML] Warning: feedback error: {e}", "yellow")
+
         # Post-trade learning (LLM analyzes what happened)
         if ADAPTIVE_HYBRID_LLM_LEARNER:
             try:
@@ -1749,6 +1949,24 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 df.to_csv(paper_trades_file, index=False)
         except Exception as e:
             cprint(f"[AdaptiveHybrid] Warning: Could not update CSV: {e}", "yellow")
+
+    def _update_open_position_in_csv(self, position_id: str, trade: dict):
+        """Update an open position's mutable fields (position_size, scale_out_level) in paper_trades.csv."""
+        try:
+            paper_trades_file = os.path.join(self.data_dir, 'paper_trades.csv')
+            if not os.path.exists(paper_trades_file):
+                return
+            df = pd.read_csv(paper_trades_file)
+            if df.empty:
+                return
+            mask = (df['position_id'] == position_id) & (df['status'] == 'OPEN')
+            if mask.any():
+                df.loc[mask, 'position_size'] = trade.get('position_size', 0)
+                df.loc[mask, 'scale_out_level'] = trade.get('scale_out_level', 0)
+                df.loc[mask, 'partial_pnl_realized'] = trade.get('partial_pnl_realized', 0.0)
+                df.to_csv(paper_trades_file, index=False)
+        except Exception as e:
+            cprint(f"[AdaptiveHybrid] Warning: Could not update open position CSV: {e}", "yellow")
 
     def _log_closed_trade(self, trade: dict):
         """Log closed trade to separate CSV file."""
@@ -1916,6 +2134,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
                                 'sl_pct': float(row.get('sl_pct', 1.5)),
                                 'tp_pct': float(row.get('tp_pct', 2.5)),
                                 'confidence': float(row.get('confidence', 0)),
+                                'atr': float(row.get('atr', 0) or 0),
+                                'entry_fee': float(row.get('entry_fee', 0) or 0),
+                                'scale_out_level': int(float(row.get('scale_out_level', 0) or 0)),
+                                'partial_pnl_realized': float(row.get('partial_pnl_realized', 0) or 0),
                                 'status': 'OPEN',
                                 'entry_time': row.get('timestamp', datetime.now().isoformat()),
                             }
@@ -1932,13 +2154,26 @@ class AdaptiveHybridStrategy(BaseStrategy):
                         self._position_counter = max_counter
 
             realized_pnl = 0.0
+            closed_entry_fees = 0.0
+            closed_partial_pnl = 0.0
             if os.path.exists(closed_trades_file):
                 closed_df = pd.read_csv(closed_trades_file)
                 if not closed_df.empty and 'pnl' in closed_df.columns:
                     realized_pnl = closed_df['pnl'].sum()
+                    if 'entry_fee' in closed_df.columns:
+                        closed_entry_fees = closed_df['entry_fee'].fillna(0).sum()
+                    if 'partial_pnl_realized' in closed_df.columns:
+                        closed_partial_pnl = closed_df['partial_pnl_realized'].fillna(0).sum()
                     self.closed_positions = closed_df.to_dict('records')
 
-            self.paper_balance = PAPER_TRADING_BALANCE + realized_pnl
+            # Subtract entry fees of currently open positions (already deducted at open time)
+            open_entry_fees = sum(t.get('entry_fee', 0) for t in self.paper_positions.values())
+            # Add back partial PnL already credited to balance (not in realized_pnl from closed_trades.csv)
+            open_partial_pnl = sum(t.get('partial_pnl_realized', 0) for t in self.paper_positions.values())
+            # Balance = initial + closed PnL - ALL entry fees + ALL partial PnL from scale-outs
+            self.paper_balance = (PAPER_TRADING_BALANCE + realized_pnl
+                                  - closed_entry_fees - open_entry_fees
+                                  + closed_partial_pnl + open_partial_pnl)
 
         except Exception as e:
             cprint(f"[AdaptiveHybrid] Warning: Could not load state: {e}", "yellow")
