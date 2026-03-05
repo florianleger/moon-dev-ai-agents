@@ -2,6 +2,7 @@
 import requests
 import time
 from termcolor import cprint
+from src.utils.alerting import alert_service_down
 
 
 class DefiLlamaProvider:
@@ -38,6 +39,7 @@ class DefiLlamaProvider:
             return data
         except Exception as e:
             cprint(f"[DefiLlama] API error ({url}): {e}", "red")
+            alert_service_down("DefiLlama", e)
             return cached  # Return stale cache if available
 
     def _fetch_protocols(self):

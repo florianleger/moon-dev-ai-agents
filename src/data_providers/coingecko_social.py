@@ -9,6 +9,7 @@ import os
 import requests
 import time
 from termcolor import cprint
+from src.utils.alerting import alert_service_down
 
 
 class CoinGeckoSocialProvider:
@@ -64,6 +65,7 @@ class CoinGeckoSocialProvider:
             return data
         except Exception as e:
             cprint(f"[CoinGecko] API error ({cache_key}): {e}", "red")
+            alert_service_down("CoinGecko", e)
             return self._cache.get(cache_key)
 
     def get_trending_coins(self):

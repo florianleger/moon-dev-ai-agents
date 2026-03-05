@@ -12,6 +12,7 @@ import time
 import requests
 from typing import Dict, Optional
 from termcolor import cprint
+from src.utils.alerting import alert_service_down
 
 from .binance_futures import get_liquidation_stream, get_liquidation_ratio
 
@@ -75,6 +76,7 @@ class MarketDataProvider:
             except Exception as e:
                 if attempt == max_retries - 1:
                     cprint(f"[MarketData] API call failed after {max_retries} attempts: {e}", "red")
+                    alert_service_down("HyperLiquid", e)
                     return None
                 wait_time = 2 ** attempt
                 cprint(f"[MarketData] Retry {attempt + 1}/{max_retries} in {wait_time}s: {e}", "yellow")

@@ -2,6 +2,7 @@
 import requests
 import time
 from termcolor import cprint
+from src.utils.alerting import alert_service_down
 
 
 class FearGreedProvider:
@@ -67,6 +68,7 @@ class FearGreedProvider:
             return data
         except Exception as e:
             cprint(f"Fear & Greed API error: {e}", "red")
+            alert_service_down("Fear & Greed Index", e)
             return None
 
 

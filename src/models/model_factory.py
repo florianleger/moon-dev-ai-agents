@@ -10,6 +10,7 @@ from typing import Dict, Optional, Type
 from termcolor import cprint
 from dotenv import load_dotenv
 from pathlib import Path
+from src.utils.alerting import alert_service_down
 from .base_model import BaseModel
 from .claude_model import ClaudeModel
 from .groq_model import GroqModel
@@ -210,6 +211,7 @@ class ModelFactory:
             except Exception:
                 continue
         cprint("All LLM providers unavailable", "red")
+        alert_service_down("LLM (tous providers)", "Aucun provider LLM disponible dans la fallback chain")
         return None
 
 # Create a singleton instance

@@ -9,6 +9,7 @@ Both APIs are free, no keys required.
 import requests
 import time
 from termcolor import cprint
+from src.utils.alerting import alert_service_down
 
 
 class CrossExchangeFundingProvider:
@@ -63,6 +64,7 @@ class CrossExchangeFundingProvider:
                 return result
         except Exception as e:
             cprint(f"[CrossFunding] HL API error: {e}", "red")
+            alert_service_down("HyperLiquid", e)
 
         return self._hl_cache or {}
 
@@ -87,6 +89,7 @@ class CrossExchangeFundingProvider:
             return rate
         except Exception as e:
             cprint(f"[CrossFunding] Binance API error ({binance_sym}): {e}", "red")
+            alert_service_down("Binance Futures", e)
             return self._binance_cache.get(cache_key)
 
     def get_funding_comparison(self, symbol):

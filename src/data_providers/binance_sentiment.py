@@ -10,6 +10,7 @@ Endpoints:
 import requests
 import time
 from termcolor import cprint
+from src.utils.alerting import alert_service_down
 
 
 class BinanceSentimentProvider:
@@ -50,6 +51,7 @@ class BinanceSentimentProvider:
             return data
         except Exception as e:
             cprint(f"[BinanceSentiment] API error ({cache_key}): {e}", "red")
+            alert_service_down("Binance Sentiment", e)
             return self._cache.get(cache_key)  # stale cache
 
     def get_long_short_ratio(self, symbol, period='5m', limit=1):

@@ -26,6 +26,7 @@ class AlertManager:
         'cycle_summary': 900,
         'circuit_breaker': 3600,  # 1h cooldown (was 600s)
         'large_loss': 1800,       # 30min cooldown
+        'service_down': 1800,     # 30min cooldown per service
         'error': 300,
         'default': 60,
     }
@@ -342,6 +343,30 @@ class AlertManager:
         }
         self._send_discord_embed(embed)
 
+    def service_down(self, service_name: str, error_msg: str):
+        """Alert when a critical third-party service is unreachable.
+
+        Rate-limited per service (30min cooldown each).
+        """
+        if not self._enabled:
+            return
+        # Per-service rate limiting
+        key = f"service_down:{service_name}"
+        if self._is_rate_limited(key):
+            return
+
+        embed = {
+            "title": f"Service indisponible : {service_name}",
+            "description": (
+                f"```{str(error_msg)[:1500]}```\n"
+                "Le bot continue avec les donnees en cache si disponibles."
+            ),
+            "color": 0xF0B232,  # Orange/amber
+            "timestamp": datetime.utcnow().isoformat(),
+            "footer": {"text": "Moon Dev Bot | Infra"},
+        }
+        self._send_discord_embed(embed)
+
     # ------------------------------------------------------------------
     # Daily summary — rich embed
     # ------------------------------------------------------------------
@@ -519,3 +544,8 @@ def get_alert_manager():
     if _alert_manager is None:
         _alert_manager = AlertManager()
     return _alert_manager
+
+
+def alert_service_down(service_name: str, error):
+    """Convenience: fire a service-down Discord alert (rate-limited per service)."""
+    get_alert_manager().service_down(service_name, str(error))
