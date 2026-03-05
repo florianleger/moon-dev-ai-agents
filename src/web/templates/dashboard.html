@@ -42,15 +42,15 @@
             </div>
         </div>
 
-        <!-- Margin Used -->
+        <!-- Effective Leverage -->
         <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
             <div class="flex items-center justify-between">
                 <div>
-                    <p class="text-gray-400 text-sm">Margin Used</p>
+                    <p class="text-gray-400 text-sm">Leverage</p>
                     <p class="text-2xl font-bold"
-                       :class="usedMargin > balance * 0.8 ? 'text-red-400' : 'text-white'"
-                       x-text="'$' + usedMargin.toFixed(2)">$0.00</p>
-                    <p class="text-xs text-gray-500" x-text="openPositions + ' positions'"></p>
+                       :class="effectiveLeverage > 2 ? 'text-red-400' : effectiveLeverage > 1 ? 'text-yellow-400' : 'text-white'"
+                       x-text="effectiveLeverage.toFixed(1) + 'x'">0.0x</p>
+                    <p class="text-xs text-gray-500" x-text="openPositions + ' positions — $' + totalExposure.toFixed(0) + ' exposure'"></p>
                 </div>
                 <div class="text-3xl">&#128202;</div>
             </div>
@@ -232,6 +232,8 @@ function dashboardData() {
         totalPnl: 0.0,
         openPositions: 0,
         usedMargin: 0.0,
+        totalExposure: 0.0,
+        effectiveLeverage: 0.0,
         positions: [],
         signals: [],
         pnlChart: null,
@@ -262,6 +264,8 @@ function dashboardData() {
                 this.totalPnl = data.total_pnl || 0;
                 this.openPositions = data.open_positions || 0;
                 this.usedMargin = data.used_margin || 0;
+                this.totalExposure = data.total_exposure || 0;
+                this.effectiveLeverage = data.effective_leverage || 0;
                 this.running = data.running || false;
             } catch (e) {
                 console.error('Failed to fetch stats:', e);
@@ -430,6 +434,8 @@ function dashboardData() {
                     this.totalPnl = data.total_pnl || this.totalPnl;
                     this.openPositions = data.open_positions || this.openPositions;
                     this.usedMargin = data.used_margin || this.usedMargin;
+                    this.totalExposure = data.total_exposure || this.totalExposure;
+                    this.effectiveLeverage = data.effective_leverage || this.effectiveLeverage;
                     this.running = data.running || false;
                 });
 

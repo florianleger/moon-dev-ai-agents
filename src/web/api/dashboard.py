@@ -64,6 +64,8 @@ def _get_stats_from_csv() -> Dict:
         "realized_pnl": 0.0,
         "open_positions": 0,
         "used_margin": 0.0,
+        "total_exposure": 0.0,
+        "effective_leverage": 0.0,
         "available_margin": INITIAL_BALANCE,
     }
 
@@ -82,7 +84,10 @@ def _get_stats_from_csv() -> Dict:
         # Calculate unrealized PnL from open positions
         unrealized_pnl = 0.0
         if not open_positions.empty and 'position_size' in open_positions.columns:
-            # Margin = position_size / leverage
+            # Margin = position_size / leverage, Exposure = sum of notional
+            stats["total_exposure"] = round(
+                open_positions['position_size'].sum(), 2
+            )
             stats["used_margin"] = round(
                 (open_positions['position_size'] / leverage).sum(), 2
             )
@@ -146,6 +151,10 @@ def _get_stats_from_csv() -> Dict:
         # Balance (equity) = initial + realized + unrealized
         stats["balance"] = round(INITIAL_BALANCE + realized_pnl + unrealized_pnl, 2)
         stats["available_margin"] = round(max(0, stats["balance"] - stats["used_margin"]), 2)
+
+        # Effective leverage = total notional exposure / equity
+        if stats["balance"] > 0:
+            stats["effective_leverage"] = round(stats["total_exposure"] / stats["balance"], 1)
 
     except Exception as e:
         print(f"[Dashboard API] Error reading CSV: {e}")
