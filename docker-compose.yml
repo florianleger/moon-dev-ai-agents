@@ -28,6 +28,7 @@ services:
     # Note: Mount specific subdirectories to preserve Python source files
     volumes:
       - trading-data:/app/src/data/ramf
+      - adaptive-hybrid-data:/app/src/data/adaptive_hybrid
       - execution-results:/app/src/data/execution_results
       - web-state:/app/data
       - ./logs:/app/logs
@@ -59,6 +60,8 @@ services:
 
 volumes:
   trading-data:
+    driver: local
+  adaptive-hybrid-data:
     driver: local
   execution-results:
     driver: local

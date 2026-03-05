@@ -817,12 +817,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         raw_score = active_weighted_sum / active_weight_total
 
-        # Coverage penalty: penalize signals with few convergent modules
-        # Uses convergence_ratio^0.5 so partial convergence is meaningfully penalized
-        data_available_count = sum(1 for n, r in module_results.items() if r.get('score', 0) > 0)
+        # Coverage penalty: penalize signals with low directional agreement
+        # Only count directional modules (BUY/SELL), not NEUTRAL/failed ones
+        directional_count = len(long_modules) + len(short_modules)
         n_active = len(winning_modules)
-        convergence_ratio = n_active / max(data_available_count, 1)
-        coverage_penalty = convergence_ratio ** 0.5
+        convergence_ratio = n_active / max(directional_count, 1)
+        coverage_penalty = convergence_ratio ** 0.3  # Softer exponent (was 0.5)
         final_score = raw_score * coverage_penalty
 
         # BTC macro filter: penalize signals against BTC trend, proportional to correlation
@@ -968,10 +968,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
         """Get current threshold adjusted by urgency and global regime."""
         base = ADAPTIVE_HYBRID_BASE_THRESHOLD
 
-        # Raise threshold in ranging_calm regime (reduce activity)
+        # Slightly raise threshold in ranging_calm regime (reduce activity)
         global_regime = self._detect_global_regime()
         if global_regime == 'ranging_calm':
-            base *= 1.10  # +10% threshold in calm ranging markets
+            base *= 1.05  # +5% threshold in calm ranging markets (was +10%)
 
         urgency = self._get_urgency_multiplier(symbol)
         effective = base * urgency
@@ -1084,12 +1084,18 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Log analysis
         fired_modules = {n: r for n, r in module_results.items() if r['score'] > 0 and r['direction'] != 'NEUTRAL'}
+        silent_modules = {n: r for n, r in module_results.items() if r['score'] == 0}
         cprint(f"  [{symbol}] Score: {aggregated['score']:.1f}/{threshold:.0f} | "
                f"Modules: {len(fired_modules)}/{len(module_results)} | Direction: {aggregated['direction']} | "
                f"Urgency: {urgency:.0%}", "white")
 
         for name, result in fired_modules.items():
             cprint(f"    {name}: {result['direction']} {result['score']} - {result['reason']}", "white")
+
+        # Warn about silent/failed modules for diagnostics
+        if len(silent_modules) > len(module_results) // 2:
+            silent_names = ', '.join(silent_modules.keys())
+            cprint(f"  ⚠️ [{symbol}] {len(silent_modules)}/{len(module_results)} modules returned score=0: {silent_names}", "yellow")
 
         # Decision
         if aggregated['direction'] != 'NEUTRAL' and aggregated['score'] >= threshold:

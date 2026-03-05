@@ -20,25 +20,16 @@ async def get_status(username: str = Depends(verify_credentials)) -> Dict:
     # Try to get more details from strategy instance
     details = {
         "running": running,
-        "strategy": "RAMF",
+        "strategy": "ADAPTIVE_HYBRID",
         "mode": "paper",
     }
 
     try:
-        from src.config import PAPER_TRADING, RAMF_ASSETS
-        from src.strategies.custom.ramf_strategy import RAMFStrategy
+        from src.config import PAPER_TRADING, ACTIVE_STRATEGY, SNIPER_ASSETS
 
         details["mode"] = "paper" if PAPER_TRADING else "live"
-        details["assets"] = RAMF_ASSETS
-
-        strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
-        if strategy:
-            paper_status = strategy.get_paper_status()
-            details.update({
-                "open_positions": paper_status.get("open_positions", 0),
-                "trades_today": paper_status.get("trades_today", 0),
-                "daily_pnl": paper_status.get("daily_pnl", 0),
-            })
+        details["strategy"] = ACTIVE_STRATEGY.upper()
+        details["assets"] = SNIPER_ASSETS
     except Exception:
         pass
 
@@ -81,19 +72,8 @@ async def get_signals(
     """Get recent signals."""
     signals = get_signals_history(limit=limit)
 
-    # Try to get latest from strategy
-    try:
-        from src.strategies.custom.ramf_strategy import RAMFStrategy
-
-        strategy = RAMFStrategy._instance if hasattr(RAMFStrategy, '_instance') else None
-        if strategy and hasattr(strategy, 'signals_history'):
-            # Merge with stored signals
-            live_signals = list(strategy.signals_history)[:limit]
-            # Combine, preferring live signals
-            all_signals = live_signals + [s for s in signals if s not in live_signals]
-            signals = all_signals[:limit]
-    except Exception:
-        pass
+    # Signals are stored in web_state.json by strategy_agent - no need for
+    # strategy instance fallback (was referencing obsolete RAMFStrategy)
 
     return {
         "count": len(signals),
