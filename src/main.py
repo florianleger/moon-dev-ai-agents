@@ -199,12 +199,6 @@ def run_agents():
                         # Check risk agent before opening new positions
                         if risk_agent and not risk_agent.is_trading_allowed():
                             cprint(f"\n⛔ Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
-                            if alert_manager:
-                                alert_manager.alert(
-                                    "Circuit Breaker Active",
-                                    f"Trading blocked: {risk_agent.pause_reason}",
-                                    level='critical'
-                                )
                         else:
                             active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
                             tokens_to_analyze = [t for t in active_tokens if t not in EXCLUDED_TOKENS]
@@ -240,12 +234,6 @@ def run_agents():
                             for token in tokens_to_analyze:
                                 if risk_agent and not risk_agent.is_trading_allowed():
                                     cprint(f"\n⛔ Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
-                                    if alert_manager:
-                                        alert_manager.alert(
-                                            "Trading Paused",
-                                            f"Risk Agent paused trading: {risk_agent.pause_reason}",
-                                            level='warning'
-                                        )
                                     break
                                 analyze_token(token)
 
