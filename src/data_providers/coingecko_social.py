@@ -16,7 +16,7 @@ class CoinGeckoSocialProvider:
     _instance = None
     _cache = {}
     _cache_time = {}
-    _cache_ttl = 300  # 5 min cache (free tier: 30 calls/min, 10K/month)
+    _cache_ttl = 900  # 15 min cache (free tier: 10K calls/month, ~3 calls/cycle = ~2,880/month)
 
     BASE_URL = "https://api.coingecko.com/api/v3"
 
