@@ -50,6 +50,7 @@ src/data/
 # But include essential code files from data directory
 !src/data/__init__.py
 !src/data/ohlcv_collector.py
+!src/data/trade_memory.py
 browser_data/
 temp_data/
 trading_history/
