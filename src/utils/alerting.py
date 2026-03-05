@@ -1,5 +1,12 @@
-"""Alert system for trading events — beautiful Discord embeds with anti-spam."""
+"""Alert system for trading events — beautiful Discord embeds with anti-spam.
+
+Only 3 types of notifications:
+1. Trade closed — performance du trade (seule alerte individuelle)
+2. Alerte critique — circuit breaker, grosse perte
+3. Rapport journalier — resume de la veille (envoye par le scheduler dans main.py)
+"""
 import os
+import random
 import requests
 import time as _time
 from datetime import datetime
@@ -13,14 +20,18 @@ class AlertManager:
 
     # Minimum seconds between alerts of the same type
     COOLDOWNS = {
-        'trade_opened': 30,       # Max 1 trade alert per 30s
+        'trade_opened': 30,       # Kept but no longer called from strategy
         'trade_closed': 30,
-        'signal': 300,            # Max 1 signal alert per 5min
-        'cycle_summary': 900,     # Max 1 cycle summary per 15min
-        'circuit_breaker': 600,   # Max 1 circuit breaker per 10min
-        'error': 300,             # Max 1 error per 5min
+        'signal': 300,
+        'cycle_summary': 900,
+        'circuit_breaker': 3600,  # 1h cooldown (was 600s)
+        'large_loss': 1800,       # 30min cooldown
+        'error': 300,
         'default': 60,
     }
+
+    # Seuil de grosse perte (% de la balance)
+    LARGE_LOSS_THRESHOLD_PCT = float(os.getenv('LARGE_LOSS_THRESHOLD_PCT', '3.0'))
 
     def __init__(self):
         self.discord_webhook = os.getenv('DISCORD_WEBHOOK_URL')
@@ -58,71 +69,12 @@ class AlertManager:
     # ------------------------------------------------------------------
 
     def trade_opened(self, trade: dict, metadata: dict = None):
-        """Beautiful Discord embed when a trade is opened."""
-        if not self._enabled or self._is_rate_limited('trade_opened'):
-            return
-
-        metadata = metadata or {}
-        symbol = trade.get('symbol', '?')
-        direction = trade.get('direction', '?')
-        price = trade.get('entry_price', 0)
-        size = trade.get('position_size', 0)
-        leverage = trade.get('leverage', 1)
-        sl = trade.get('stop_loss', 0)
-        tp = trade.get('take_profit', 0)
-        score = metadata.get('score', 0)
-        modules = metadata.get('active_modules', 0)
-        total = metadata.get('total_fired', 0)
-
-        is_long = direction == 'BUY'
-        arrow = "LONG" if is_long else "SHORT"
-        color = 0x00D166 if is_long else 0xED4245  # Green / Red
-
-        # Calculate R:R ratio
-        if price > 0 and sl > 0 and tp > 0:
-            risk = abs(price - sl)
-            reward = abs(tp - price)
-            rr = reward / risk if risk > 0 else 0
-        else:
-            rr = 0
-
-        # Fun commentary based on score
-        if score >= 70:
-            vibe = "Signal en beton arme"
-        elif score >= 55:
-            vibe = "Bonne convergence des modules"
-        elif score >= 42:
-            vibe = "Signal correct, on tente le coup"
-        else:
-            vibe = "On y va doucement"
-
-        embed = {
-            "title": f"{'LONG' if is_long else 'SHORT'} {symbol}",
-            "description": f"**{vibe}** — {modules}/{total} modules d'accord",
-            "color": color,
-            "fields": [
-                {"name": "Prix d'entree", "value": f"`${price:,.2f}`", "inline": True},
-                {"name": "Taille", "value": f"`${size:,.2f}` ({leverage}x)", "inline": True},
-                {"name": "Score", "value": f"`{score:.1f}/100`", "inline": True},
-                {"name": "Stop Loss", "value": f"`${sl:,.2f}`", "inline": True},
-                {"name": "Take Profit", "value": f"`${tp:,.2f}`", "inline": True},
-                {"name": "R:R", "value": f"`1:{rr:.1f}`", "inline": True},
-            ],
-            "timestamp": datetime.utcnow().isoformat(),
-            "footer": {"text": "Moon Dev Bot | Paper Trading"},
-        }
-
-        # Top module scores as a compact string
-        module_scores = metadata.get('module_scores', {})
-        if module_scores:
-            top_modules = sorted(module_scores.items(), key=lambda x: x[1], reverse=True)[:5]
-            mod_str = ' | '.join(f"{n}: {s}" for n, s in top_modules)
-            embed["fields"].append({"name": "Top modules", "value": f"```{mod_str}```", "inline": False})
-
-        self._send_discord_embed(embed)
+        """Discord embed when a trade is opened. DORMANT — kept for potential future use."""
+        # No longer called from the strategy. Kept as a no-op.
+        pass
 
     def trade_closed(self, trade: dict):
-        """Beautiful Discord embed when a trade is closed."""
+        """Beautiful Discord embed when a trade is closed — the main alert."""
         if not self._enabled or self._is_rate_limited('trade_closed'):
             return
 
@@ -134,6 +86,7 @@ class AlertManager:
         pnl_pct = trade.get('pnl_pct', 0)
         reason = trade.get('close_reason', '?')
         balance = trade.get('balance_after', 0)
+        score = trade.get('score', 0)
         hold_time = ''
 
         # Calculate hold duration
@@ -155,43 +108,110 @@ class AlertManager:
                 pass
 
         is_win = pnl > 0
+        is_flat = abs(pnl_pct) < 0.1
         is_long = direction == 'BUY'
 
-        # Fun commentary
-        if pnl_pct >= 3:
-            vibe = "Joli coup, on prend les gains !"
-        elif pnl_pct >= 1:
-            vibe = "Petit profit, c'est toujours ca de pris"
-        elif pnl_pct >= 0:
-            vibe = "Quasi flat, on s'en sort bien"
-        elif pnl_pct >= -1:
-            vibe = "Petite perte maitrisee, le risk management fait son job"
-        elif pnl_pct >= -3:
-            vibe = "Ca pique un peu, mais rien de grave"
+        # Realized R:R
+        sl = trade.get('stop_loss', 0)
+        if entry > 0 and sl > 0:
+            planned_risk = abs(entry - sl)
+            if planned_risk > 0:
+                realized_rr = abs(exit_price - entry) / planned_risk
+                if not is_win:
+                    realized_rr = -realized_rr
+            else:
+                realized_rr = 0
         else:
-            vibe = "Aie, grosse perte. On analyse et on rebondit"
+            realized_rr = 0
 
-        # Color: green for win, red for loss
-        color = 0x00D166 if is_win else 0xED4245
+        # Emoji contextuel
+        if is_flat:
+            emoji = random.choice(["", "", ""])
+        elif pnl_pct >= 5:
+            emoji = random.choice(["", "", ""])
+        elif pnl_pct >= 2:
+            emoji = random.choice(["", "", ""])
+        elif pnl_pct > 0:
+            emoji = random.choice(["", "", ""])
+        elif pnl_pct >= -2:
+            emoji = random.choice(["", "", ""])
+        else:
+            emoji = random.choice(["", "", ""])
+
+        # Fun commentary — plus de variete
+        win_comments = [
+            "Joli coup, on prend les gains !",
+            "Le plan a fonctionne, beau trade",
+            "Les modules avaient raison",
+            "Cash is king, on encaisse",
+            "Propre et net, on continue",
+        ]
+        small_win_comments = [
+            "Petit profit, c'est toujours ca de pris",
+            "Un vert de plus, ca s'accumule",
+            "Pas spectaculaire mais positif",
+        ]
+        flat_comments = [
+            "Quasi flat, on s'en sort bien",
+            "Ni gain ni perte, le marche hesite",
+            "Break-even, on passe au suivant",
+        ]
+        small_loss_comments = [
+            "Petite perte maitrisee, le RM fait son job",
+            "SL respecte, c'est la discipline qui paie",
+            "Perte controlee, on reste serein",
+        ]
+        big_loss_comments = [
+            "Ca pique, mais on analyse et on rebondit",
+            "Mauvais timing, ca arrive. On apprend",
+            "Le marche a decide autrement, next trade",
+        ]
+
+        if is_flat:
+            vibe = random.choice(flat_comments)
+        elif pnl_pct >= 2:
+            vibe = random.choice(win_comments)
+        elif pnl_pct > 0:
+            vibe = random.choice(small_win_comments)
+        elif pnl_pct >= -2:
+            vibe = random.choice(small_loss_comments)
+        else:
+            vibe = random.choice(big_loss_comments)
+
+        # Color: green for win, red for loss, grey for flat
+        if is_flat:
+            color = 0x99AAB5
+        elif is_win:
+            color = 0x00D166
+        else:
+            color = 0xED4245
 
         # Reason in French
         reason_fr = {
-            'stop_loss': 'Stop Loss touche',
-            'take_profit': 'Take Profit atteint !',
-            'trailing_stop': 'Trailing Stop active',
-            'time_exit': 'Duree max atteinte',
-            'partial_tp': 'Take Profit partiel',
-            'manual': 'Fermeture manuelle',
+            'stop_loss': 'Stop Loss',
+            'STOP_LOSS': 'Stop Loss',
+            'take_profit': 'Take Profit',
+            'TAKE_PROFIT': 'Take Profit',
+            'trailing_stop': 'Trailing Stop',
+            'TRAILING_STOP': 'Trailing Stop',
+            'time_exit': 'Duree max',
+            'TIME_EXIT_24H': 'Duree max (24h)',
+            'partial_tp': 'TP partiel',
+            'manual': 'Manuel',
+            'MANUAL': 'Manuel',
         }.get(reason, reason)
 
+        title = f"{emoji} {'LONG' if is_long else 'SHORT'} {symbol} — {reason_fr}"
+
         embed = {
-            "title": f"{'LONG' if is_long else 'SHORT'} {symbol} ferme — {reason_fr}",
+            "title": title,
             "description": f"**{vibe}**",
             "color": color,
             "fields": [
                 {"name": "PnL", "value": f"```{'+ ' if is_win else ''}{pnl:+.2f}$ ({pnl_pct:+.2f}%)```", "inline": False},
                 {"name": "Entree", "value": f"`${entry:,.2f}`", "inline": True},
                 {"name": "Sortie", "value": f"`${exit_price:,.2f}`", "inline": True},
+                {"name": "R:R realise", "value": f"`{realized_rr:+.1f}R`", "inline": True},
                 {"name": "Duree", "value": f"`{hold_time}`" if hold_time else "`?`", "inline": True},
                 {"name": "Balance", "value": f"`${balance:,.2f}`", "inline": True},
             ],
@@ -199,7 +219,32 @@ class AlertManager:
             "footer": {"text": "Moon Dev Bot | Paper Trading"},
         }
 
+        # Score d'entree + top modules
+        if score:
+            embed["fields"].append({"name": "Score entree", "value": f"`{score:.1f}/100`", "inline": True})
+
+        modules_str = trade.get('modules', '')
+        if modules_str and modules_str != '{}':
+            try:
+                if isinstance(modules_str, str):
+                    # Parse the stringified dict
+                    module_scores = eval(modules_str) if modules_str.startswith('{') else {}
+                else:
+                    module_scores = modules_str
+                if module_scores:
+                    top_3 = sorted(module_scores.items(), key=lambda x: abs(x[1]), reverse=True)[:3]
+                    mod_display = ' | '.join(f"{n}: {s:+.0f}" for n, s in top_3)
+                    embed["fields"].append({"name": "Top modules", "value": f"`{mod_display}`", "inline": False})
+            except Exception:
+                pass
+
         self._send_discord_embed(embed)
+
+        # Auto-detect large loss and fire critical alert
+        if balance > 0 and pnl < 0:
+            loss_pct_of_balance = abs(pnl) / balance * 100
+            if loss_pct_of_balance >= self.LARGE_LOSS_THRESHOLD_PCT:
+                self.large_loss(symbol, pnl, pnl_pct)
 
     def signal_detected(self, symbol: str, direction: str, score: float, threshold: float,
                         modules_fired: int, total_modules: int, module_details: dict = None):
@@ -209,7 +254,7 @@ class AlertManager:
 
         is_long = direction == 'BUY'
         passed = score >= threshold
-        color = 0x5865F2 if passed else 0x99AAB5  # Blurple if passed, grey if not
+        color = 0x5865F2 if passed else 0x99AAB5
 
         status = "Signal valide !" if passed else "Signal trop faible"
 
@@ -255,11 +300,14 @@ class AlertManager:
         self._send_discord_embed(embed)
 
     # ------------------------------------------------------------------
-    # Legacy methods (kept for backward compatibility)
+    # Critical alerts
     # ------------------------------------------------------------------
 
     def circuit_breaker_triggered(self, breaker_name, details):
-        """Alert when a circuit breaker triggers."""
+        """Alert when a circuit breaker triggers. 1h cooldown."""
+        if not self._enabled or self._is_rate_limited('circuit_breaker'):
+            return
+
         embed = {
             "title": f"CIRCUIT BREAKER : {breaker_name}",
             "description": f"**Trading en pause.** {details}\n\nLe bot se protege automatiquement. Il reprendra quand les conditions seront meilleures.",
@@ -270,13 +318,16 @@ class AlertManager:
         self._send_discord_embed(embed)
 
     def large_loss(self, symbol, pnl, pct):
-        """Alert on significant loss."""
+        """Alert on significant loss (> LARGE_LOSS_THRESHOLD_PCT of balance)."""
+        if not self._enabled or self._is_rate_limited('large_loss'):
+            return
+
         embed = {
             "title": f"Grosse perte sur {symbol}",
             "description": f"PnL: `{pnl:+.2f}$` (`{pct:+.1f}%`)\n\nPas de panique, ca fait partie du jeu. Le risk management limite les degats.",
             "color": 0xED4245,
             "timestamp": datetime.utcnow().isoformat(),
-            "footer": {"text": "Moon Dev Bot"},
+            "footer": {"text": "Moon Dev Bot | Alerte critique"},
         }
         self._send_discord_embed(embed)
 
@@ -291,29 +342,120 @@ class AlertManager:
         }
         self._send_discord_embed(embed)
 
-    def daily_summary(self, total_pnl, trades_count, win_rate):
-        """Send daily performance summary."""
-        if total_pnl > 0:
-            vibe = "Bonne journee pour le bot !"
-        elif total_pnl == 0:
-            vibe = "Journee calme, pas de mouvement"
-        else:
-            vibe = "Journee rouge, mais demain est un autre jour"
+    # ------------------------------------------------------------------
+    # Daily summary — rich embed
+    # ------------------------------------------------------------------
 
-        color = 0x00D166 if total_pnl >= 0 else 0xED4245
+    def daily_summary(self, stats: dict):
+        """Send daily performance summary with rich embed.
+
+        Accepts a dict with keys:
+            date, total_pnl, trades_count, wins, losses, win_rate,
+            best_trade (dict: symbol, pnl), worst_trade (dict: symbol, pnl),
+            balance, open_positions, total_pnl_alltime, streak,
+            alpha_btc
+        """
+        if not self._enabled:
+            return
+
+        total_pnl = stats.get('total_pnl', 0)
+        trades_count = stats.get('trades_count', 0)
+        win_rate = stats.get('win_rate', 0)
+        balance = stats.get('balance', 0)
+        open_positions = stats.get('open_positions', 0)
+        best = stats.get('best_trade', {})
+        worst = stats.get('worst_trade', {})
+        streak = stats.get('streak', 0)
+        alpha_btc = stats.get('alpha_btc', None)
+        total_pnl_alltime = stats.get('total_pnl_alltime', None)
+        report_date = stats.get('date', 'Hier')
+
+        # Fun commentary
+        good_vibes = [
+            "Belle journee, le bot performe !",
+            "Les algos sont en forme aujourd'hui",
+            "Journee verte, on continue comme ca",
+            "Le plan fonctionne, on encaisse",
+        ]
+        flat_vibes = [
+            "Journee calme, pas de mouvement",
+            "Le marche hesite, patience...",
+            "Rien de special, on reste en veille",
+        ]
+        bad_vibes = [
+            "Journee rouge, demain est un autre jour",
+            "Ca pique mais le RM fait son job",
+            "Pas notre jour, on analyse et on ajuste",
+        ]
+        no_trade_vibes = [
+            "Aucun trade hier, le bot etait en veille",
+            "Zero signal, marche trop calme",
+            "Pas de trade = pas de perte, c'est deja ca",
+        ]
+
+        if trades_count == 0:
+            vibe = random.choice(no_trade_vibes)
+            color = 0x99AAB5  # Grey
+            emoji = ""
+        elif total_pnl > 0:
+            vibe = random.choice(good_vibes)
+            color = 0x00D166  # Green
+            emoji = "" if total_pnl > 50 else ""
+        elif abs(total_pnl) < 1:
+            vibe = random.choice(flat_vibes)
+            color = 0xFEE75C  # Yellow
+            emoji = ""
+        else:
+            vibe = random.choice(bad_vibes)
+            color = 0xED4245  # Red
+            emoji = ""
+
+        title = f"{emoji} Rapport du {report_date} — {vibe}"
+
+        fields = []
+
+        # PnL section
+        if trades_count > 0:
+            pnl_bar = _pnl_bar(total_pnl)
+            fields.append({"name": "PnL du jour", "value": f"```{total_pnl:+.2f}$\n{pnl_bar}```", "inline": False})
+
+        # Stats
+        if trades_count > 0:
+            fields.append({"name": "Trades", "value": f"`{trades_count}`", "inline": True})
+            fields.append({"name": "Win Rate", "value": f"`{win_rate:.0f}%`", "inline": True})
+            if streak:
+                streak_str = f"{streak}W" if streak > 0 else f"{abs(streak)}L"
+                fields.append({"name": "Streak", "value": f"`{streak_str}`", "inline": True})
+
+        # Best / Worst trade
+        if best:
+            fields.append({"name": "Meilleur trade", "value": f"`{best.get('symbol', '?')}` `{best.get('pnl', 0):+.2f}$`", "inline": True})
+        if worst:
+            fields.append({"name": "Pire trade", "value": f"`{worst.get('symbol', '?')}` `{worst.get('pnl', 0):+.2f}$`", "inline": True})
+
+        # Balance & positions
+        if balance:
+            fields.append({"name": "Balance", "value": f"`${balance:,.2f}`", "inline": True})
+        if open_positions is not None:
+            fields.append({"name": "Positions ouvertes", "value": f"`{open_positions}`", "inline": True})
+
+        # Alpha vs BTC
+        if alpha_btc is not None:
+            alpha_emoji = "" if alpha_btc > 0 else ""
+            fields.append({"name": f"{alpha_emoji} Alpha vs BTC", "value": f"`{alpha_btc:+.2f}%`", "inline": True})
+
+        # All-time PnL
+        if total_pnl_alltime is not None:
+            fields.append({"name": "PnL total (all-time)", "value": f"`{total_pnl_alltime:+.2f}$`", "inline": True})
 
         embed = {
-            "title": f"Resume du jour — {vibe}",
-            "description": "",
+            "title": title,
             "color": color,
-            "fields": [
-                {"name": "PnL", "value": f"`{total_pnl:+.2f}$`", "inline": True},
-                {"name": "Trades", "value": f"`{trades_count}`", "inline": True},
-                {"name": "Win Rate", "value": f"`{win_rate:.0f}%`", "inline": True},
-            ],
+            "fields": fields,
             "timestamp": datetime.utcnow().isoformat(),
-            "footer": {"text": "Moon Dev Bot | Daily Report"},
+            "footer": {"text": f"Moon Dev Bot | Daily Report | {report_date}"},
         }
+
         self._send_discord_embed(embed)
 
     # ------------------------------------------------------------------
@@ -353,6 +495,19 @@ class AlertManager:
             requests.post(url, json={"chat_id": self.telegram_chat_id, "text": text, "parse_mode": "Markdown"}, timeout=5)
         except Exception:
             pass
+
+
+def _pnl_bar(pnl, max_width=20):
+    """Visual PnL bar for the daily summary."""
+    if pnl == 0:
+        return "|" + " " * max_width + "|"
+    # Scale: each block = $5
+    blocks = min(int(abs(pnl) / 5) + 1, max_width)
+    if pnl > 0:
+        return " " * max_width + "|" + "=" * blocks + " +"
+    else:
+        pad = max_width - blocks
+        return " " * pad + "- " + "=" * blocks + "|"
 
 
 _alert_manager = None

@@ -84,6 +84,26 @@ def position_monitor_loop(strategy, interval=30):
         time.sleep(interval)
 
 
+def daily_report_loop(strategy):
+    """Daemon thread: sends a daily report at 9h00 local time."""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        sleep_seconds = (target - now).total_seconds()
+        time.sleep(sleep_seconds)
+
+        try:
+            yesterday = (datetime.now() - timedelta(days=1)).date()
+            stats = strategy.get_daily_stats(yesterday)
+            from src.utils.alerting import get_alert_manager
+            get_alert_manager().daily_summary(stats)
+            cprint(f"[DailyReport] Sent report for {yesterday}", "cyan")
+        except Exception as e:
+            cprint(f"[DailyReport] Error: {e}", "red")
+
+
 def run_agents():
     """Run all active agents in sequence"""
     try:
@@ -116,6 +136,17 @@ def run_agents():
             )
             monitor_thread.start()
             cprint("[Main] SL/TP monitor thread started (30s interval)", "cyan")
+
+        # Start daily report thread (sends Discord summary at 9h00)
+        if monitor_strategy and hasattr(monitor_strategy, 'get_daily_stats'):
+            report_thread = threading.Thread(
+                target=daily_report_loop,
+                args=(monitor_strategy,),
+                daemon=True,
+                name="Daily_Report"
+            )
+            report_thread.start()
+            cprint("[Main] Daily report thread started (9h00 daily)", "cyan")
 
         while True:
             try:

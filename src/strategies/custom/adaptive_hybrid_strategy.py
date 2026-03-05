@@ -1453,13 +1453,6 @@ class AdaptiveHybridStrategy(BaseStrategy):
         cprint(f"  SL: ${trade['stop_loss']:,.2f} ({sl_pct:.2f}%)", "white")
         cprint(f"  TP: ${trade['take_profit']:,.2f} ({tp_pct:.2f}%)", "white")
 
-        # Discord alert
-        try:
-            from src.utils.alerting import get_alert_manager
-            get_alert_manager().trade_opened(trade, metadata)
-        except Exception:
-            pass
-
         # Log decision to trade memory
         try:
             module_scores = metadata.get('module_scores', {})
@@ -1782,6 +1775,97 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 'total_closed': len(self.closed_positions),
                 'positions': [pos.copy() for pos in self.paper_positions.values()],
             }
+
+    def get_daily_stats(self, date=None) -> dict:
+        """Compute daily stats from closed_trades.csv for a given date.
+
+        Args:
+            date: datetime.date or None (defaults to yesterday)
+
+        Returns dict with: date, total_pnl, trades_count, wins, losses, win_rate,
+            best_trade, worst_trade, balance, open_positions, total_pnl_alltime,
+            streak, alpha_btc
+        """
+        from datetime import date as date_type
+        if date is None:
+            date = (datetime.now() - timedelta(days=1)).date()
+        elif isinstance(date, datetime):
+            date = date.date()
+
+        result = {
+            'date': str(date),
+            'total_pnl': 0,
+            'trades_count': 0,
+            'wins': 0,
+            'losses': 0,
+            'win_rate': 0,
+            'best_trade': {},
+            'worst_trade': {},
+            'balance': round(self.paper_balance, 2),
+            'open_positions': len(self.paper_positions),
+            'total_pnl_alltime': round(self.paper_balance - PAPER_TRADING_BALANCE, 2),
+            'streak': 0,
+            'alpha_btc': None,
+        }
+
+        closed_file = os.path.join(self.data_dir, 'closed_trades.csv')
+        if not os.path.exists(closed_file):
+            return result
+
+        try:
+            df = pd.read_csv(closed_file)
+            if df.empty or 'exit_time' not in df.columns or 'pnl' not in df.columns:
+                return result
+
+            # Parse exit_time and filter by date
+            df['exit_date'] = pd.to_datetime(df['exit_time'], errors='coerce').dt.date
+            day_df = df[df['exit_date'] == date]
+
+            if day_df.empty:
+                return result
+
+            pnls = day_df['pnl'].astype(float)
+            result['total_pnl'] = round(float(pnls.sum()), 2)
+            result['trades_count'] = len(day_df)
+            result['wins'] = int((pnls > 0).sum())
+            result['losses'] = int((pnls < 0).sum())
+            result['win_rate'] = round(result['wins'] / result['trades_count'] * 100, 1) if result['trades_count'] > 0 else 0
+
+            # Best / worst trade
+            best_idx = pnls.idxmax()
+            worst_idx = pnls.idxmin()
+            result['best_trade'] = {
+                'symbol': day_df.loc[best_idx, 'symbol'] if 'symbol' in day_df.columns else '?',
+                'pnl': round(float(pnls.loc[best_idx]), 2),
+            }
+            result['worst_trade'] = {
+                'symbol': day_df.loc[worst_idx, 'symbol'] if 'symbol' in day_df.columns else '?',
+                'pnl': round(float(pnls.loc[worst_idx]), 2),
+            }
+
+            # Streak (consecutive wins/losses from most recent)
+            all_pnls = df.sort_values('exit_time')['pnl'].astype(float).tolist()
+            if all_pnls:
+                streak = 0
+                last_sign = 1 if all_pnls[-1] > 0 else -1
+                for p in reversed(all_pnls):
+                    current_sign = 1 if p > 0 else -1
+                    if current_sign == last_sign:
+                        streak += current_sign
+                    else:
+                        break
+                result['streak'] = streak
+
+            # Alpha vs BTC
+            alpha = self._get_benchmark_alpha()
+            if alpha and 'BTC' in alpha:
+                result['alpha_btc'] = alpha['BTC'].get('alpha', 0)
+
+        except Exception as e:
+            from termcolor import cprint
+            cprint(f"[DailyStats] Error reading closed_trades.csv: {e}", "yellow")
+
+        return result
 
     def close_all_paper_positions(self) -> list:
         """Force close all open paper positions at current market price."""
