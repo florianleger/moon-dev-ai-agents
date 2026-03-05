@@ -3,7 +3,7 @@
 Only 3 types of notifications:
 1. Trade closed — performance du trade (seule alerte individuelle)
 2. Alerte critique — circuit breaker, grosse perte
-3. Rapport journalier — resume de la veille (envoye par le scheduler dans main.py)
+3. Rapport journalier — résumé de la veille (envoyé par le scheduler dans main.py)
 """
 import os
 import random
@@ -139,33 +139,33 @@ class AlertManager:
         else:
             emoji = random.choice(["", "", ""])
 
-        # Fun commentary — plus de variete
+        # Fun commentary — plus de variété
         win_comments = [
             "Joli coup, on prend les gains !",
-            "Le plan a fonctionne, beau trade",
+            "Le plan a fonctionné, beau trade",
             "Les modules avaient raison",
             "Cash is king, on encaisse",
             "Propre et net, on continue",
         ]
         small_win_comments = [
-            "Petit profit, c'est toujours ca de pris",
-            "Un vert de plus, ca s'accumule",
+            "Petit profit, c'est toujours ça de pris",
+            "Un vert de plus, ça s'accumule",
             "Pas spectaculaire mais positif",
         ]
         flat_comments = [
             "Quasi flat, on s'en sort bien",
-            "Ni gain ni perte, le marche hesite",
+            "Ni gain ni perte, le marché hésite",
             "Break-even, on passe au suivant",
         ]
         small_loss_comments = [
-            "Petite perte maitrisee, le RM fait son job",
-            "SL respecte, c'est la discipline qui paie",
-            "Perte controlee, on reste serein",
+            "Petite perte maîtrisée, le RM fait son job",
+            "SL respecté, c'est la discipline qui paie",
+            "Perte contrôlée, on reste serein",
         ]
         big_loss_comments = [
-            "Ca pique, mais on analyse et on rebondit",
-            "Mauvais timing, ca arrive. On apprend",
-            "Le marche a decide autrement, next trade",
+            "Ça pique, mais on analyse et on rebondit",
+            "Mauvais timing, ça arrive. On apprend",
+            "Le marché a décidé autrement, next trade",
         ]
 
         if is_flat:
@@ -195,8 +195,8 @@ class AlertManager:
             'TAKE_PROFIT': 'Take Profit',
             'trailing_stop': 'Trailing Stop',
             'TRAILING_STOP': 'Trailing Stop',
-            'time_exit': 'Duree max',
-            'TIME_EXIT_24H': 'Duree max (24h)',
+            'time_exit': 'Durée max',
+            'TIME_EXIT_24H': 'Durée max (24h)',
             'partial_tp': 'TP partiel',
             'manual': 'Manuel',
             'MANUAL': 'Manuel',
@@ -210,19 +210,19 @@ class AlertManager:
             "color": color,
             "fields": [
                 {"name": "PnL", "value": f"```{'+ ' if is_win else ''}{pnl:+.2f}$ ({pnl_pct:+.2f}%)```", "inline": False},
-                {"name": "Entree", "value": f"`${entry:,.2f}`", "inline": True},
+                {"name": "Entrée", "value": f"`${entry:,.2f}`", "inline": True},
                 {"name": "Sortie", "value": f"`${exit_price:,.2f}`", "inline": True},
-                {"name": "R:R realise", "value": f"`{realized_rr:+.1f}R`", "inline": True},
-                {"name": "Duree", "value": f"`{hold_time}`" if hold_time else "`?`", "inline": True},
+                {"name": "R:R réalisé", "value": f"`{realized_rr:+.1f}R`", "inline": True},
+                {"name": "Durée", "value": f"`{hold_time}`" if hold_time else "`?`", "inline": True},
                 {"name": "Balance", "value": f"`${balance:,.2f}`", "inline": True},
             ],
             "timestamp": datetime.utcnow().isoformat(),
             "footer": {"text": "Moon Dev Bot | Paper Trading"},
         }
 
-        # Score d'entree + top modules
+        # Score d'entrée + top modules
         if score:
-            embed["fields"].append({"name": "Score entree", "value": f"`{score:.1f}/100`", "inline": True})
+            embed["fields"].append({"name": "Score entrée", "value": f"`{score:.1f}/100`", "inline": True})
 
         modules_str = trade.get('modules', '')
         if modules_str and modules_str != '{}':
@@ -284,14 +284,14 @@ class AlertManager:
             status = f"{trades_opened} nouveau(x) trade(s) ouvert(s)"
             color = 0x00D166
         elif signals_found > 0:
-            status = f"{signals_found} signal(aux) detecte(s) mais pas trade(s)"
+            status = f"{signals_found} signal(aux) détecté(s) mais pas tradé(s)"
             color = 0xFEE75C
         else:
-            status = "Aucun signal, le marche dort"
+            status = "Aucun signal, le marché dort"
             color = 0x99AAB5
 
         embed = {
-            "title": f"Cycle termine — {tokens_analyzed} tokens analyses",
+            "title": f"Cycle terminé — {tokens_analyzed} tokens analysés",
             "description": f"**{status}**\nBalance: `${balance:,.2f}` | Positions ouvertes: `{open_positions}`",
             "color": color,
             "timestamp": datetime.utcnow().isoformat(),
@@ -311,7 +311,7 @@ class AlertManager:
 
         embed = {
             "title": f"CIRCUIT BREAKER : {breaker_name}",
-            "description": f"**Trading en pause.** {details}\n\nLe bot se protege automatiquement. Il reprendra quand les conditions seront meilleures.",
+            "description": f"**Trading en pause.** {details}\n\nLe bot se protège automatiquement. Il reprendra quand les conditions seront meilleures.",
             "color": 0xED4245,
             "timestamp": datetime.utcnow().isoformat(),
             "footer": {"text": "Moon Dev Bot | Protection"},
@@ -325,7 +325,7 @@ class AlertManager:
 
         embed = {
             "title": f"Grosse perte sur {symbol}",
-            "description": f"PnL: `{pnl:+.2f}$` (`{pct:+.1f}%`)\n\nPas de panique, ca fait partie du jeu. Le risk management limite les degats.",
+            "description": f"PnL: `{pnl:+.2f}$` (`{pct:+.1f}%`)\n\nPas de panique, ça fait partie du jeu. Le risk management limite les dégâts.",
             "color": 0xED4245,
             "timestamp": datetime.utcnow().isoformat(),
             "footer": {"text": "Moon Dev Bot | Alerte critique"},
@@ -336,7 +336,7 @@ class AlertManager:
         """Alert on bot errors."""
         embed = {
             "title": "Erreur du bot",
-            "description": f"```{error_msg[:1800]}```\nLe bot va tenter de continuer malgre l'erreur.",
+            "description": f"```{error_msg[:1800]}```\nLe bot va tenter de continuer malgré l'erreur.",
             "color": 0xED4245,
             "timestamp": datetime.utcnow().isoformat(),
             "footer": {"text": "Moon Dev Bot | Debug"},
@@ -359,7 +359,7 @@ class AlertManager:
             "title": f"Service indisponible : {service_name}",
             "description": (
                 f"```{str(error_msg)[:1500]}```\n"
-                "Le bot continue avec les donnees en cache si disponibles."
+                "Le bot continue avec les données en cache si disponibles."
             ),
             "color": 0xF0B232,  # Orange/amber
             "timestamp": datetime.utcnow().isoformat(),
@@ -397,25 +397,25 @@ class AlertManager:
 
         # Fun commentary
         good_vibes = [
-            "Belle journee, le bot performe !",
+            "Belle journée, le bot performe !",
             "Les algos sont en forme aujourd'hui",
-            "Journee verte, on continue comme ca",
+            "Journée verte, on continue comme ça",
             "Le plan fonctionne, on encaisse",
         ]
         flat_vibes = [
-            "Journee calme, pas de mouvement",
-            "Le marche hesite, patience...",
-            "Rien de special, on reste en veille",
+            "Journée calme, pas de mouvement",
+            "Le marché hésite, patience...",
+            "Rien de spécial, on reste en veille",
         ]
         bad_vibes = [
-            "Journee rouge, demain est un autre jour",
-            "Ca pique mais le RM fait son job",
+            "Journée rouge, demain est un autre jour",
+            "Ça pique mais le RM fait son job",
             "Pas notre jour, on analyse et on ajuste",
         ]
         no_trade_vibes = [
-            "Aucun trade hier, le bot etait en veille",
-            "Zero signal, marche trop calme",
-            "Pas de trade = pas de perte, c'est deja ca",
+            "Aucun trade hier, le bot était en veille",
+            "Zéro signal, marché trop calme",
+            "Pas de trade = pas de perte, c'est déjà ça",
         ]
 
         if trades_count == 0:
