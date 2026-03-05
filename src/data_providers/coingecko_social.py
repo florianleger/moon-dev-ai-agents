@@ -45,11 +45,15 @@ class CoinGeckoSocialProvider:
         return h
 
     def _get_cached(self, cache_key, url, params=None):
-        """Cached GET with rate-limit awareness."""
+        """Cached GET with rate-limit awareness and auth fallback."""
         if cache_key in self._cache and time.time() - self._cache_time.get(cache_key, 0) < self._cache_ttl:
             return self._cache[cache_key]
         try:
             resp = requests.get(url, params=params, headers=self._headers(), timeout=15)
+            if resp.status_code == 401:
+                # Invalid/expired API key — retry without it (public tier)
+                cprint("[CoinGecko] 401 with API key, falling back to public API", "yellow")
+                resp = requests.get(url, params=params, headers={'accept': 'application/json'}, timeout=15)
             if resp.status_code == 429:
                 cprint("[CoinGecko] Rate limited, using stale cache", "yellow")
                 return self._cache.get(cache_key)
@@ -89,16 +93,15 @@ class CoinGeckoSocialProvider:
         """Get market data for tracked symbols.
 
         Returns dict keyed by symbol with price changes, market cap, volume.
+        Batches all symbols in a single API call (cached 5min) to avoid rate limits.
         """
         if symbols is None:
             symbols = list(self.SYMBOL_TO_ID.keys())
 
-        ids = [self.SYMBOL_TO_ID[s] for s in symbols if s in self.SYMBOL_TO_ID]
-        if not ids:
-            return {}
-
-        ids_str = ','.join(ids)
-        data = self._get_cached(f'markets_{ids_str}',
+        # Always fetch ALL tracked symbols in one batch call (cached together)
+        all_ids = [v for v in self.SYMBOL_TO_ID.values()]
+        ids_str = ','.join(sorted(all_ids))
+        data = self._get_cached('markets_all',
             f"{self.BASE_URL}/coins/markets",
             {
                 'vs_currency': 'usd',
