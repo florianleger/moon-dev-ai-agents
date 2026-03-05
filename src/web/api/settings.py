@@ -34,6 +34,11 @@ class SettingsUpdate(BaseModel):
     use_weighted_scoring: bool = None
     use_confidence_sizing: bool = None
     min_weighted_score: float = None
+    # Adaptive Hybrid features
+    llm_confirmation: bool = None
+    llm_regime: bool = None
+    llm_learner: bool = None
+    mtf_confluence: bool = None
 
 
 @router.get("")
@@ -156,6 +161,10 @@ def _get_adaptive_hybrid_settings() -> Dict:
         ADAPTIVE_HYBRID_MAX_POSITION_PCT,
         ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES,
         ADAPTIVE_HYBRID_MIN_RR_RATIO,
+        ADAPTIVE_HYBRID_LLM_CONFIRMATION,
+        ADAPTIVE_HYBRID_LLM_REGIME,
+        ADAPTIVE_HYBRID_LLM_LEARNER,
+        ADAPTIVE_HYBRID_MTF_CONFLUENCE,
         SNIPER_ASSETS,
     )
 
@@ -171,13 +180,16 @@ def _get_adaptive_hybrid_settings() -> Dict:
         "take_profit_pct": ADAPTIVE_HYBRID_ATR_TP_MULT,
         "max_daily_loss_usd": ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD,
         "features": {
-            "btc_macro_filter": True,
-            "min_convergent_modules": ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES,
-            "min_rr_ratio": ADAPTIVE_HYBRID_MIN_RR_RATIO,
-            "max_position_pct": ADAPTIVE_HYBRID_MAX_POSITION_PCT,
+            "llm_confirmation": ADAPTIVE_HYBRID_LLM_CONFIRMATION,
+            "llm_regime": ADAPTIVE_HYBRID_LLM_REGIME,
+            "llm_learner": ADAPTIVE_HYBRID_LLM_LEARNER,
+            "mtf_confluence": ADAPTIVE_HYBRID_MTF_CONFLUENCE,
         },
         "feature_params": {
             "urgency_floor": ADAPTIVE_HYBRID_URGENCY_FLOOR,
+            "min_convergent_modules": ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES,
+            "min_rr_ratio": ADAPTIVE_HYBRID_MIN_RR_RATIO,
+            "max_position_pct": ADAPTIVE_HYBRID_MAX_POSITION_PCT,
             "weights": ADAPTIVE_HYBRID_WEIGHTS,
         }
     }
@@ -334,6 +346,20 @@ async def update_settings(
                     raise HTTPException(status_code=400, detail="Min weighted score must be 0-10")
                 content = _replace_config_value(content, "SNIPER_MIN_WEIGHTED_SCORE", str(settings.min_weighted_score))
                 updates.append(f"SNIPER_MIN_WEIGHTED_SCORE={settings.min_weighted_score}")
+
+        # Adaptive Hybrid feature toggles
+        if ACTIVE_STRATEGY == 'adaptive_hybrid':
+            toggle_map = {
+                'llm_confirmation': 'ADAPTIVE_HYBRID_LLM_CONFIRMATION',
+                'llm_regime': 'ADAPTIVE_HYBRID_LLM_REGIME',
+                'llm_learner': 'ADAPTIVE_HYBRID_LLM_LEARNER',
+                'mtf_confluence': 'ADAPTIVE_HYBRID_MTF_CONFLUENCE',
+            }
+            for attr, config_key in toggle_map.items():
+                val = getattr(settings, attr, None)
+                if val is not None:
+                    content = _replace_config_value(content, config_key, str(val))
+                    updates.append(f"{config_key}={val}")
 
         # Write updated config
         with open(config_path, "w") as f:

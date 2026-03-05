@@ -121,7 +121,7 @@
 
         <!-- Features Toggle -->
         <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
-            <h2 class="text-lg font-semibold text-white mb-4" x-text="settings.strategy === 'sniper' ? 'Sniper AI Features' : 'RAMF Features'"></h2>
+            <h2 class="text-lg font-semibold text-white mb-4" x-text="settings.strategy === 'sniper' ? 'Sniper AI Features' : settings.strategy === 'adaptive_hybrid' ? 'Adaptive Hybrid Features' : 'RAMF Features'"></h2>
 
             <div class="space-y-3">
                 <template x-for="(enabled, feature) in settings.features" :key="feature">
@@ -134,14 +134,14 @@
                             <input type="checkbox"
                                    x-model="settings.features[feature]"
                                    class="sr-only peer"
-                                   :disabled="settings.strategy !== 'sniper'"
+                                           :disabled="settings.strategy !== 'sniper' && settings.strategy !== 'adaptive_hybrid'"
                                    @change="featureToggled(feature)">
                             <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
                         </label>
                     </div>
                 </template>
-                <p class="text-gray-500 text-xs mt-2" x-show="settings.strategy !== 'sniper'">Feature toggles require config.py edit (read-only here)</p>
-                <p class="text-green-500 text-xs mt-2" x-show="settings.strategy === 'sniper'">Sniper features can be toggled - save to apply</p>
+                <p class="text-gray-500 text-xs mt-2" x-show="settings.strategy !== 'sniper' && settings.strategy !== 'adaptive_hybrid'">Feature toggles require config.py edit (read-only here)</p>
+                <p class="text-green-500 text-xs mt-2" x-show="settings.strategy === 'sniper' || settings.strategy === 'adaptive_hybrid'">Feature toggles can be changed - save to apply</p>
             </div>
         </div>
     </div>
@@ -323,6 +323,16 @@ function settingsData() {
                 assets: assetsArray.join(','),
             };
 
+            // Add Adaptive Hybrid feature toggles if changed
+            if (this.settings.strategy === 'adaptive_hybrid') {
+                const ahFeatures = ['llm_confirmation', 'llm_regime', 'llm_learner', 'mtf_confluence'];
+                for (const f of ahFeatures) {
+                    if (this.changedFeatures[f] !== undefined) {
+                        payload[f] = this.settings.features[f];
+                    }
+                }
+            }
+
             // Add Sniper-specific feature toggles if changed
             if (this.settings.strategy === 'sniper') {
                 if (this.changedFeatures.trailing_stop !== undefined) {
@@ -395,6 +405,11 @@ function settingsData() {
                 'mtf_confluence': 'Multi-timeframe agreement',
                 'funding_divergence': 'Use funding rate signals',
                 'liquidation_clusters': 'Detect liquidation zones',
+                // Adaptive Hybrid features
+                'llm_confirmation': 'LLM validates trade before entry',
+                'llm_regime': 'LLM classifies market regime (trending/ranging)',
+                'llm_learner': 'Post-trade LLM analysis for learning',
+                'mtf_confluence': 'Multi-timeframe confluence scoring',
                 // Sniper features
                 'trailing_stop': 'ATR-based trailing stop after +1% profit',
                 'regime_filter': 'Skip trades when ADX indicates trending',
