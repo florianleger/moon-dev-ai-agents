@@ -271,6 +271,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # BTC correlation cache per-symbol: {symbol: (corr, timestamp)}
         self._btc_correlation_cache = {}  # {symbol: (float, datetime)}
 
+        # Candle cache to avoid repeated API calls: {(symbol, interval): (df, timestamp)}
+        self._candle_cache = {}  # {(symbol, interval): (DataFrame, datetime)}
+        self._candle_cache_ttl = 300  # 5 min TTL — candles don't change faster than this
+
         # LLM model for confirmation/regime (lazy-loaded, fast provider)
         self._llm_model = None
         if ADAPTIVE_HYBRID_LLM_CONFIRMATION or ADAPTIVE_HYBRID_LLM_REGIME or ADAPTIVE_HYBRID_LLM_LEARNER:
@@ -389,13 +393,25 @@ class AdaptiveHybridStrategy(BaseStrategy):
     # =========================================================================
 
     def _fetch_candles(self, symbol: str, interval: str = '1h', candles: int = 200) -> pd.DataFrame:
-        """Fetch candle data from HyperLiquid."""
+        """Fetch candle data from HyperLiquid with caching to avoid 429 rate limits."""
+        import time as _time
+
+        cache_key = (symbol, interval)
+
+        # Check cache first
+        with self._cache_lock:
+            cached = self._candle_cache.get(cache_key)
+            if cached:
+                df_cached, cached_at = cached
+                age = (datetime.now() - cached_at).total_seconds()
+                if age < self._candle_cache_ttl:
+                    return df_cached.copy()
+
         try:
             from hyperliquid.info import Info
-            import time
 
             info = Info(skip_ws=True)
-            end_time = int(time.time() * 1000)
+            end_time = int(_time.time() * 1000)
 
             interval_map = {
                 '1m': 60_000, '5m': 300_000, '15m': 900_000,
@@ -403,6 +419,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
             }
             interval_ms = interval_map.get(interval, 3_600_000)
             start_time = end_time - (candles * interval_ms)
+
+            # Small delay to respect rate limits (14 tokens × multiple calls)
+            _time.sleep(0.15)
 
             data = info.candles_snapshot(symbol, interval, start_time, end_time)
             if not data:
@@ -423,6 +442,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 if pd.Timestamp.now(tz='UTC') - last_candle_time > max_staleness:
                     cprint(f"[AdaptiveHybrid] Stale candle data for {symbol}: last candle {last_candle_time}", "yellow")
                     return None
+
+            # Store in cache
+            with self._cache_lock:
+                self._candle_cache[cache_key] = (df.copy(), datetime.now())
 
             return df
 
