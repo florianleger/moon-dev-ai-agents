@@ -1453,6 +1453,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
         cprint(f"  SL: ${trade['stop_loss']:,.2f} ({sl_pct:.2f}%)", "white")
         cprint(f"  TP: ${trade['take_profit']:,.2f} ({tp_pct:.2f}%)", "white")
 
+        # Discord alert
+        try:
+            from src.utils.alerting import get_alert_manager
+            get_alert_manager().trade_opened(trade, metadata)
+        except Exception:
+            pass
+
         # Log decision to trade memory
         try:
             module_scores = metadata.get('module_scores', {})
@@ -1679,6 +1686,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
         cprint(f"  Entry: ${entry_price:,.2f} -> Exit: ${close_price:,.2f} (eff: ${effective_close_price:,.2f})", "white")
         cprint(f"  PnL: ${pnl:+,.2f} ({price_change_pct*100:+.2f}%) | Fees: ${total_fees:.4f} | Slip: {slippage:.3%}", color)
         cprint(f"  Balance: ${balance_snapshot:,.2f}", "white")
+
+        # Discord alert
+        try:
+            from src.utils.alerting import get_alert_manager
+            trade['balance_after'] = balance_snapshot
+            get_alert_manager().trade_closed(trade)
+        except Exception:
+            pass
 
         # Update trade memory with outcome
         if 'memory_decision_id' in trade:
