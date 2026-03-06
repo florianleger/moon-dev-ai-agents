@@ -263,7 +263,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self.paper_positions = {}
         self.closed_positions = []
         self._position_counter = 0
-        self._position_lock = threading.Lock()
+        self._position_lock = threading.RLock()
 
         # High Water Mark
         self.peak_balance = PAPER_TRADING_BALANCE
@@ -1855,14 +1855,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
             self.paper_balance += pnl
             del self.paper_positions[position_id]
 
-            # Add benchmark alpha to trade record
-            alpha = self._get_benchmark_alpha()
-            trade['btc_alpha'] = alpha.get('BTC', {}).get('alpha', 0)
-            trade['eth_alpha'] = alpha.get('ETH', {}).get('alpha', 0)
-            trade['strategy_return_pct'] = alpha.get('strategy_return_pct', 0)
-
             self.closed_positions.append(trade)
             balance_snapshot = self.paper_balance
+
+        # Add benchmark alpha to trade record (OUTSIDE lock — _get_benchmark_alpha does HTTP calls)
+        alpha = self._get_benchmark_alpha()
+        trade['btc_alpha'] = alpha.get('BTC', {}).get('alpha', 0)
+        trade['eth_alpha'] = alpha.get('ETH', {}).get('alpha', 0)
+        trade['strategy_return_pct'] = alpha.get('strategy_return_pct', 0)
 
         color = 'green' if pnl > 0 else 'red'
         cprint(f"\n[ADAPTIVE HYBRID] Closed {trade['symbol']} ({reason})", color, attrs=['bold'])
