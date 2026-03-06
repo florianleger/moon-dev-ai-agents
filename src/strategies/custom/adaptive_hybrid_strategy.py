@@ -1212,7 +1212,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Decision
         if aggregated['direction'] != 'NEUTRAL' and aggregated['score'] >= threshold:
             # Map score linearly to signal strength (0.45 to 0.95)
-            score = aggregated['score']
+            score = round(aggregated['score'], 1)
             score_range = max(100 - threshold, 1)  # Guard against division by zero
             strength = 0.45 + (score - threshold) / score_range * 0.50
             strength = max(0.45, min(0.95, strength))
