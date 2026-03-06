@@ -20,19 +20,21 @@ def _load_oi_history() -> dict:
                 dq.append((datetime.fromisoformat(ts_str), oi_val))
             result[sym] = dq
         return result
-    except (FileNotFoundError, json.JSONDecodeError, Exception):
+    except Exception:
         return {}
 
 
-def _save_oi_history(history: dict):
-    """Persist OI history to disk."""
+def _save_oi_history(snapshot: dict):
+    """Persist OI history to disk (atomic write). Caller passes a snapshot."""
     try:
         os.makedirs(os.path.dirname(_PERSIST_PATH), exist_ok=True)
         raw = {}
-        for sym, dq in history.items():
-            raw[sym] = [(ts.isoformat(), oi_val) for ts, oi_val in dq]
-        with open(_PERSIST_PATH, 'w') as f:
+        for sym, entries in snapshot.items():
+            raw[sym] = [(ts.isoformat(), oi_val) for ts, oi_val in entries]
+        tmp = _PERSIST_PATH + '.tmp'
+        with open(tmp, 'w') as f:
             json.dump(raw, f)
+        os.rename(tmp, _PERSIST_PATH)
     except Exception:
         pass
 
@@ -77,8 +79,8 @@ def score_oi_delta(indicators: dict, market_data, oi_history: dict,
         with cache_lock:
             oi_history[symbol].append((now, current_oi))
             history = list(oi_history[symbol])
-            # Persist after update
-            _save_oi_history(oi_history)
+            snapshot = {s: list(dq) for s, dq in oi_history.items()}
+        _save_oi_history(snapshot)
 
         # Need at least 2 data points to compute meaningful delta (lowered from 3)
         if len(history) < 2:

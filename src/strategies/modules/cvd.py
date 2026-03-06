@@ -26,19 +26,21 @@ def _load_history() -> dict:
                 dq.append((datetime.fromisoformat(ts_str), ratio, price))
             result[sym] = dq
         return result
-    except (FileNotFoundError, json.JSONDecodeError, Exception):
+    except Exception:
         return {}
 
 
-def _save_history(history: dict):
-    """Persist CVD history to disk."""
+def _save_history(snapshot: dict):
+    """Persist CVD history to disk (atomic write). Caller passes a snapshot."""
     try:
         os.makedirs(os.path.dirname(_PERSIST_PATH), exist_ok=True)
         raw = {}
-        for sym, dq in history.items():
-            raw[sym] = [(ts.isoformat(), ratio, price) for ts, ratio, price in dq]
-        with open(_PERSIST_PATH, 'w') as f:
+        for sym, entries in snapshot.items():
+            raw[sym] = [(ts.isoformat(), ratio, price) for ts, ratio, price in entries]
+        tmp = _PERSIST_PATH + '.tmp'
+        with open(tmp, 'w') as f:
             json.dump(raw, f)
+        os.rename(tmp, _PERSIST_PATH)
     except Exception:
         pass
 
@@ -97,7 +99,8 @@ def score_cvd(symbol: str, indicators: dict, config: dict = None) -> dict:
                 _cvd_history[symbol] = deque(maxlen=50)
             _cvd_history[symbol].append((now, cvd_ratio, indicators.get('close', 0)))
             history = list(_cvd_history[symbol])
-            _save_history(_cvd_history)
+            snapshot = {s: list(dq) for s, dq in _cvd_history.items()}
+        _save_history(snapshot)
 
         long_score = 0
         short_score = 0
