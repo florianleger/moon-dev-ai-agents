@@ -82,7 +82,7 @@ class ModelFactory:
     
     # Default models for each type
     DEFAULT_MODELS = {
-        "claude": "claude-haiku-4-5-20251001",  # Latest fast Claude model
+        "claude": "claude-sonnet-4-6",           # Latest Sonnet model
         "groq": "mixtral-8x7b-32768",        # Fast Mixtral model
         "openai": "gpt-4o",                  # Latest GPT-4 Optimized
         "gemini": "gemini-2.5-flash",        # Fast Gemini 2.5 model
