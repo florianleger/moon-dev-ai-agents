@@ -6,7 +6,13 @@
 <div x-data="dashboardData()" x-init="init()">
     <!-- Header with actions -->
     <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-white">Trading Dashboard</h1>
+        <div class="flex items-center gap-3">
+            <h1 class="text-2xl font-bold text-white">Trading Dashboard</h1>
+            <span :class="mode === 'live' ? 'bg-red-600 text-white' : 'bg-yellow-500 text-black'"
+                  class="px-2 py-0.5 rounded text-xs font-bold uppercase" x-text="mode"></span>
+            <span x-show="regime" class="bg-purple-500/20 text-purple-400 px-2 py-0.5 rounded text-xs font-medium" x-text="regime"></span>
+            <span class="text-gray-500 text-xs" x-show="lastUpdated" x-text="formatLastUpdated()"></span>
+        </div>
         <div class="flex gap-2">
             <button @click="toggleStrategy()"
                     :class="running ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'"
@@ -17,13 +23,13 @@
     </div>
 
     <!-- Stats Cards -->
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+    <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
         <!-- Balance -->
         <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
             <div class="flex items-center justify-between">
                 <div>
                     <p class="text-gray-400 text-sm">Paper Balance</p>
-                    <p class="text-2xl font-bold text-white" x-text="'$' + balance.toFixed(2)">$0.00</p>
+                    <p class="text-2xl font-bold text-white" x-text="balance !== null ? '$' + balance.toFixed(2) : '-'">-</p>
                 </div>
                 <div class="text-3xl">&#128176;</div>
             </div>
@@ -37,6 +43,7 @@
                     <p class="text-2xl font-bold"
                        :class="dailyPnl >= 0 ? 'text-green-400' : 'text-red-400'"
                        x-text="(dailyPnl >= 0 ? '+$' : '-$') + Math.abs(dailyPnl).toFixed(2)">$0.00</p>
+                    <p class="text-xs text-gray-500" x-show="balance > 0" x-text="'(' + (dailyPnl >= 0 ? '+' : '') + (dailyPnl / balance * 100).toFixed(2) + '%)'"></p>
                 </div>
                 <div class="text-3xl" x-text="dailyPnl >= 0 ? '&#128200;' : '&#128201;'">&#128200;</div>
             </div>
@@ -64,8 +71,22 @@
                     <p class="text-2xl font-bold"
                        :class="totalPnl >= 0 ? 'text-green-400' : 'text-red-400'"
                        x-text="(totalPnl >= 0 ? '+$' : '-$') + Math.abs(totalPnl).toFixed(2)">$0.00</p>
+                    <p class="text-xs text-gray-500" x-show="balance > 0" x-text="'(' + (totalPnl >= 0 ? '+' : '') + (totalPnl / balance * 100).toFixed(2) + '%)'"></p>
                 </div>
                 <div class="text-3xl">&#127775;</div>
+            </div>
+        </div>
+
+        <!-- Trades Today -->
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-gray-400 text-sm">Trades Today</p>
+                    <p class="text-2xl font-bold"
+                       :class="dailyTrades >= maxDailyTrades ? 'text-red-400' : 'text-white'"
+                       x-text="dailyTrades + '/' + maxDailyTrades"></p>
+                </div>
+                <div class="text-3xl">&#128203;</div>
             </div>
         </div>
     </div>
@@ -98,6 +119,8 @@
                             <th class="text-left py-2">Side</th>
                             <th class="text-right py-2">Size</th>
                             <th class="text-right py-2">Entry</th>
+                            <th class="text-right py-2">Current</th>
+                            <th class="text-right py-2">SL / TP</th>
                             <th class="text-right py-2">PnL</th>
                             <th class="text-right py-2">Action</th>
                         </tr>
@@ -110,11 +133,13 @@
                                     <span :class="pos.side === 'LONG' ? 'text-green-400' : 'text-red-400'"
                                           x-text="pos.side"></span>
                                 </td>
-                                <td class="py-3 text-right text-gray-300" x-text="'$' + pos.size_usd.toFixed(2)"></td>
-                                <td class="py-3 text-right text-gray-300" x-text="'$' + pos.entry_price.toFixed(2)"></td>
+                                <td class="py-3 text-right text-gray-300" x-text="'$' + pos.size_usd.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})"></td>
+                                <td class="py-3 text-right text-gray-300" x-text="'$' + pos.entry_price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})"></td>
+                                <td class="py-3 text-right text-gray-300" x-text="pos.current_price ? '$' + pos.current_price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6}) : '-'"></td>
+                                <td class="py-3 text-right text-gray-400 text-xs" x-text="(pos.stop_loss ? pos.stop_loss.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6}) : '-') + ' / ' + (pos.take_profit ? pos.take_profit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6}) : '-')"></td>
                                 <td class="py-3 text-right"
                                     :class="pos.unrealized_pnl >= 0 ? 'text-green-400' : 'text-red-400'"
-                                    x-text="(pos.unrealized_pnl >= 0 ? '+' : '') + '$' + pos.unrealized_pnl.toFixed(2)"></td>
+                                    x-text="(pos.unrealized_pnl >= 0 ? '+$' : '-$') + Math.abs(pos.unrealized_pnl).toFixed(2)"></td>
                                 <td class="py-3 text-right">
                                     <button @click="closePosition(pos.symbol)"
                                             class="text-red-400 hover:text-red-300 px-2 py-1 rounded border border-red-400/30 hover:border-red-400">
@@ -124,7 +149,7 @@
                             </tr>
                         </template>
                         <tr x-show="positions.length === 0">
-                            <td colspan="6" class="py-8 text-center text-gray-500">
+                            <td colspan="8" class="py-8 text-center text-gray-500">
                                 No open positions
                             </td>
                         </tr>
@@ -227,7 +252,7 @@
 function dashboardData() {
     return {
         running: {{ 'true' if strategy_running else 'false' }},
-        balance: 500.0,
+        balance: null,
         dailyPnl: 0.0,
         totalPnl: 0.0,
         openPositions: 0,
@@ -237,6 +262,12 @@ function dashboardData() {
         positions: [],
         signals: [],
         pnlChart: null,
+        lastUpdated: null,
+        mode: 'paper',
+        dailyTrades: 0,
+        maxDailyTrades: 5,
+        regime: null,
+        _tick: 0,
 
         init() {
             this.fetchStats();
@@ -248,7 +279,8 @@ function dashboardData() {
             // This fixes a race condition where Chart.js fails to render
             setTimeout(() => this.initChart(), 100);
 
-            // Refresh data periodically
+            setInterval(() => this._tick++, 5000);
+
             setInterval(() => {
                 this.fetchStats();
                 this.fetchPositions();
@@ -259,14 +291,19 @@ function dashboardData() {
         async fetchStats() {
             try {
                 const data = await apiFetch('/api/dashboard/stats');
-                this.balance = data.balance || 500;
-                this.dailyPnl = data.daily_pnl || 0;
-                this.totalPnl = data.total_pnl || 0;
-                this.openPositions = data.open_positions || 0;
-                this.usedMargin = data.used_margin || 0;
-                this.totalExposure = data.total_exposure || 0;
-                this.effectiveLeverage = data.effective_leverage || 0;
-                this.running = data.running || false;
+                this.balance = data.balance ?? null;
+                this.dailyPnl = data.daily_pnl ?? 0;
+                this.totalPnl = data.total_pnl ?? 0;
+                this.openPositions = data.open_positions ?? 0;
+                this.usedMargin = data.used_margin ?? 0;
+                this.totalExposure = data.total_exposure ?? 0;
+                this.effectiveLeverage = data.effective_leverage ?? 0;
+                this.running = data.running ?? false;
+                this.mode = data.mode ?? 'paper';
+                this.dailyTrades = data.daily_trades ?? 0;
+                this.maxDailyTrades = data.max_daily_trades ?? 5;
+                this.regime = data.regime ?? null;
+                this.lastUpdated = new Date();
             } catch (e) {
                 console.error('Failed to fetch stats:', e);
             }
@@ -280,6 +317,7 @@ function dashboardData() {
                     ...p,
                     _uid: p.position_id || `${p.symbol}-${i}-${p.entry_price}`
                 }));
+                this.lastUpdated = new Date();
             } catch (e) {
                 console.error('Failed to fetch positions:', e);
             }
@@ -383,19 +421,24 @@ function dashboardData() {
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+                const chartData = data.data || [];
+                const lastValue = chartData.length > 0 ? chartData[chartData.length - 1] : 0;
+                const chartColor = lastValue >= 0 ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)';
+                const chartBg = lastValue >= 0 ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)';
+
                 this.pnlChart = new Chart(ctx, {
                     type: 'line',
                     data: {
                         labels: data.labels || [],
                         datasets: [{
                             label: 'PnL',
-                            data: data.data || [],
-                            borderColor: 'rgb(34, 197, 94)',
-                            backgroundColor: 'rgba(34, 197, 94, 0.2)',
+                            data: chartData,
+                            borderColor: chartColor,
+                            backgroundColor: chartBg,
                             fill: true,
                             tension: 0.3,
                             pointRadius: 4,
-                            pointBackgroundColor: 'rgb(34, 197, 94)',
+                            pointBackgroundColor: chartColor,
                             borderWidth: 2
                         }]
                     },
@@ -430,14 +473,19 @@ function dashboardData() {
 
                 eventSource.addEventListener('stats', (e) => {
                     const data = JSON.parse(e.data);
-                    this.balance = data.balance || this.balance;
-                    this.dailyPnl = data.daily_pnl || this.dailyPnl;
-                    this.totalPnl = data.total_pnl || this.totalPnl;
-                    this.openPositions = data.open_positions || this.openPositions;
-                    this.usedMargin = data.used_margin || this.usedMargin;
-                    this.totalExposure = data.total_exposure || this.totalExposure;
-                    this.effectiveLeverage = data.effective_leverage || this.effectiveLeverage;
-                    this.running = data.running || false;
+                    this.balance = data.balance ?? this.balance;
+                    this.dailyPnl = data.daily_pnl ?? this.dailyPnl;
+                    this.totalPnl = data.total_pnl ?? this.totalPnl;
+                    this.openPositions = data.open_positions ?? this.openPositions;
+                    this.usedMargin = data.used_margin ?? this.usedMargin;
+                    this.totalExposure = data.total_exposure ?? this.totalExposure;
+                    this.effectiveLeverage = data.effective_leverage ?? this.effectiveLeverage;
+                    this.running = data.running ?? false;
+                    this.mode = data.mode ?? this.mode;
+                    this.dailyTrades = data.daily_trades ?? this.dailyTrades;
+                    this.maxDailyTrades = data.max_daily_trades ?? this.maxDailyTrades;
+                    this.regime = data.regime ?? this.regime;
+                    this.lastUpdated = new Date();
                 });
 
                 eventSource.addEventListener('positions', (e) => {
@@ -495,7 +543,8 @@ function dashboardData() {
         },
 
         async closeAllPositions() {
-            if (!confirm('Close ALL positions?')) return;
+            const totalPnl = this.positions.reduce((sum, p) => sum + (p.unrealized_pnl ?? 0), 0);
+            if (!confirm('Close all ' + this.positions.length + ' positions? Unrealized PnL: $' + totalPnl.toFixed(2))) return;
             try {
                 const data = await apiFetch('/api/positions/close-all', { method: 'POST' });
                 showToast(`Closed ${data.count} positions: ${data.total_pnl >= 0 ? '+' : ''}$${data.total_pnl}`, 'success');
@@ -509,7 +558,25 @@ function dashboardData() {
         formatTime(timestamp) {
             if (!timestamp) return '';
             const date = new Date(timestamp);
-            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            const now = new Date();
+            const isToday = date.getFullYear() === now.getFullYear() &&
+                            date.getMonth() === now.getMonth() &&
+                            date.getDate() === now.getDate();
+            if (isToday) {
+                return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            }
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
+                   date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        },
+
+        formatLastUpdated() {
+            void this._tick;
+            if (!this.lastUpdated) return '';
+            const seconds = Math.floor((new Date() - this.lastUpdated) / 1000);
+            if (seconds < 5) return 'Updated just now';
+            if (seconds < 60) return 'Updated ' + seconds + 's ago';
+            const minutes = Math.floor(seconds / 60);
+            return 'Updated ' + minutes + 'm ago';
         }
     };
 }

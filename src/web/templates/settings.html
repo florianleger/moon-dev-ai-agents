@@ -3,7 +3,7 @@
 {% block title %}Settings - Moon Dev Trading{% endblock %}
 
 {% block content %}
-<div x-data="settingsData()" x-init="init()">
+<div x-data="settingsData()" x-init="init()" @change="isDirty = true" @input="isDirty = true">
     <div class="flex justify-between items-center mb-6">
         <div>
             <h1 class="text-2xl font-bold text-white">Settings</h1>
@@ -11,12 +11,15 @@
                 Active Strategy: <span class="text-moon-purple font-medium" x-text="settings.strategy === 'sniper' ? 'Sniper AI' : settings.strategy === 'adaptive_hybrid' ? 'Adaptive Hybrid' : 'RAMF'"></span>
             </p>
         </div>
-        <button @click="saveSettings()"
-                :disabled="saving"
-                class="bg-moon-purple hover:bg-purple-700 disabled:bg-gray-600 px-6 py-2 rounded-lg text-white font-medium transition-colors flex items-center gap-2">
-            <span x-show="saving" class="animate-spin">&#8634;</span>
-            <span x-text="saving ? 'Saving...' : 'Save Changes'"></span>
-        </button>
+        <div class="flex items-center gap-3">
+            <span x-show="isDirty" x-transition class="bg-yellow-500/20 text-yellow-400 text-xs font-medium px-3 py-1 rounded-full border border-yellow-500/30">Unsaved changes</span>
+            <button @click="saveSettings()"
+                    :disabled="saving"
+                    class="bg-moon-purple hover:bg-purple-700 disabled:bg-gray-600 px-6 py-2 rounded-lg text-white font-medium transition-colors flex items-center gap-2">
+                <span x-show="saving" class="animate-spin">&#8634;</span>
+                <span x-text="saving ? 'Saving...' : 'Save Changes'"></span>
+            </button>
+        </div>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -44,8 +47,8 @@
                     </p>
                 </div>
 
-                <!-- Paper Balance (Sniper only) -->
-                <div x-show="settings.strategy === 'sniper'" class="p-4 bg-gray-700/30 rounded-lg">
+                <!-- Paper Balance -->
+                <div x-show="settings.paper_trading" class="p-4 bg-gray-700/30 rounded-lg">
                     <p class="text-gray-400 text-sm">Paper Trading Balance</p>
                     <p class="text-white font-medium text-xl" x-text="'$' + (settings.paper_balance || 1000)"></p>
                 </div>
@@ -67,14 +70,15 @@
                     </div>
                 </div>
 
-                <!-- Min Confidence -->
+                <!-- Min Confidence / Score Threshold -->
                 <div>
-                    <label class="block text-gray-400 text-sm mb-2">Min AI Confidence (%)</label>
+                    <label class="block text-gray-400 text-sm mb-2" x-text="settings.strategy === 'adaptive_hybrid' ? 'Score Threshold (0-100)' : 'Min AI Confidence (%)'"></label>
                     <div class="flex items-center gap-4">
                         <input type="range" x-model="settings.min_confidence" min="0" max="100" step="5"
                                class="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
                         <span class="text-white font-medium w-12 text-center" x-text="settings.min_confidence + '%'"></span>
                     </div>
+                    <p class="text-gray-500 text-xs mt-1" x-show="settings.strategy === 'adaptive_hybrid'">Minimum aggregate score from scoring modules</p>
                 </div>
 
                 <!-- Max Daily Trades -->
@@ -190,26 +194,62 @@
         </div>
     </div>
 
+    <!-- Adaptive Hybrid Parameters (read-only) -->
+    <div class="mt-6 bg-gray-800 rounded-xl p-6 border border-gray-700" x-show="settings.strategy === 'adaptive_hybrid'">
+        <h2 class="text-lg font-semibold text-white mb-4">Adaptive Hybrid Parameters <span class="text-gray-500 text-sm font-normal">(edit config.py)</span></h2>
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">Min Convergent Modules</p>
+                <p class="text-white font-medium" x-text="settings.feature_params?.min_convergent_modules ?? '-'"></p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">Min R:R Ratio</p>
+                <p class="text-white font-medium" x-text="settings.feature_params?.min_rr_ratio ?? '-'"></p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">Max Position %</p>
+                <p class="text-white font-medium" x-text="settings.feature_params?.max_position_pct != null ? settings.feature_params.max_position_pct + '%' : '-'"></p>
+            </div>
+            <div class="p-4 bg-gray-700/30 rounded-lg">
+                <p class="text-gray-400 text-sm">Urgency Floor</p>
+                <p class="text-white font-medium" x-text="settings.feature_params?.urgency_floor ?? '-'"></p>
+            </div>
+        </div>
+
+        <div x-show="settings.feature_params?.weights && Object.keys(settings.feature_params.weights).length > 0">
+            <h3 class="text-sm font-semibold text-gray-400 mb-3">Module Weights</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <template x-for="(weight, mod) in settings.feature_params?.weights || {}" :key="mod">
+                    <div class="p-3 bg-gray-700/30 rounded-lg">
+                        <p class="text-gray-400 text-xs" x-text="formatFeatureName(mod)"></p>
+                        <p class="text-white font-medium" x-text="weight"></p>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+
     <!-- Risk Management -->
     <div class="mt-6 bg-gray-800 rounded-xl p-6 border border-gray-700">
-        <h2 class="text-lg font-semibold text-white mb-4">Risk Management</h2>
+        <h2 class="text-lg font-semibold text-white mb-4">Risk Management <span class="text-gray-500 text-sm font-normal">(read-only)</span></h2>
 
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div class="p-4 bg-gray-700/30 rounded-lg">
-                <p class="text-gray-400 text-sm">Stop Loss</p>
-                <p class="text-white font-medium" x-text="settings.stop_loss_pct + '%'">-</p>
+                <p class="text-gray-400 text-sm" x-text="settings.strategy === 'adaptive_hybrid' ? 'Stop Loss (ATR)' : 'Stop Loss'"></p>
+                <p class="text-white font-medium" x-text="settings.strategy === 'adaptive_hybrid' ? settings.stop_loss_pct + 'x ATR' : settings.stop_loss_pct + '%'">-</p>
             </div>
             <div class="p-4 bg-gray-700/30 rounded-lg">
-                <p class="text-gray-400 text-sm">Take Profit</p>
-                <p class="text-white font-medium" x-text="settings.take_profit_pct + '%'">-</p>
+                <p class="text-gray-400 text-sm" x-text="settings.strategy === 'adaptive_hybrid' ? 'Take Profit (ATR)' : 'Take Profit'"></p>
+                <p class="text-white font-medium" x-text="settings.strategy === 'adaptive_hybrid' ? settings.take_profit_pct + 'x ATR' : settings.take_profit_pct + '%'">-</p>
             </div>
             <div class="p-4 bg-gray-700/30 rounded-lg">
                 <p class="text-gray-400 text-sm">Max Daily Loss</p>
                 <p class="text-white font-medium" x-text="'$' + (settings.max_daily_loss_usd || 25)"></p>
             </div>
-            <div class="p-4 bg-gray-700/30 rounded-lg">
+            <div class="p-4 bg-gray-700/30 rounded-lg" x-show="settings.strategy !== 'adaptive_hybrid' || (settings.max_daily_gain_usd != null && settings.max_daily_gain_usd !== '')">
                 <p class="text-gray-400 text-sm">Max Daily Gain</p>
-                <p class="text-white font-medium" x-text="'$' + (settings.max_daily_gain_usd || 25)"></p>
+                <p class="text-white font-medium" x-text="settings.max_daily_gain_usd != null ? '$' + settings.max_daily_gain_usd : '-'"></p>
             </div>
         </div>
 
@@ -268,7 +308,7 @@
 function settingsData() {
     return {
         settings: {
-            strategy: 'ramf',
+            strategy: 'adaptive_hybrid',
             paper_trading: true,
             paper_balance: 1000,
             leverage: 3,
@@ -285,10 +325,12 @@ function settingsData() {
         },
         assetsInput: '',
         saving: false,
+        isDirty: false,
         changedFeatures: {},
 
         init() {
             this.fetchSettings();
+            window.onbeforeunload = () => this.isDirty ? 'You have unsaved changes.' : null;
         },
 
         async fetchSettings() {
@@ -371,7 +413,8 @@ function settingsData() {
                 if (res.ok) {
                     showToast('Settings saved! Restart strategy for changes to take effect.', 'success');
                     this.settings.assets = assetsArray;
-                    this.changedFeatures = {};  // Reset changed features
+                    this.changedFeatures = {};
+                    this.isDirty = false;
                 } else {
                     showToast(data.detail || 'Failed to save settings', 'error');
                 }

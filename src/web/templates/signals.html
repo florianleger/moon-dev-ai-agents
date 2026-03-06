@@ -7,6 +7,8 @@
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-bold text-white">Signal History</h1>
         <div class="flex items-center gap-4">
+            <input type="text" x-model="tokenFilter" placeholder="Filter token..."
+                   class="bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:border-moon-purple focus:outline-none w-36">
             <select x-model="filter"
                     class="bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:border-moon-purple focus:outline-none">
                 <option value="all">All Signals</option>
@@ -45,17 +47,17 @@
     <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
         <div class="p-4 bg-gray-700/30 border-b border-gray-700">
             <div class="grid grid-cols-12 gap-4 text-gray-400 text-sm font-medium">
-                <div class="col-span-2">Time</div>
-                <div class="col-span-2">Symbol</div>
+                <div class="col-span-2 cursor-pointer hover:text-white select-none" @click="toggleSort('timestamp')">Time <span x-show="sortBy === 'timestamp'" x-text="sortDir === 'asc' ? '▲' : '▼'"></span></div>
+                <div class="col-span-2 cursor-pointer hover:text-white select-none" @click="toggleSort('symbol')">Symbol <span x-show="sortBy === 'symbol'" x-text="sortDir === 'asc' ? '▲' : '▼'"></span></div>
                 <div class="col-span-2">Signal</div>
-                <div class="col-span-2">Score</div>
-                <div class="col-span-2">Confidence</div>
+                <div class="col-span-2 cursor-pointer hover:text-white select-none" @click="toggleSort('weighted_score')">Score <span x-show="sortBy === 'weighted_score'" x-text="sortDir === 'asc' ? '▲' : '▼'"></span></div>
+                <div class="col-span-2 cursor-pointer hover:text-white select-none" @click="toggleSort('confidence')">Confidence <span x-show="sortBy === 'confidence'" x-text="sortDir === 'asc' ? '▲' : '▼'"></span></div>
                 <div class="col-span-2">Status</div>
             </div>
         </div>
 
         <div class="divide-y divide-gray-700/50">
-            <template x-for="signal in filteredSignals" :key="signal.timestamp + signal.symbol">
+            <template x-for="signal in sortedSignals" :key="signal.timestamp + signal.symbol">
                 <div class="bg-gray-800 hover:bg-gray-700/30 transition-colors">
                     <!-- Signal Row (clickable) -->
                     <div class="p-4 cursor-pointer" @click="signal.expanded = !signal.expanded">
@@ -63,7 +65,8 @@
                             <div class="col-span-2 text-gray-400 text-sm" x-text="formatDateTime(signal.timestamp)"></div>
                             <div class="col-span-2">
                                 <span class="font-medium text-white" x-text="signal.symbol"></span>
-                                <span x-show="signal.setup_type" class="ml-2 text-purple-400 text-xs" x-text="signal.setup_type"></span>
+                                <span x-show="signal.strategy" class="ml-2 px-1.5 py-0.5 bg-gray-600/50 text-gray-400 text-xs rounded" x-text="formatStrategyName(signal.strategy)"></span>
+                                <span x-show="signal.setup_type" class="ml-1 text-purple-400 text-xs" x-text="signal.setup_type"></span>
                             </div>
                             <div class="col-span-2">
                                 <span :class="{
@@ -73,7 +76,7 @@
                                 }" class="px-3 py-1 rounded-full text-xs font-medium border" x-text="signal.action"></span>
                             </div>
                             <div class="col-span-2">
-                                <span x-show="signal.weighted_score" class="text-moon-purple font-bold" x-text="signal.weighted_score + '/' + (signal.threshold || '?')"></span>
+                                <span x-show="signal.weighted_score" class="font-bold" :class="signal.threshold && signal.weighted_score >= signal.threshold ? 'text-green-400' : 'text-red-400'" x-text="signal.weighted_score + '/' + (signal.threshold || '?')"></span>
                                 <span x-show="!signal.weighted_score && signal.checklist_score" class="text-gray-400 text-sm" x-text="signal.checklist_score"></span>
                                 <span x-show="!signal.weighted_score && !signal.checklist_score" class="text-gray-500">-</span>
                             </div>
@@ -88,8 +91,8 @@
                                 </div>
                             </div>
                             <div class="col-span-2 flex items-center justify-between">
-                                <span :class="signal.approved ? 'text-green-400' : 'text-red-400'" class="text-sm"
-                                      x-text="signal.approved ? 'Approved' : 'Rejected'"></span>
+                                <span :class="signal.action === 'NEUTRAL' ? 'text-gray-400' : (signal.approved ? 'text-green-400' : 'text-red-400')" class="text-sm"
+                                      x-text="signal.action === 'NEUTRAL' ? 'No Pattern' : (signal.approved ? 'Approved' : 'Rejected')"></span>
                                 <span class="text-gray-500" x-text="signal.expanded ? '▼' : '▶'"></span>
                             </div>
                         </div>
@@ -202,7 +205,7 @@
                                             <span class="text-white" x-text="signal.current_price ? '$' + signal.current_price.toLocaleString() : '-'"></span>
                                         </div>
                                         <div class="flex justify-between">
-                                            <span class="text-gray-400">AI Confidence</span>
+                                            <span class="text-gray-400">Signal Strength</span>
                                             <span class="text-white" x-text="signal.confidence + '%'"></span>
                                         </div>
                                         <div class="flex justify-between" x-show="signal.weighted_score">
@@ -215,13 +218,26 @@
                                         </div>
                                     </div>
                                 </div>
+
+                                <!-- Skip Reasons -->
+                                <div x-show="signal.skip_reasons && signal.skip_reasons.length > 0" class="bg-gray-800 p-3 rounded-lg mt-3">
+                                    <h4 class="text-white font-medium mb-2">Skip Reasons</h4>
+                                    <ul class="space-y-1 text-sm">
+                                        <template x-for="reason in (signal.skip_reasons || [])" :key="reason">
+                                            <li class="text-gray-400 flex items-center gap-2">
+                                                <span class="text-yellow-500">&#x26A0;</span>
+                                                <span x-text="reason"></span>
+                                            </li>
+                                        </template>
+                                    </ul>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </template>
 
-            <div x-show="filteredSignals.length === 0" class="py-12 text-center text-gray-500">
+            <div x-show="sortedSignals.length === 0" class="py-12 text-center text-gray-500">
                 <div class="text-4xl mb-2">&#128269;</div>
                 <p>No signals found</p>
             </div>
@@ -244,17 +260,49 @@ function signalsData() {
     return {
         signals: [],
         filter: 'all',
+        tokenFilter: '',
+        sortBy: 'timestamp',
+        sortDir: 'desc',
         limit: 50,
 
         get filteredSignals() {
-            if (this.filter === 'all') return this.signals;
-            return this.signals.filter(s => s.action === this.filter);
+            let result = this.signals;
+            if (this.filter !== 'all') {
+                result = result.filter(s => s.action === this.filter);
+            }
+            if (this.tokenFilter.trim()) {
+                const q = this.tokenFilter.trim().toLowerCase();
+                result = result.filter(s => s.symbol && s.symbol.toLowerCase().includes(q));
+            }
+            return result;
+        },
+
+        get sortedSignals() {
+            const key = this.sortBy;
+            const dir = this.sortDir === 'asc' ? 1 : -1;
+            return [...this.filteredSignals].sort((a, b) => {
+                const va = a[key] ?? '';
+                const vb = b[key] ?? '';
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+                return 0;
+            });
+        },
+
+        toggleSort(col) {
+            if (this.sortBy === col) {
+                this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                this.sortBy = col;
+                this.sortDir = col === 'timestamp' ? 'desc' : 'desc';
+            }
         },
 
         get avgConfidence() {
-            if (this.signals.length === 0) return 0;
-            const sum = this.signals.reduce((acc, s) => acc + (s.confidence || 0), 0);
-            return Math.round(sum / this.signals.length);
+            const active = this.signals.filter(s => s.action === 'BUY' || s.action === 'SELL');
+            if (active.length === 0) return '-';
+            const sum = active.reduce((acc, s) => acc + (s.confidence || 0), 0);
+            return Math.round(sum / active.length);
         },
 
         init() {
@@ -302,6 +350,7 @@ function signalsData() {
                 diagnostic: s.diagnostic,
                 market_state: s.market_state,
                 skip_reasons: s.skip_reasons,
+                strategy: s.strategy,
                 expanded: false,
             };
         },
@@ -380,6 +429,11 @@ function signalsData() {
                 return `MACD ${check.aligned ? 'aligned' : 'not aligned'}`;
             }
             return '';
+        },
+
+        formatStrategyName(name) {
+            if (!name) return '';
+            return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         }
     };
 }
