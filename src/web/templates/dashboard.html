@@ -268,6 +268,8 @@ function dashboardData() {
         maxDailyTrades: 5,
         regime: null,
         _tick: 0,
+        _sseConnected: false,
+        _pollTimer: null,
 
         init() {
             this.fetchStats();
@@ -275,16 +277,22 @@ function dashboardData() {
             this.fetchSignals();
             this.setupSSE();
 
-            // Initialize chart after a short delay to ensure DOM is ready
-            // This fixes a race condition where Chart.js fails to render
             setTimeout(() => this.initChart(), 100);
 
+            // Tick for formatLastUpdated reactivity
             setInterval(() => this._tick++, 5000);
 
-            setInterval(() => {
-                this.fetchStats();
-                this.fetchPositions();
-                this.fetchSignals();
+            this._startPolling();
+        },
+
+        _startPolling() {
+            if (this._pollTimer) return;
+            this._pollTimer = setInterval(() => {
+                if (!this._sseConnected) {
+                    this.fetchStats();
+                    this.fetchPositions();
+                    this.fetchSignals();
+                }
             }, 10000);
         },
 
@@ -470,6 +478,7 @@ function dashboardData() {
             // SSE for real-time updates (optional, fallback to polling)
             try {
                 const eventSource = new EventSource('/api/dashboard/sse');
+                this._sseConnected = true;
 
                 eventSource.addEventListener('stats', (e) => {
                     const data = JSON.parse(e.data);
@@ -511,8 +520,8 @@ function dashboardData() {
                 });
 
                 eventSource.onerror = () => {
+                    this._sseConnected = false;
                     eventSource.close();
-                    // Fall back to polling only
                 };
             } catch (e) {
                 // SSE not supported or failed, polling will handle updates

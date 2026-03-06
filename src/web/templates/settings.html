@@ -129,16 +129,17 @@
 
             <div class="space-y-3">
                 <template x-for="(enabled, feature) in settings.features" :key="feature">
-                    <div class="flex items-center justify-between p-3 bg-gray-700/30 rounded-lg">
+                    <div class="flex items-center justify-between p-3 bg-gray-700/30 rounded-lg"
+                         :class="settings.strategy !== 'sniper' && settings.strategy !== 'adaptive_hybrid' ? 'opacity-50' : ''">
                         <div>
                             <span class="text-white" x-text="formatFeatureName(feature)"></span>
                             <p class="text-gray-500 text-xs" x-text="getFeatureDescription(feature)"></p>
                         </div>
-                        <label class="relative inline-flex items-center cursor-pointer">
+                        <label class="relative inline-flex items-center" :class="settings.strategy !== 'sniper' && settings.strategy !== 'adaptive_hybrid' ? 'cursor-not-allowed' : 'cursor-pointer'">
                             <input type="checkbox"
                                    x-model="settings.features[feature]"
                                    class="sr-only peer"
-                                           :disabled="settings.strategy !== 'sniper' && settings.strategy !== 'adaptive_hybrid'"
+                                   :disabled="settings.strategy !== 'sniper' && settings.strategy !== 'adaptive_hybrid'"
                                    @change="featureToggled(feature)">
                             <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
                         </label>
@@ -453,7 +454,6 @@ function settingsData() {
                 // RAMF features
                 'adaptive_sl_tp': 'Dynamic stop-loss and take-profit',
                 'time_windows': 'Trade during optimal sessions',
-                'mtf_confluence': 'Multi-timeframe agreement',
                 'funding_divergence': 'Use funding rate signals',
                 'liquidation_clusters': 'Detect liquidation zones',
                 // Adaptive Hybrid features

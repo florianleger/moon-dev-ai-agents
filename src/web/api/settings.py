@@ -292,8 +292,8 @@ async def update_settings(
             if not assets_list:
                 raise HTTPException(status_code=400, detail="At least one asset required")
             assets_str = str(assets_list)
-            content = _replace_config_value(content, f"{prefix}ASSETS", assets_str)
-            updates.append(f"{prefix}ASSETS={assets_list}")
+            content = _replace_config_value(content, "SNIPER_ASSETS", assets_str)
+            updates.append(f"SNIPER_ASSETS={assets_list}")
 
         if settings.stop_loss_pct is not None:
             if not 0.1 <= settings.stop_loss_pct <= 10:
