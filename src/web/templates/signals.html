@@ -39,7 +39,7 @@
         </div>
         <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
             <p class="text-gray-400 text-sm">Avg Confidence</p>
-            <p class="text-2xl font-bold text-yellow-400" x-text="avgConfidence + '%'">0%</p>
+            <p class="text-2xl font-bold text-yellow-400" x-text="avgConfidence === '-' ? '-' : avgConfidence + '%'">0%</p>
         </div>
     </div>
 
@@ -76,7 +76,7 @@
                                 }" class="px-3 py-1 rounded-full text-xs font-medium border" x-text="signal.action"></span>
                             </div>
                             <div class="col-span-2">
-                                <span x-show="signal.weighted_score" class="font-bold" :class="signal.threshold && signal.weighted_score >= signal.threshold ? 'text-green-400' : 'text-red-400'" x-text="signal.weighted_score + '/' + (signal.threshold || '?')"></span>
+                                <span x-show="signal.weighted_score != null" class="font-bold" :class="signal.threshold && signal.weighted_score >= signal.threshold ? 'text-green-400' : 'text-red-400'" x-text="signal.weighted_score + '/' + (signal.threshold || '?')"></span>
                                 <span x-show="!signal.weighted_score && signal.checklist_score" class="text-gray-400 text-sm" x-text="signal.checklist_score"></span>
                                 <span x-show="!signal.weighted_score && !signal.checklist_score" class="text-gray-500">-</span>
                             </div>
@@ -208,7 +208,7 @@
                                             <span class="text-gray-400">Signal Strength</span>
                                             <span class="text-white" x-text="signal.confidence + '%'"></span>
                                         </div>
-                                        <div class="flex justify-between" x-show="signal.weighted_score">
+                                        <div class="flex justify-between" x-show="signal.weighted_score != null">
                                             <span class="text-gray-400">Weighted Score</span>
                                             <span class="text-moon-purple font-bold" x-text="signal.weighted_score + '/' + (signal.threshold || '?')"></span>
                                         </div>
@@ -294,7 +294,7 @@ function signalsData() {
                 this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
             } else {
                 this.sortBy = col;
-                this.sortDir = col === 'timestamp' ? 'desc' : 'desc';
+                this.sortDir = col === 'symbol' ? 'asc' : 'desc';
             }
         },
 

@@ -3,7 +3,7 @@
 {% block title %}Settings - Moon Dev Trading{% endblock %}
 
 {% block content %}
-<div x-data="settingsData()" x-init="init()" @change="isDirty = true" @input="isDirty = true">
+<div x-data="settingsData()" x-init="init()" @change="if (!_initializing) isDirty = true" @input="if (!_initializing) isDirty = true">
     <div class="flex justify-between items-center mb-6">
         <div>
             <h1 class="text-2xl font-bold text-white">Settings</h1>
@@ -76,7 +76,7 @@
                     <div class="flex items-center gap-4">
                         <input type="range" x-model="settings.min_confidence" min="0" max="100" step="5"
                                class="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
-                        <span class="text-white font-medium w-12 text-center" x-text="settings.min_confidence + '%'"></span>
+                        <span class="text-white font-medium w-12 text-center" x-text="settings.min_confidence + (settings.strategy === 'adaptive_hybrid' ? '' : '%')"></span>
                     </div>
                     <p class="text-gray-500 text-xs mt-1" x-show="settings.strategy === 'adaptive_hybrid'">Minimum aggregate score from scoring modules</p>
                 </div>
@@ -318,7 +318,7 @@ function settingsData() {
             stop_loss_pct: 1.0,
             take_profit_pct: 2.0,
             max_daily_loss_usd: 25,
-            max_daily_gain_usd: 25,
+            max_daily_gain_usd: null,
             features: {},
             checklist: {},
             feature_params: {}
@@ -326,11 +326,17 @@ function settingsData() {
         assetsInput: '',
         saving: false,
         isDirty: false,
+        _initializing: true,
         changedFeatures: {},
 
         init() {
             this.fetchSettings();
-            window.onbeforeunload = () => this.isDirty ? 'You have unsaved changes.' : null;
+            window.addEventListener('beforeunload', (e) => {
+                if (this.isDirty) {
+                    e.preventDefault();
+                    e.returnValue = '';
+                }
+            });
         },
 
         async fetchSettings() {
@@ -342,8 +348,10 @@ function settingsData() {
                     ...data,
                 };
                 this.assetsInput = data.assets?.join(', ') || '';
+                this.$nextTick(() => { this._initializing = false; });
             } catch (e) {
                 console.error('Failed to fetch settings:', e);
+                this._initializing = false;
             }
         },
 
