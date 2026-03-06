@@ -582,3 +582,28 @@ ADAPTIVE_HYBRID_BAYESIAN_DECAY = 0.95        # Decay factor for recency bias
 ADAPTIVE_HYBRID_USE_ANOMALY_FILTER = True    # Enable Isolation Forest anomaly detection
 ADAPTIVE_HYBRID_ANOMALY_SCORE_DIVISOR = 2    # Divide signal score by this if anomaly detected
 
+# ============================================================================
+# Smart Scheduling - Light Check
+# ============================================================================
+# Daemon thread that polls HyperLiquid allMids every 2 minutes (1 HTTP call)
+# to detect sudden price spikes and trigger priority analysis.
+LIGHT_CHECK_ENABLED = True
+LIGHT_CHECK_INTERVAL_S = 120                   # 2 minutes between checks
+LIGHT_CHECK_PRICE_THRESHOLDS = {               # Min move in 1 check (2min) to trigger
+    'large': 0.008,   # BTC, ETH  -- 0.8%
+    'mid':   0.015,   # SOL, XRP, ADA, etc. -- 1.5%
+    'small': 0.025,   # DOGE, kPEPE, ENA -- 2.5%
+}
+LIGHT_CHECK_ROLLING_THRESHOLDS = {             # Min move over rolling window (10min)
+    'large': 0.015,   # 1.5%
+    'mid':   0.030,   # 3.0%
+    'small': 0.050,   # 5.0%
+}
+LIGHT_CHECK_ROLLING_WINDOW = 5                 # 5 checks = 10 minutes
+
+# Smart Scheduling - Priority Queue Scheduler (Phase 2)
+SCHEDULER_ENABLED = True                           # Use smart scheduler instead of fixed cycle
+FULL_CHECK_COOLDOWN_S = 120                        # Min 2min between two full checks of the same token
+FULL_CHECK_BASE_INTERVAL_MIN = 10                  # Base recheck interval (no position, routine)
+FULL_CHECK_POSITION_INTERVAL_MIN = 3               # Recheck interval when token has open position
+

@@ -14,6 +14,20 @@ import time
 from datetime import datetime, timedelta
 from config import *
 
+# Import Light Check for spike detection
+try:
+    from src.scheduling.light_check import LightCheck
+    LIGHT_CHECK_AVAILABLE = True
+except ImportError:
+    LIGHT_CHECK_AVAILABLE = False
+
+# Import Smart Scheduler (Phase 2)
+try:
+    from src.scheduling.scheduler import SmartScheduler
+    SMART_SCHEDULER_AVAILABLE = True
+except ImportError:
+    SMART_SCHEDULER_AVAILABLE = False
+
 # Import web state for dashboard control
 try:
     from src.web.state import is_strategy_running, update_paper_status, ensure_state_initialized
@@ -148,34 +162,203 @@ def run_agents():
             report_thread.start()
             cprint("[Main] Daily report thread started (9h00 daily)", "cyan")
 
+        # Start Light Check daemon thread (spike detection every 2 minutes)
+        light_check = None
+        if LIGHT_CHECK_AVAILABLE and LIGHT_CHECK_ENABLED:
+            light_check = LightCheck()
+            light_check.start()
+
+        # Initialize Smart Scheduler (Phase 2)
+        use_scheduler = (SMART_SCHEDULER_AVAILABLE and SCHEDULER_ENABLED
+                         and strategy_agent is not None)
+        scheduler = None
+        if use_scheduler:
+            scheduler = SmartScheduler()
+            scheduler.load_state()
+            active_tokens = [t for t in get_active_tokens() if t not in EXCLUDED_TOKENS]
+            scheduler.enqueue_all_routine(active_tokens)
+            cprint(f"[Scheduler] Smart scheduler initialized with {len(active_tokens)} tokens", "cyan")
+        elif SCHEDULER_ENABLED and not SMART_SCHEDULER_AVAILABLE:
+            cprint("[Scheduler] SCHEDULER_ENABLED=True but module not available, using fixed cycle", "yellow")
+
+        # Shared helpers
+        def _show_paper_status():
+            """Display paper trading status and sync to dashboard."""
+            if not strategy_agent:
+                return
+            for strategy in strategy_agent.enabled_strategies:
+                if hasattr(strategy, 'get_paper_status'):
+                    status = strategy.get_paper_status()
+                    if status['open_positions'] > 0 or status['total_closed'] > 0:
+                        cprint(f"\n  Paper Trading Status:", "magenta")
+                        cprint(f"   Balance: ${status['paper_balance']:,.2f} (started: ${status['initial_balance']:,.2f})", "white")
+                        cprint(f"   Total PnL: ${status['total_pnl']:+,.2f}", "green" if status['total_pnl'] >= 0 else "red")
+                        cprint(f"   Daily PnL: ${status['daily_pnl']:+,.2f}", "white")
+                        cprint(f"   Open: {status['open_positions']} | Closed: {status['total_closed']}", "white")
+                    if WEB_STATE_AVAILABLE:
+                        try:
+                            update_paper_status(
+                                balance=status['paper_balance'],
+                                positions=status.get('positions', []),
+                                daily_pnl=status['daily_pnl'],
+                                total_pnl=status['total_pnl'],
+                                trades_today=status.get('daily_trades', 0)
+                            )
+                        except Exception:
+                            pass
+
+        def _analyze_token(token):
+            """Analyze a single token - sequential for thread-safety."""
+            try:
+                return strategy_agent.get_signals(token)
+            except Exception as e:
+                cprint(f"Error analyzing {token}: {e}", "red")
+                return None
+
+        def _extract_result(token, signal):
+            """Extract scheduler-relevant fields from a generate_signals result."""
+            if signal and signal.get('metadata'):
+                meta = signal['metadata']
+                return {
+                    'score': meta.get('score', 0),
+                    'threshold': meta.get('threshold', 40),
+                    'regime': (meta.get('llm_regime') or {}).get('regime', ''),
+                    'atr_pct': meta.get('atr', 0) / max(meta.get('current_price', 1), 1e-9) if meta.get('atr') else 0,
+                }
+            return {'score': 0, 'threshold': 40, 'regime': '', 'atr_pct': 0}
+
+        def _has_position(token):
+            """Check if there is an open paper position for this token."""
+            for strategy in strategy_agent.enabled_strategies:
+                if hasattr(strategy, 'paper_positions'):
+                    with strategy._position_lock:
+                        for pos in strategy.paper_positions.values():
+                            if pos.get('symbol') == token:
+                                return True
+            return False
+
+        def _write_heartbeat(cycle_start):
+            """Write heartbeat file for monitoring."""
+            cycle_duration = time.time() - cycle_start
+            heartbeat_path = os.path.join(os.path.dirname(__file__), 'data', 'bot_heartbeat.json')
+            try:
+                os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
+                with open(heartbeat_path, 'w') as f:
+                    json.dump({
+                        'last_cycle': datetime.now().isoformat(),
+                        'timestamp': time.time(),
+                        'status': 'running',
+                        'cycle_duration_s': round(cycle_duration, 1)
+                    }, f)
+            except Exception:
+                pass
+
+        # =====================================================================
+        # SCHEDULER-BASED LOOP (Phase 2) — fast 30s iterations
+        # =====================================================================
+        if use_scheduler:
+            last_risk_run = 0
+            RISK_INTERVAL_S = 5 * 60  # Risk agent every 5 minutes
+
+            while True:
+                try:
+                    iter_start = time.time()
+
+                    # --- Risk Agent (every 5 min) ---
+                    if risk_agent and (time.time() - last_risk_run >= RISK_INTERVAL_S):
+                        cprint("\n  Running Risk Management...", "cyan")
+                        risk_agent.run()
+                        last_risk_run = time.time()
+                        _show_paper_status()
+
+                    # --- Strategy paused check ---
+                    if not is_strategy_running():
+                        cprint("  Strategy paused (Start from web dashboard to enable)", "yellow")
+                        time.sleep(30)
+                        continue
+
+                    # --- Risk gate ---
+                    if risk_agent and not risk_agent.is_trading_allowed():
+                        cprint(f"  Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
+                        time.sleep(30)
+                        continue
+
+                    # --- Inject spike triggers from LightCheck ---
+                    if light_check:
+                        spike_tokens = light_check.get_and_clear_triggered()
+                        for spike_token in spike_tokens:
+                            scheduler.enqueue_spike(spike_token, f"spike detected by LightCheck")
+
+                    # --- Get due tokens from scheduler ---
+                    due = scheduler.get_due_symbols()
+
+                    if due:
+                        cprint(f"\n  [Scheduler] {len(due)} token(s) due (queue: {scheduler.queue_size()} remaining)", "cyan")
+
+                        for i, req in enumerate(due):
+                            if risk_agent and not risk_agent.is_trading_allowed():
+                                cprint(f"  Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
+                                # Re-enqueue current + all remaining unprocessed tokens
+                                for remaining in due[i:]:
+                                    scheduler.schedule_recheck(remaining.symbol, scheduler.get_last_result(remaining.symbol), _has_position(remaining.symbol))
+                                break
+
+                            cprint(f"  [Scheduler] Analyzing {req.symbol} ({req.reason})", "cyan")
+                            signal = _analyze_token(req.symbol)
+
+                            # Record result and schedule next check
+                            result = _extract_result(req.symbol, signal)
+                            scheduler.record_result(req.symbol, result)
+                            scheduler.schedule_recheck(req.symbol, result, _has_position(req.symbol))
+
+                        _write_heartbeat(iter_start)
+
+                    # --- CopyBot / Sentiment (run after risk agent, same cadence) ---
+                    risk_just_ran = (time.time() - last_risk_run < RISK_INTERVAL_S + 30)
+                    if copybot_agent and risk_just_ran:
+                        copybot_agent.run_analysis_cycle()
+                    if sentiment_agent and risk_just_ran:
+                        sentiment_agent.run()
+
+                    # Wait 30s before next iteration
+                    time.sleep(30)
+
+                except Exception as e:
+                    cprint(f"\n  Error in scheduler loop: {str(e)}", "red")
+                    cprint("  Continuing to next iteration...", "yellow")
+                    time.sleep(30)
+
+        # =====================================================================
+        # FIXED-CYCLE LOOP (legacy fallback when SCHEDULER_ENABLED=False)
+        # =====================================================================
         while True:
             try:
                 cycle_start = time.time()
 
                 # Run Risk Management
                 if risk_agent:
-                    cprint("\n🛡️ Running Risk Management...", "cyan")
+                    cprint("\n  Running Risk Management...", "cyan")
                     risk_agent.run()
 
                 # Run Trading Analysis
                 if trading_agent:
-                    cprint("\n🤖 Running Trading Analysis...", "cyan")
+                    cprint("\n  Running Trading Analysis...", "cyan")
                     trading_agent.run()
 
                 # Run Strategy Analysis (only if enabled via web dashboard)
                 if strategy_agent:
                     # Check if strategy should run (controlled by web dashboard)
                     if not is_strategy_running():
-                        cprint("\n⏸️  Strategy paused (Start from web dashboard to enable)", "yellow")
+                        cprint("\n  Strategy paused (Start from web dashboard to enable)", "yellow")
                     else:
-                        cprint("\n📊 Running Strategy Analysis...", "cyan")
+                        cprint("\n  Running Strategy Analysis...", "cyan")
 
                     for strategy in strategy_agent.enabled_strategies:
                         # Show paper trading status and sync to web dashboard
                         if hasattr(strategy, 'get_paper_status'):
                             status = strategy.get_paper_status()
                             if status['open_positions'] > 0 or status['total_closed'] > 0:
-                                cprint(f"\n💰 Paper Trading Status:", "magenta")
+                                cprint(f"\n  Paper Trading Status:", "magenta")
                                 cprint(f"   Balance: ${status['paper_balance']:,.2f} (started: ${status['initial_balance']:,.2f})", "white")
                                 cprint(f"   Total PnL: ${status['total_pnl']:+,.2f}", "green" if status['total_pnl'] >= 0 else "red")
                                 cprint(f"   Daily PnL: ${status['daily_pnl']:+,.2f}", "white")
@@ -198,11 +381,24 @@ def run_agents():
                     if is_strategy_running():
                         # Check risk agent before opening new positions
                         if risk_agent and not risk_agent.is_trading_allowed():
-                            cprint(f"\n⛔ Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
+                            cprint(f"\n  Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
                         else:
+                            # Check for spike-triggered tokens from LightCheck (priority analysis)
+                            spike_tokens = set()
+                            if light_check:
+                                spike_tokens = light_check.get_and_clear_triggered()
+                                if spike_tokens:
+                                    cprint(f"\n[LightCheck] Priority analysis for {len(spike_tokens)} spiked token(s): {', '.join(sorted(spike_tokens))}", "yellow", attrs=['bold'])
+                                    for spike_token in sorted(spike_tokens):
+                                        if risk_agent and not risk_agent.is_trading_allowed():
+                                            cprint(f"\n  Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
+                                            break
+                                        _analyze_token(spike_token)
+
                             active_tokens = get_active_tokens()  # Uses HYPERLIQUID_SYMBOLS when exchange is hyperliquid
-                            tokens_to_analyze = [t for t in active_tokens if t not in EXCLUDED_TOKENS]
-                            cprint(f"\n🔍 Analyzing {len(tokens_to_analyze)} tokens...", "cyan")
+                            # Exclude tokens already analyzed via spike priority
+                            tokens_to_analyze = [t for t in active_tokens if t not in EXCLUDED_TOKENS and t not in spike_tokens]
+                            cprint(f"\n  Analyzing {len(tokens_to_analyze)} tokens...", "cyan")
 
                             # Use batch signal generation for pre-computation if available
                             for strat in strategy_agent.enabled_strategies:
@@ -215,66 +411,44 @@ def run_agents():
                                         cprint(f"[Batch] Error: {e}", "yellow")
                                     break
 
-                            # Token analysis: get_signals() includes trade execution,
-                            # which mutates shared state (paper_positions, balance).
-                            # Data fetching is already parallelized by generate_signals_batch above.
-                            # Trade execution stays sequential for thread-safety.
-                            def analyze_token(token):
-                                """Analyze a single token - wrapped for parallel execution."""
-                                try:
-                                    return strategy_agent.get_signals(token)
-                                except Exception as e:
-                                    cprint(f"Error analyzing {token}: {e}", "red")
-                                    return None
-
                             # Sequential execution: get_signals does trade execution which is not thread-safe
-                            # TODO: Separate signal generation (parallelizable) from trade execution (sequential)
-                            # to enable full parallelization. For now, batch pre-computation above handles
-                            # the IO-bound candle fetching in parallel.
                             for token in tokens_to_analyze:
                                 if risk_agent and not risk_agent.is_trading_allowed():
-                                    cprint(f"\n⛔ Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
+                                    cprint(f"\n  Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
                                     break
-                                analyze_token(token)
+                                _analyze_token(token)
 
                 # Run CopyBot Analysis
                 if copybot_agent:
-                    cprint("\n🤖 Running CopyBot Portfolio Analysis...", "cyan")
+                    cprint("\n  Running CopyBot Portfolio Analysis...", "cyan")
                     copybot_agent.run_analysis_cycle()
 
                 # Run Sentiment Analysis
                 if sentiment_agent:
-                    cprint("\n🎭 Running Sentiment Analysis...", "cyan")
+                    cprint("\n  Running Sentiment Analysis...", "cyan")
                     sentiment_agent.run()
 
                 # Write heartbeat
-                cycle_end = time.time()
-                cycle_duration = cycle_end - cycle_start
-                heartbeat_path = os.path.join(os.path.dirname(__file__), 'data', 'bot_heartbeat.json')
-                try:
-                    os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
-                    with open(heartbeat_path, 'w') as f:
-                        json.dump({
-                            'last_cycle': datetime.now().isoformat(),
-                            'timestamp': time.time(),
-                            'status': 'running',
-                            'cycle_duration_s': round(cycle_duration, 1)
-                        }, f)
-                except Exception:
-                    pass
+                _write_heartbeat(cycle_start)
 
                 # Sleep until next cycle
                 next_run = datetime.now() + timedelta(minutes=SLEEP_BETWEEN_RUNS_MINUTES)
-                cprint(f"\n😴 Sleeping until {next_run.strftime('%H:%M:%S')}", "cyan")
+                cprint(f"\n  Sleeping until {next_run.strftime('%H:%M:%S')}", "cyan")
                 time.sleep(60 * SLEEP_BETWEEN_RUNS_MINUTES)
 
             except Exception as e:
-                cprint(f"\n❌ Error running agents: {str(e)}", "red")
-                cprint("🔄 Continuing to next cycle...", "yellow")
+                cprint(f"\n  Error running agents: {str(e)}", "red")
+                cprint("  Continuing to next cycle...", "yellow")
                 time.sleep(60)  # Sleep for 1 minute on error before retrying
 
     except KeyboardInterrupt:
         cprint("\n👋 Gracefully shutting down...", "yellow")
+        if scheduler:
+            scheduler.save_state()
+            cprint("[Scheduler] State saved to disk", "cyan")
+        if light_check:
+            light_check.stop()
+            cprint("[LightCheck] State saved to disk", "cyan")
     except Exception as e:
         cprint(f"\n❌ Fatal error in main loop: {str(e)}", "red")
         raise

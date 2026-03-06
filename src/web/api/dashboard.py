@@ -18,6 +18,8 @@ router = APIRouter()
 
 # Base path for strategy data
 DATA_BASE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
+SCHEDULER_STATE_FILE = os.path.join(DATA_BASE_PATH, 'adaptive_hybrid', 'scheduler_state.json')
+LIGHT_CHECK_STATE_FILE = os.path.join(DATA_BASE_PATH, 'adaptive_hybrid', 'light_check_state.json')
 INITIAL_BALANCE = 500.0
 
 
@@ -293,6 +295,82 @@ async def get_pnl_history(
     }
 
 
+def _read_scheduler_status() -> Dict:
+    """Read scheduler and light check state files, return formatted status."""
+    import json
+    now = datetime.now().timestamp()
+
+    result = {
+        "tokens": [],
+        "queue_size": 0,
+        "light_check": {
+            "last_prices": {},
+            "spike_count": 0,
+        },
+    }
+
+    # Read scheduler state
+    if os.path.exists(SCHEDULER_STATE_FILE):
+        try:
+            with open(SCHEDULER_STATE_FILE, 'r') as f:
+                state = json.load(f)
+
+            last_check = state.get('last_check', {})
+            last_result = state.get('last_result', {})
+            queue_items = state.get('queue', [])
+
+            result["queue_size"] = len(queue_items)
+
+            # Build next_recheck lookup from queue
+            next_recheck: Dict[str, float] = {}
+            next_priority: Dict[str, int] = {}
+            for item in queue_items:
+                sym = item.get('symbol', '')
+                scheduled = item.get('scheduled_at', 0)
+                prio = item.get('priority', 4)
+                if sym not in next_recheck or scheduled < next_recheck[sym]:
+                    next_recheck[sym] = scheduled
+                    next_priority[sym] = prio
+
+            # Merge all known symbols
+            all_symbols = set(last_check.keys()) | set(last_result.keys()) | set(next_recheck.keys())
+            for symbol in sorted(all_symbols):
+                lc_ts = last_check.get(symbol, 0)
+                lr = last_result.get(symbol, {})
+                nr = next_recheck.get(symbol)
+
+                token_info = {
+                    "symbol": symbol,
+                    "last_check_ago_s": round(now - lc_ts) if lc_ts else None,
+                    "score": lr.get('score'),
+                    "threshold": lr.get('threshold'),
+                    "regime": lr.get('regime'),
+                    "next_recheck_s": round(nr - now) if nr else None,
+                    "priority": next_priority.get(symbol),
+                }
+                result["tokens"].append(token_info)
+        except Exception:
+            pass
+
+    # Read light check state
+    if os.path.exists(LIGHT_CHECK_STATE_FILE):
+        try:
+            with open(LIGHT_CHECK_STATE_FILE, 'r') as f:
+                lc_state = json.load(f)
+            result["light_check"]["last_prices"] = lc_state.get('last_prices', {})
+            result["light_check"]["spike_count"] = lc_state.get('spike_count', 0)
+        except Exception:
+            pass
+
+    return result
+
+
+@router.get("/scheduler")
+async def get_scheduler_status(username: str = Depends(verify_credentials)) -> Dict:
+    """Get smart scheduler status."""
+    return _read_scheduler_status()
+
+
 @router.get("/sse")
 async def sse_updates(username: str = Depends(verify_credentials)):
     """Server-Sent Events for real-time updates."""
@@ -318,6 +396,10 @@ async def sse_updates(username: str = Depends(verify_credentials)):
 
             # Send latest signals
             yield f"event: signals\ndata: {_json_dumps(signals)}\n\n"
+
+            # Send scheduler status
+            scheduler = _read_scheduler_status()
+            yield f"event: scheduler\ndata: {_json_dumps(scheduler)}\n\n"
 
             # Wait before next update
             await asyncio.sleep(5)
