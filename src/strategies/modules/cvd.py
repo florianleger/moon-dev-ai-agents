@@ -1,15 +1,49 @@
 """CVD (Cumulative Volume Delta) scoring module."""
 import requests
+import json
+import os
 from collections import deque
 from datetime import datetime
 import threading
 import time
 
 HYPERLIQUID_API_URL = 'https://api.hyperliquid.xyz/info'
-_cvd_history = {}  # {symbol: deque of (timestamp, cvd_ratio, price)}
 _cvd_lock = threading.Lock()
 _trade_cache = {}  # {symbol: (timestamp, trades)}
 _CACHE_TTL = 30  # seconds
+_PERSIST_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'adaptive_hybrid', 'cvd_history.json')
+
+
+def _load_history() -> dict:
+    """Load persisted CVD history from disk."""
+    try:
+        with open(_PERSIST_PATH, 'r') as f:
+            raw = json.load(f)
+        result = {}
+        for sym, entries in raw.items():
+            dq = deque(maxlen=50)
+            for ts_str, ratio, price in entries:
+                dq.append((datetime.fromisoformat(ts_str), ratio, price))
+            result[sym] = dq
+        return result
+    except (FileNotFoundError, json.JSONDecodeError, Exception):
+        return {}
+
+
+def _save_history(history: dict):
+    """Persist CVD history to disk."""
+    try:
+        os.makedirs(os.path.dirname(_PERSIST_PATH), exist_ok=True)
+        raw = {}
+        for sym, dq in history.items():
+            raw[sym] = [(ts.isoformat(), ratio, price) for ts, ratio, price in dq]
+        with open(_PERSIST_PATH, 'w') as f:
+            json.dump(raw, f)
+    except Exception:
+        pass
+
+
+_cvd_history = _load_history()
 
 
 def _fetch_recent_trades(symbol: str) -> list:
@@ -63,15 +97,16 @@ def score_cvd(symbol: str, indicators: dict, config: dict = None) -> dict:
                 _cvd_history[symbol] = deque(maxlen=50)
             _cvd_history[symbol].append((now, cvd_ratio, indicators.get('close', 0)))
             history = list(_cvd_history[symbol])
+            _save_history(_cvd_history)
 
         long_score = 0
         short_score = 0
 
-        # Signal 1: CVD momentum
-        if cvd_ratio > 0.15:
-            long_score += 30 + int(min(cvd_ratio, 0.5) * 40)
-        elif cvd_ratio < -0.15:
-            short_score += 30 + int(min(abs(cvd_ratio), 0.5) * 40)
+        # Signal 1: CVD momentum (threshold lowered from 0.15 to 0.05)
+        if cvd_ratio > 0.05:
+            long_score += 20 + int(min(cvd_ratio, 0.5) * 60)
+        elif cvd_ratio < -0.05:
+            short_score += 20 + int(min(abs(cvd_ratio), 0.5) * 60)
 
         # Signal 2: CVD divergence (requires history)
         if len(history) >= 5:

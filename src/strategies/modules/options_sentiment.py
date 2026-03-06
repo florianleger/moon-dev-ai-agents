@@ -36,22 +36,26 @@ def score_options_sentiment(symbol: str, indicators: dict, config: dict = None) 
         if pc_ratio is not None:
             parts.append(f'P/C={pc_ratio:.2f}')
             if pc_ratio > 1.2:
-                long_score += 30  # Heavy put buying = contrarian bullish
-            elif pc_ratio > 0.9:
-                long_score += 10  # Mild fear
+                long_score += 35  # Heavy put buying = contrarian bullish
+            elif pc_ratio > 0.85:
+                long_score += 15  # Mild fear (lowered from 0.9)
             elif pc_ratio < 0.5:
-                short_score += 30  # Very low puts = complacency = bearish
-            elif pc_ratio < 0.7:
-                short_score += 10  # Mild complacency
+                short_score += 35  # Very low puts = complacency = bearish
+            elif pc_ratio < 0.75:
+                short_score += 15  # Mild complacency (raised from 0.7)
 
-        # Max pain distance signal
+        # Max pain distance signal (thresholds lowered from 5% to 3%)
         if max_pain is not None and close > 0:
             distance_pct = (close - max_pain) / max_pain * 100
             parts.append(f'MaxPain={max_pain:,.0f} dist={distance_pct:+.1f}%')
             if distance_pct > 5.0:
-                short_score += 20  # Price well above max pain, gravity pull down
+                short_score += 25  # Price well above max pain, gravity pull down
+            elif distance_pct > 3.0:
+                short_score += 15  # Price moderately above max pain
             elif distance_pct < -5.0:
-                long_score += 20  # Price well below max pain, gravity pull up
+                long_score += 25  # Price well below max pain, gravity pull up
+            elif distance_pct < -3.0:
+                long_score += 15  # Price moderately below max pain
 
         if not parts:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No options data available'}

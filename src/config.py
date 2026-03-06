@@ -424,8 +424,8 @@ ADAPTIVE_HYBRID_LLM_CONFIRMATION = True  # Enable LLM trade confirmation before 
 ADAPTIVE_HYBRID_LLM_REGIME = True        # Enable LLM market regime classifier
 ADAPTIVE_HYBRID_LLM_LEARNER = True       # Enable post-trade LLM learning
 ADAPTIVE_HYBRID_MTF_CONFLUENCE = True    # Enable multi-timeframe confluence scoring
-ADAPTIVE_HYBRID_LLM_PROVIDER = 'groq'   # LLM provider for fast calls ('groq', 'anthropic', etc.)
-ADAPTIVE_HYBRID_LLM_TIMEOUT_S = 5       # Max seconds to wait for LLM response
+ADAPTIVE_HYBRID_LLM_PROVIDER = 'anthropic'  # LLM provider — switched from groq (qwen3-32b rate-limited, 100% failures)
+ADAPTIVE_HYBRID_LLM_TIMEOUT_S = 8       # Max seconds to wait for LLM response (raised from 5 for Sonnet latency)
 ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25    # Max position size as % of paper balance
 ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2  # Minimum modules agreeing for a trade signal
 ADAPTIVE_HYBRID_MIN_RR_RATIO = 1.5       # Minimum reward:risk ratio (was 2.0 - lowered to capture more TP exits)
@@ -478,7 +478,7 @@ ADAPTIVE_HYBRID_WEIGHTS = {
     'sniper_lite': 0.10,         # was 0.12 — Relaxed Sniper (extreme move + volume)
     'trend_rider_lite': 0.00,    # still 0.00 — Merged into ema_trend
     'ramf_lite': 0.05,           # was 0.07 — Volatility regime (no dead zone)
-    'oi_delta': 0.05,            # was 0.08 — Open Interest delta
+    'oi_delta': 0.06,            # was 0.05 — Open Interest delta (now persisted)
     'sentiment': 0.04,           # was 0.06 — Sentiment composite (Fear & Greed + Twitter)
     'squeeze_detector': 0.04,    # was 0.05 — Squeeze detection
     'order_imbalance': 0.04,     # was 0.05 — Order book imbalance
@@ -486,11 +486,11 @@ ADAPTIVE_HYBRID_WEIGHTS = {
     'social_hype': 0.04,         # was 0.05 — CoinGecko trending + global macro
     'funding_divergence': 0.04,  # was 0.05 — Cross-exchange funding HL vs Binance
     # New modules (Phase 2)
-    'cvd': 0.07,                 # CVD - highest impact new signal
+    'cvd': 0.08,                 # CVD - highest impact new signal (now persisted)
     'vwap_deviation': 0.05,      # VWAP deviation bands
     'market_memory': 0.04,       # Hurst exponent + ACF
     'stablecoin_flow': 0.03,     # Macro liquidity proxy
-    'options_sentiment': 0.03,   # Deribit P/C + max pain (BTC/ETH only)
+    'options_sentiment': 0.01,   # Deribit P/C + max pain (BTC/ETH only, 0 for others)
 }
 
 # Weight profiles by token behavior class
@@ -508,10 +508,10 @@ ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
         'mean_reversion': 0.04, 'momentum_breakout': 0.09, 'ema_trend': 0.06,
         'funding_contrarian': 0.05, 'rsi_divergence': 0.04, 'sniper_lite': 0.08,
         'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
-        'oi_delta': 0.08, 'sentiment': 0.05, 'squeeze_detector': 0.05, 'order_imbalance': 0.05,
+        'oi_delta': 0.09, 'sentiment': 0.05, 'squeeze_detector': 0.05, 'order_imbalance': 0.05,
         'crowd_positioning': 0.06, 'social_hype': 0.05, 'funding_divergence': 0.04,
         # New modules (Phase 2)
-        'cvd': 0.09, 'vwap_deviation': 0.04, 'market_memory': 0.03, 'stablecoin_flow': 0.03, 'options_sentiment': 0.02,
+        'cvd': 0.10, 'vwap_deviation': 0.04, 'market_memory': 0.03, 'stablecoin_flow': 0.03, 'options_sentiment': 0.00,
     },
 }
 ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']

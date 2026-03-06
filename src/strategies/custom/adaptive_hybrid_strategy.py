@@ -275,7 +275,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self.trailing_stops = {}
 
         # OI history for delta calculation: {symbol: deque of (timestamp, oi_value)}
-        self._oi_history = {}  # symbol -> deque(maxlen=50)
+        # Loaded from disk to survive restarts
+        from src.strategies.modules.oi_delta import _load_oi_history
+        self._oi_history = _load_oi_history()
 
         # Market data provider (for funding rates)
         self._market_data = None

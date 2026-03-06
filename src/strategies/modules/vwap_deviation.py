@@ -51,18 +51,19 @@ def _score_vwap_deviation_inner(df: pd.DataFrame, indicators: dict, config: dict
     short_score = 0
 
     # Signal 1: Z-score extremes (mean reversion from VWAP bands)
+    # Thresholds lowered to trigger in ranging markets (was 1.0/1.5/2.0)
     if z_vwap < -2.0:
         long_score += 55
-    elif z_vwap < -1.5:
+    elif z_vwap < -1.2:
         long_score += 40
-    elif z_vwap < -1.0:
+    elif z_vwap < -0.6:
         long_score += 20
 
     if z_vwap > 2.0:
         short_score += 55
-    elif z_vwap > 1.5:
+    elif z_vwap > 1.2:
         short_score += 40
-    elif z_vwap > 1.0:
+    elif z_vwap > 0.6:
         short_score += 20
 
     # Signal 2: VWAP crossover with volume confirmation
@@ -72,10 +73,10 @@ def _score_vwap_deviation_inner(df: pd.DataFrame, indicators: dict, config: dict
         volume_ratio = indicators.get('volume_ratio', 1.0)
 
         # Bullish crossover: prev below VWAP, now above, with volume
-        if prev_close < prev_vwap and close > vwap and volume_ratio > 1.3:
+        if prev_close < prev_vwap and close > vwap and volume_ratio > 1.0:
             long_score += 25
         # Bearish crossover: prev above VWAP, now below, with volume
-        if prev_close > prev_vwap and close < vwap and volume_ratio > 1.3:
+        if prev_close > prev_vwap and close < vwap and volume_ratio > 1.0:
             short_score += 25
 
     best = max(long_score, short_score)

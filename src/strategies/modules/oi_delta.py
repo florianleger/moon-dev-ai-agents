@@ -1,7 +1,40 @@
 """Open Interest Delta scoring module."""
 
+import json
+import os
 from datetime import datetime
 from collections import deque
+
+_PERSIST_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'adaptive_hybrid', 'oi_history.json')
+
+
+def _load_oi_history() -> dict:
+    """Load persisted OI history from disk."""
+    try:
+        with open(_PERSIST_PATH, 'r') as f:
+            raw = json.load(f)
+        result = {}
+        for sym, entries in raw.items():
+            dq = deque(maxlen=50)
+            for ts_str, oi_val in entries:
+                dq.append((datetime.fromisoformat(ts_str), oi_val))
+            result[sym] = dq
+        return result
+    except (FileNotFoundError, json.JSONDecodeError, Exception):
+        return {}
+
+
+def _save_oi_history(history: dict):
+    """Persist OI history to disk."""
+    try:
+        os.makedirs(os.path.dirname(_PERSIST_PATH), exist_ok=True)
+        raw = {}
+        for sym, dq in history.items():
+            raw[sym] = [(ts.isoformat(), oi_val) for ts, oi_val in dq]
+        with open(_PERSIST_PATH, 'w') as f:
+            json.dump(raw, f)
+    except Exception:
+        pass
 
 
 def score_oi_delta(indicators: dict, market_data, oi_history: dict,
@@ -30,18 +63,27 @@ def score_oi_delta(indicators: dict, market_data, oi_history: dict,
         if current_oi <= 0:
             return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'OI is zero'}
 
+        # Merge persisted history into oi_history on first call per symbol
+        with cache_lock:
+            if symbol not in oi_history:
+                persisted = _load_oi_history()
+                if symbol in persisted:
+                    oi_history[symbol] = persisted[symbol]
+                else:
+                    oi_history[symbol] = deque(maxlen=50)
+
         # Store in timestamped deque
         now = datetime.now()
         with cache_lock:
-            if symbol not in oi_history:
-                oi_history[symbol] = deque(maxlen=50)
             oi_history[symbol].append((now, current_oi))
             history = list(oi_history[symbol])
+            # Persist after update
+            _save_oi_history(oi_history)
 
-        # Need at least 3 data points to compute meaningful delta
-        if len(history) < 3:
+        # Need at least 2 data points to compute meaningful delta (lowered from 3)
+        if len(history) < 2:
             return {'score': 0, 'direction': 'NEUTRAL',
-                    'reason': f'Insufficient OI history ({len(history)}/3 points)'}
+                    'reason': f'Insufficient OI history ({len(history)}/2 points)'}
 
         # Calculate delta from oldest available point
         oldest_oi = history[0][1]
