@@ -329,6 +329,7 @@ class StrategyAgent:
                                     'approved': True,
                                     'reason': f"Score {metadata.get('score', 0):.1f} (auto-approved)",
                                     'weighted_score': metadata.get('score'),
+                                    'threshold': metadata.get('threshold'),
                                     'diagnostic': metadata.get('diagnostic'),
                                     'current_price': metadata.get('current_price'),
                                 })
@@ -348,6 +349,7 @@ class StrategyAgent:
                                 'approved': False,
                                 'reason': metadata.get('reason', 'NEUTRAL'),
                                 'weighted_score': metadata.get('score'),
+                                'threshold': metadata.get('threshold'),
                                 'diagnostic': metadata.get('diagnostic'),
                                 'current_price': metadata.get('current_price'),
                             })
@@ -392,6 +394,7 @@ class StrategyAgent:
                                         'reason': display_reason,
                                         # Extended metadata for Sniper AI
                                         'weighted_score': metadata.get('weighted_score'),
+                                        'threshold': metadata.get('threshold'),
                                         'checklist_score': metadata.get('checklist_score'),
                                         'setup_type': metadata.get('setup_type'),
                                         'ai_reasoning': metadata.get('ai_reasoning'),
@@ -428,6 +431,7 @@ class StrategyAgent:
                                         'reason': 'Auto-approved (high confidence)',
                                         # Extended metadata for Sniper AI
                                         'weighted_score': metadata.get('weighted_score'),
+                                        'threshold': metadata.get('threshold'),
                                         'checklist_score': metadata.get('checklist_score'),
                                         'setup_type': metadata.get('setup_type'),
                                         'ai_reasoning': metadata.get('ai_reasoning'),

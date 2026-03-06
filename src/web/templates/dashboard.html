@@ -156,7 +156,7 @@
                             <div class="flex items-center gap-3">
                                 <!-- Weighted Score (Sniper) -->
                                 <span x-show="signal.weighted_score" class="text-moon-purple font-bold text-sm"
-                                      x-text="signal.weighted_score + '/10'"></span>
+                                      x-text="signal.weighted_score + '/' + (signal.threshold || '?')"></span>
                                 <!-- Confidence bar -->
                                 <div class="flex items-center gap-2">
                                     <div class="w-16 bg-gray-600 rounded-full h-2">
@@ -313,6 +313,7 @@ function dashboardData() {
                 reasoning: s.reason || s.reasoning || '',
                 // Extended fields for Sniper AI
                 weighted_score: s.weighted_score,
+                threshold: s.threshold,
                 checklist_score: s.checklist_score,
                 setup_type: s.setup_type,
                 ai_reasoning: s.ai_reasoning,

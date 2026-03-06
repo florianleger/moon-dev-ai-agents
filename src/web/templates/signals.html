@@ -73,7 +73,7 @@
                                 }" class="px-3 py-1 rounded-full text-xs font-medium border" x-text="signal.action"></span>
                             </div>
                             <div class="col-span-2">
-                                <span x-show="signal.weighted_score" class="text-moon-purple font-bold" x-text="signal.weighted_score + '/10'"></span>
+                                <span x-show="signal.weighted_score" class="text-moon-purple font-bold" x-text="signal.weighted_score + '/' + (signal.threshold || '?')"></span>
                                 <span x-show="!signal.weighted_score && signal.checklist_score" class="text-gray-400 text-sm" x-text="signal.checklist_score"></span>
                                 <span x-show="!signal.weighted_score && !signal.checklist_score" class="text-gray-500">-</span>
                             </div>
@@ -207,7 +207,7 @@
                                         </div>
                                         <div class="flex justify-between" x-show="signal.weighted_score">
                                             <span class="text-gray-400">Weighted Score</span>
-                                            <span class="text-moon-purple font-bold" x-text="signal.weighted_score + '/10'"></span>
+                                            <span class="text-moon-purple font-bold" x-text="signal.weighted_score + '/' + (signal.threshold || '?')"></span>
                                         </div>
                                         <div class="flex justify-between" x-show="signal.reason">
                                             <span class="text-gray-400">Decision</span>
@@ -291,6 +291,7 @@ function signalsData() {
                 approved: s.approved,
                 // Extended fields for Sniper AI
                 weighted_score: s.weighted_score,
+                threshold: s.threshold,
                 checklist_score: s.checklist_score,
                 setup_type: s.setup_type,
                 ai_reasoning: s.ai_reasoning,
