@@ -94,14 +94,27 @@ def _clean_cache():
 
 
 def _parse_llm_response(response_text):
-    """Extract JSON from LLM response, handling markdown code blocks."""
+    """Extract JSON from LLM response, handling markdown code blocks and truncation."""
     text = response_text.strip()
+    if not text:
+        raise json.JSONDecodeError("Empty response", "", 0)
+
     if '```json' in text:
         text = text.split('```json')[1].split('```')[0].strip()
     elif '```' in text:
         text = text.split('```')[1].split('```')[0].strip()
 
-    result = json.loads(text)
+    # Try direct parse first
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        # Try to find JSON object in the text (LLM may add reasoning before/after)
+        import re
+        match = re.search(r'\{[^{}]*"decision"\s*:\s*"[^"]*"[^{}]*\}', text, re.DOTALL)
+        if match:
+            result = json.loads(match.group())
+        else:
+            raise
 
     # Validate required fields
     decision = result.get('decision', 'REJECT').upper()
@@ -234,7 +247,7 @@ def llm_confirm_trade(
             system_prompt=SYSTEM_PROMPT,
             user_content=user_content,
             temperature=0.2,
-            max_tokens=512,
+            max_tokens=1024,
         )
         latency_ms = int((time.time() - start_time) * 1000)
 
@@ -257,6 +270,16 @@ def llm_confirm_trade(
             }
 
         response_text = response.content if hasattr(response, 'content') else str(response)
+        if not response_text or not response_text.strip():
+            cprint(f"  [LLM Confirm] Empty response text for {symbol}", "yellow")
+            return {
+                'decision': 'CONFIRM',
+                'confidence': 50,
+                'reasoning': 'LLM returned empty response, auto-confirmed',
+                'adjusted_score': None,
+                'sl_adjustment': None,
+                'tp_adjustment': None,
+            }
         result = _parse_llm_response(response_text)
 
         # Cache the result
