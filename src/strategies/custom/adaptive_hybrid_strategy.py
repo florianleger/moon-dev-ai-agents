@@ -461,8 +461,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         try:
             from hyperliquid.info import Info
+            import requests
 
             info = Info(skip_ws=True)
+            # Force timeout on the underlying session to prevent infinite hangs
+            if hasattr(info, 'session') and isinstance(info.session, requests.Session):
+                info.session.timeout = 15
             end_time = int(_time.time() * 1000)
 
             interval_map = {
@@ -1399,11 +1403,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         symbol = signal.get('token', '')
         direction = signal.get('direction', 'NEUTRAL')
+        cprint(f"[AdaptiveHybrid] execute_paper_trade START: {direction} {symbol}", "cyan")
 
         if not symbol or direction == 'NEUTRAL':
             return None
 
         # Check for duplicate position on same symbol+direction
+        cprint(f"[AdaptiveHybrid] Acquiring _position_lock for duplicate check...", "cyan")
         with self._position_lock:
             existing = [p for p in self.paper_positions.values()
                         if p['symbol'] == symbol and p['direction'] == direction]
@@ -1412,6 +1418,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             return None
 
         # HWM Drawdown check
+        cprint(f"[AdaptiveHybrid] Passed duplicate check, checking HWM drawdown...", "cyan")
         self.peak_balance = max(self.peak_balance, self.paper_balance)
         hwm_drawdown_pct = (self.peak_balance - self.paper_balance) / self.peak_balance * 100
         if hwm_drawdown_pct >= RISK_MAX_DRAWDOWN_PCT:
@@ -1419,9 +1426,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
             return None
 
         # Correlation-aware position check
+        cprint(f"[AdaptiveHybrid] Checking correlation limits ({len(self.paper_positions)} existing positions)...", "cyan")
         if len(self.paper_positions) > 0:
             same_direction_positions = [p for p in self.paper_positions.values() if p['direction'] == direction]
             if len(same_direction_positions) >= 2:
+                cprint(f"[AdaptiveHybrid] Fetching BTC correlation for {symbol}...", "cyan")
                 new_corr = self._get_btc_correlation(symbol)
                 if new_corr is not None and abs(new_corr) > 0.7:
                     avg_corr = sum(abs(self._get_btc_correlation(p['symbol']) or 0) for p in same_direction_positions) / len(same_direction_positions)
@@ -1431,8 +1440,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         metadata = signal.get('metadata', {})
         price = metadata.get('current_price', 0)
+        cprint(f"[AdaptiveHybrid] Price from metadata: {price}", "cyan")
 
         if price == 0:
+            cprint(f"[AdaptiveHybrid] No price in metadata, fetching candles...", "cyan")
             df = self._fetch_candles(symbol, interval='1h', candles=5)
             if df is not None and len(df) > 0:
                 price = float(df['close'].iloc[-1])
@@ -1469,6 +1480,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             take_profit_price = price * (1 - tp_pct / 100)
 
         # Atomic: margin check + position sizing + ID generation + insertion
+        cprint(f"[AdaptiveHybrid] Acquiring _position_lock for margin check + trade insertion...", "cyan")
         with self._position_lock:
             used_margin = sum(
                 pos.get('position_size', 0) / pos.get('leverage', ADAPTIVE_HYBRID_LEVERAGE)

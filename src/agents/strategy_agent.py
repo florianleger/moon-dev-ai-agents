@@ -504,7 +504,16 @@ class StrategyAgent:
                         # Try to use strategy's paper trade method if available
                         for strategy in self.enabled_strategies:
                             if hasattr(strategy, 'execute_paper_trade'):
-                                strategy.execute_paper_trade(signal)
+                                # Execute with timeout to prevent main loop hangs
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                                    future = executor.submit(strategy.execute_paper_trade, signal)
+                                    try:
+                                        future.result(timeout=60)
+                                    except concurrent.futures.TimeoutError:
+                                        cprint(f"⚠️ execute_paper_trade timed out for {signal.get('token', '?')} after 60s", "red")
+                                    except Exception as e:
+                                        cprint(f"⚠️ execute_paper_trade error for {signal.get('token', '?')}: {e}", "red")
                                 break
                         else:
                             cprint(f"  [PAPER] Would execute: {signal['direction']} {signal['token']}", "yellow")
