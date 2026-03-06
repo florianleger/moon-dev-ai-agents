@@ -22,7 +22,7 @@ class ClaudeModel(BaseModel):
         "claude-3-5-haiku-latest": "Claude 3.5 Haiku (deprecated)",
     }
 
-    def __init__(self, api_key: str, model_name: str = "claude-sonnet-4-5", **kwargs):
+    def __init__(self, api_key: str, model_name: str = "claude-sonnet-4-6", **kwargs):
         self.model_name = model_name
         super().__init__(api_key, **kwargs)
     
