@@ -111,7 +111,7 @@ echo ""
 WEB_PORT=${WEB_PORT:-8080}
 WEB_HOST=${WEB_HOST:-0.0.0.0}
 echo -e "${GREEN}Starting web dashboard on http://${WEB_HOST}:${WEB_PORT}${NC}"
-python -m uvicorn src.web.app:app --host $WEB_HOST --port $WEB_PORT &
+python -m uvicorn src.web.app:app --host $WEB_HOST --port $WEB_PORT --log-level warning &
 WEB_PID=$!
 
 # Give web server time to start
