@@ -1045,10 +1045,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
         """Get current threshold adjusted by urgency and global regime."""
         base = ADAPTIVE_HYBRID_BASE_THRESHOLD
 
-        # Slightly raise threshold in ranging_calm regime (reduce activity)
-        global_regime = self._detect_global_regime()
-        if global_regime == 'ranging_calm':
-            base *= 1.05  # +5% threshold in calm ranging markets (was +10%)
+        # Note: ranging_calm +5% bonus removed — in Extreme Fear markets, low realized
+        # volatility doesn't mean low opportunity (contrarian signals are most relevant).
+        # The LLM confirmation + anomaly filter provide sufficient protection.
 
         urgency = self._get_urgency_multiplier(symbol)
         effective = base * urgency

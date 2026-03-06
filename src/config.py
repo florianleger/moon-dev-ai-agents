@@ -409,7 +409,7 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 # Multi-module scoring strategy that aggregates 8 independent signal generators.
 # Target: 1-3 trades/day with 55%+ win rate.
 
-ADAPTIVE_HYBRID_BASE_THRESHOLD = 42      # Base score threshold (0-100) - lowered from 55: stacked penalties (coverage, BTC, conflict, session) were crushing scores
+ADAPTIVE_HYBRID_BASE_THRESHOLD = 40      # Base score threshold (0-100) - lowered from 42: stacked penalties + 10-12 inactive modules make 42+ unreachable in bear markets
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
 ADAPTIVE_HYBRID_URGENCY_FLOOR = 35       # Minimum threshold (never go below this) - lowered from 50
 ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5     # Max trades per day
