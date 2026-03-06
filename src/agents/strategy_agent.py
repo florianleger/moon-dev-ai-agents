@@ -505,15 +505,18 @@ class StrategyAgent:
                         for strategy in self.enabled_strategies:
                             if hasattr(strategy, 'execute_paper_trade'):
                                 # Execute with timeout to prevent main loop hangs
+                                # Note: don't use `with` — shutdown(wait=True) blocks if worker hangs
                                 import concurrent.futures
-                                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                                    future = executor.submit(strategy.execute_paper_trade, signal)
-                                    try:
-                                        future.result(timeout=60)
-                                    except concurrent.futures.TimeoutError:
-                                        cprint(f"⚠️ execute_paper_trade timed out for {signal.get('token', '?')} after 60s", "red")
-                                    except Exception as e:
-                                        cprint(f"⚠️ execute_paper_trade error for {signal.get('token', '?')}: {e}", "red")
+                                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                                future = executor.submit(strategy.execute_paper_trade, signal)
+                                try:
+                                    future.result(timeout=60)
+                                except concurrent.futures.TimeoutError:
+                                    cprint(f"⚠️ execute_paper_trade timed out for {signal.get('token', '?')} after 60s", "red")
+                                except Exception as e:
+                                    cprint(f"⚠️ execute_paper_trade error for {signal.get('token', '?')}: {e}", "red")
+                                finally:
+                                    executor.shutdown(wait=False, cancel_futures=True)
                                 break
                         else:
                             cprint(f"  [PAPER] Would execute: {signal['direction']} {signal['token']}", "yellow")

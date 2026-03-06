@@ -78,7 +78,7 @@ def ask_bid(symbol):
         'coin': symbol
     }
 
-    response = requests.post(url, headers=headers, data=json.dumps(data))
+    response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15)
     l2_data = response.json()
     l2_data = l2_data['levels']
 
@@ -94,7 +94,7 @@ def get_sz_px_decimals(symbol):
     headers = {'Content-Type': 'application/json'}
     data = {'type': 'meta'}
 
-    response = requests.post(url, headers=headers, data=json.dumps(data))
+    response = requests.post(url, headers=headers, data=json.dumps(data), timeout=15)
 
     if response.status_code == 200:
         data = response.json()
@@ -722,7 +722,8 @@ def get_market_info():
         response = requests.post(
             BASE_URL,
             headers={'Content-Type': 'application/json'},
-            json={"type": "allMids"}
+            json={"type": "allMids"},
+            timeout=15
         )
 
         print(f"📡 Response status code: {response.status_code}")
@@ -794,7 +795,8 @@ def get_funding_rates(symbol):
         response = requests.post(
             BASE_URL,
             headers={'Content-Type': 'application/json'},
-            json={"type": "metaAndAssetCtxs"}
+            json={"type": "metaAndAssetCtxs"},
+            timeout=15
         )
 
         if response.status_code == 200:

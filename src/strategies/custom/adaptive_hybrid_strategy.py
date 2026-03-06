@@ -461,12 +461,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         try:
             from hyperliquid.info import Info
-            import requests
 
-            info = Info(skip_ws=True)
-            # Force timeout on the underlying session to prevent infinite hangs
-            if hasattr(info, 'session') and isinstance(info.session, requests.Session):
-                info.session.timeout = 15
+            info = Info(skip_ws=True, timeout=15)
             end_time = int(_time.time() * 1000)
 
             interval_map = {
