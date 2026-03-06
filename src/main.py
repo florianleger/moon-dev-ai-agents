@@ -3,6 +3,7 @@
 Main entry point for running trading agents
 """
 
+import faulthandler
 import os
 import sys
 import json
@@ -14,18 +15,30 @@ import time
 from datetime import datetime, timedelta
 from config import *
 
+# Enable faulthandler for deadlock diagnostics (dumps all thread stacks on SIGSEGV/SIGABRT)
+faulthandler.enable()
+# Also dump stacks on SIGUSR1 (kill -USR1 <pid>)
+import signal as _signal
+faulthandler.register(_signal.SIGUSR1)
+
+# Global socket timeout to prevent infinite HTTP hangs (HyperLiquid SDK, etc.)
+import socket
+socket.setdefaulttimeout(30)
+
 # Import Light Check for spike detection
 try:
     from src.scheduling.light_check import LightCheck
     LIGHT_CHECK_AVAILABLE = True
-except ImportError:
+except Exception as e:
+    cprint(f"[Main] LightCheck import failed: {e}", "yellow")
     LIGHT_CHECK_AVAILABLE = False
 
 # Import Smart Scheduler (Phase 2)
 try:
     from src.scheduling.scheduler import SmartScheduler
     SMART_SCHEDULER_AVAILABLE = True
-except ImportError:
+except Exception as e:
+    cprint(f"[Main] SmartScheduler import failed: {e}", "yellow")
     SMART_SCHEDULER_AVAILABLE = False
 
 # Import web state for dashboard control
