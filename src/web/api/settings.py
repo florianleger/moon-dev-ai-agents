@@ -155,6 +155,7 @@ def _get_adaptive_hybrid_settings() -> Dict:
         ADAPTIVE_HYBRID_MAX_DAILY_TRADES,
         ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD,
         ADAPTIVE_HYBRID_LEVERAGE,
+        ADAPTIVE_HYBRID_LEVERAGE_PROFILES,
         ADAPTIVE_HYBRID_ATR_SL_MULT,
         ADAPTIVE_HYBRID_ATR_TP_MULT,
         ADAPTIVE_HYBRID_WEIGHTS,
@@ -191,6 +192,7 @@ def _get_adaptive_hybrid_settings() -> Dict:
             "min_rr_ratio": ADAPTIVE_HYBRID_MIN_RR_RATIO,
             "max_position_pct": ADAPTIVE_HYBRID_MAX_POSITION_PCT,
             "weights": ADAPTIVE_HYBRID_WEIGHTS,
+            "leverage_profiles": ADAPTIVE_HYBRID_LEVERAGE_PROFILES,
         }
     }
 

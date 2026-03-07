@@ -62,12 +62,29 @@
             <div class="space-y-4">
                 <!-- Leverage -->
                 <div>
-                    <label class="block text-gray-400 text-sm mb-2">Leverage (1-10)</label>
-                    <div class="flex items-center gap-4">
-                        <input type="range" x-model="settings.leverage" min="1" max="10" step="1"
-                               class="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
-                        <span class="text-white font-medium w-8 text-center" x-text="settings.leverage + 'x'"></span>
-                    </div>
+                    <template x-if="settings.strategy === 'adaptive_hybrid'">
+                        <div>
+                            <label class="block text-gray-400 text-sm mb-2">Leverage by Token Class (read-only)</label>
+                            <div class="grid grid-cols-2 gap-2">
+                                <template x-for="[cls, lev] of Object.entries(settings.feature_params?.leverage_profiles || {})" :key="cls">
+                                    <div class="flex items-center justify-between bg-gray-700/30 rounded-lg px-3 py-2">
+                                        <span class="text-gray-400 text-sm capitalize" x-text="cls"></span>
+                                        <span class="text-white font-medium" x-text="lev + 'x'"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                    <template x-if="settings.strategy !== 'adaptive_hybrid'">
+                        <div>
+                            <label class="block text-gray-400 text-sm mb-2">Leverage (1-10)</label>
+                            <div class="flex items-center gap-4">
+                                <input type="range" x-model.number="settings.leverage" min="1" max="10" step="1"
+                                       class="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer">
+                                <span class="text-white font-medium w-8 text-center" x-text="settings.leverage + 'x'"></span>
+                            </div>
+                        </div>
+                    </template>
                 </div>
 
                 <!-- Min Confidence / Score Threshold -->
