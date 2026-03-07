@@ -234,6 +234,10 @@ except ImportError:
     ADAPTIVE_HYBRID_LLM_TIMEOUT_S = 5
 
 
+# Absolute cap on any single live order (safety net)
+_MAX_LIVE_ORDER_USD = 1000
+
+
 class AdaptiveHybridStrategy(BaseStrategy):
     """
     Adaptive Hybrid Strategy - Multi-module convergence scoring.
@@ -270,6 +274,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Risk agent reference (set externally via set_risk_agent, e.g. from main.py)
         self._risk_agent = None
+
+        # Singleton LiveOrderManager (preserves bracket order state across calls)
+        self._live_order_manager = None
 
         # Trailing stops state: {position_id: {'highest': float, 'lowest': float, 'trailing_active': bool}}
         self.trailing_stops = {}
@@ -359,6 +366,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Pre-load funding history to avoid cold start
         self._preload_funding_history()
+
+        if not PAPER_TRADING:
+            cprint("=" * 60, "red", attrs=['bold'])
+            cprint("  WARNING: LIVE TRADING MODE ACTIVE", "red", attrs=['bold'])
+            cprint("  Real money will be used for trades!", "red", attrs=['bold'])
+            cprint("=" * 60, "red", attrs=['bold'])
 
         cprint(f"[AdaptiveHybrid] Strategy initialized", "cyan")
         cprint(f"  - Assets: {len(self.assets)} symbols", "white")
@@ -1400,14 +1413,16 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 self.daily_pnl = 0.0
                 self.last_trade_date = today
 
-    def execute_paper_trade(self, signal: dict) -> dict:
-        """Execute a paper trade (simulation) with capital protection checks."""
-        if not PAPER_TRADING:
-            return None
+    def _prepare_trade(self, signal: dict) -> dict:
+        """Validate signal and compute all trade parameters (shared by paper and live).
 
+        Returns a dict with all trade parameters ready for execution, or None if
+        the trade is rejected by any pre-trade check (duplicate, drawdown,
+        correlation, margin, etc.).
+        """
         symbol = signal.get('token', '')
         direction = signal.get('direction', 'NEUTRAL')
-        cprint(f"[AdaptiveHybrid] execute_paper_trade START: {direction} {symbol}", "cyan")
+        cprint(f"[AdaptiveHybrid] _prepare_trade START: {direction} {symbol}", "cyan")
 
         if not symbol or direction == 'NEUTRAL':
             return None
@@ -1417,8 +1432,18 @@ class AdaptiveHybridStrategy(BaseStrategy):
         with self._position_lock:
             existing = [p for p in self.paper_positions.values()
                         if p['symbol'] == symbol and p['direction'] == direction]
+            num_positions = len(self.paper_positions)
         if existing:
             cprint(f"[AdaptiveHybrid] Already have {direction} position on {symbol}, skipping", "yellow")
+            return None
+
+        # Max simultaneous positions check
+        try:
+            from src.config import RISK_MAX_POSITIONS as _risk_max_pos
+        except ImportError:
+            _risk_max_pos = 4
+        if num_positions >= _risk_max_pos:
+            cprint(f"[AdaptiveHybrid] Max positions reached ({_risk_max_pos}), skipping", "yellow")
             return None
 
         # HWM Drawdown check
@@ -1483,8 +1508,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
             stop_loss_price = price * (1 + sl_pct / 100)
             take_profit_price = price * (1 - tp_pct / 100)
 
-        # Atomic: margin check + position sizing + ID generation + insertion
-        cprint(f"[AdaptiveHybrid] Acquiring _position_lock for margin check + trade insertion...", "cyan")
+        # Atomic: margin check + position sizing + ID generation
+        cprint(f"[AdaptiveHybrid] Acquiring _position_lock for margin check + sizing...", "cyan")
         with self._position_lock:
             used_margin = sum(
                 pos.get('position_size', 0) / pos.get('leverage', ADAPTIVE_HYBRID_LEVERAGE)
@@ -1496,7 +1521,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             available_margin = max(0, self.paper_balance - used_margin - cash_reserve)
 
             # Score-based exposure factor: stronger signals get larger positions
-            # score 40 → 1.0x, score 55 → 1.5x, score 70+ → 2.0x
+            # score 40 -> 1.0x, score 55 -> 1.5x, score 70+ -> 2.0x
             score_val = metadata.get('score', 40)
             score_exposure = min(2.0, 1.0 + max(0, score_val - 40) / 30)
 
@@ -1513,7 +1538,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
             # Volatility targeting: cap position so daily vol contribution stays under target, scaled by score
             if atr > 0 and price > 0:
-                daily_vol_pct = atr / price  # ATR as % of price ≈ daily vol
+                daily_vol_pct = atr / price  # ATR as % of price ~ daily vol
                 vol_target_usd = self.paper_balance * (ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT / 100) * score_exposure
                 if daily_vol_pct > 0:
                     vol_target_size = vol_target_usd / daily_vol_pct
@@ -1537,29 +1562,55 @@ class AdaptiveHybridStrategy(BaseStrategy):
             self._position_counter += 1
             position_id = f"AH_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._position_counter}"
 
-            trade = {
-                'position_id': position_id,
-                'timestamp': datetime.now().isoformat(),
-                'entry_time': datetime.now(),
-                'symbol': symbol,
-                'direction': direction,
-                'entry_price': price,
-                'position_size': round(position_size, 2),
-                'leverage': leverage,
-                'stop_loss': round(stop_loss_price, 2),
-                'take_profit': round(take_profit_price, 2),
-                'sl_pct': sl_pct,
-                'tp_pct': tp_pct,
-                'atr': atr,
-                'entry_fee': round(entry_fee, 4),
-                'confidence': round(float(signal.get('signal', 0)) * 100, 1),
-                'status': 'OPEN',
-                'score': metadata.get('score', 0),
-                'modules': json.dumps(metadata.get('module_scores', {})),
-                'scale_out_level': 0,
-                'partial_pnl_realized': 0.0,
-            }
+        trade = {
+            'position_id': position_id,
+            'timestamp': datetime.now().isoformat(),
+            'entry_time': datetime.now(),
+            'symbol': symbol,
+            'direction': direction,
+            'entry_price': price,
+            'position_size': round(position_size, 2),
+            'leverage': leverage,
+            'stop_loss': round(stop_loss_price, 2),
+            'take_profit': round(take_profit_price, 2),
+            'sl_pct': sl_pct,
+            'tp_pct': tp_pct,
+            'atr': atr,
+            'entry_fee': round(entry_fee, 4),
+            'confidence': round(float(signal.get('signal', 0)) * 100, 1),
+            'status': 'OPEN',
+            'score': metadata.get('score', 0),
+            'modules': json.dumps(metadata.get('module_scores', {})),
+            'scale_out_level': 0,
+            'partial_pnl_realized': 0.0,
+            # Extra context for logging
+            '_risk_amount': risk_amount,
+            '_token_class': token_class,
+        }
 
+        return trade
+
+    def execute_paper_trade(self, signal: dict) -> dict:
+        """Execute a paper trade (simulation) with capital protection checks."""
+        trade = self._prepare_trade(signal)
+        if trade is None:
+            return None
+
+        position_id = trade['position_id']
+        symbol = trade['symbol']
+        direction = trade['direction']
+        price = trade['entry_price']
+        position_size = trade['position_size']
+        leverage = trade['leverage']
+        sl_pct = trade['sl_pct']
+        tp_pct = trade['tp_pct']
+        entry_fee = trade['entry_fee']
+        risk_amount = trade.pop('_risk_amount', 0)
+        trade.pop('_token_class', None)
+        metadata = signal.get('metadata', {})
+
+        # Atomic insertion + balance update
+        with self._position_lock:
             self.paper_positions[position_id] = trade
             self.paper_balance -= entry_fee
             self.daily_trades += 1
@@ -1599,10 +1650,325 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         return trade
 
+    def execute_live_trade(self, signal: dict) -> dict:
+        """Execute a live trade on HyperLiquid with the same sizing/risk as paper trading.
+
+        Uses _prepare_trade() for all validation and sizing, then places a real
+        market order via HyperLiquid SDK + bracket SL/TP orders via LiveOrderManager.
+        The position is also tracked in self.paper_positions so the dashboard can
+        display it.
+        """
+        # --- Fix #3: Sync balance with real account before sizing ---
+        try:
+            import eth_account as _eth_account_sync
+            from hyperliquid.info import Info as HLInfoSync
+            _pk_sync = os.getenv('HYPER_LIQUID_ETH_PRIVATE_KEY')
+            if _pk_sync:
+                _acct_sync = _eth_account_sync.Account.from_key(_pk_sync)
+                _info_sync = HLInfoSync('https://api.hyperliquid.xyz', skip_ws=True)
+                _user_state_sync = _info_sync.user_state(_acct_sync.address)
+                _real_balance = float(_user_state_sync.get('marginSummary', {}).get('accountValue', 0))
+                if _real_balance > 0:
+                    self.paper_balance = _real_balance
+                    cprint(f"[AdaptiveHybrid] LIVE: Synced balance: ${_real_balance:,.2f}", "cyan")
+        except Exception as _sync_err:
+            cprint(f"[AdaptiveHybrid] LIVE: Could not sync balance: {_sync_err}", "yellow")
+
+        trade = self._prepare_trade(signal)
+        if trade is None:
+            return None
+
+        position_id = trade['position_id']
+        symbol = trade['symbol']
+        direction = trade['direction']
+        price = trade['entry_price']
+        position_size = trade['position_size']
+        leverage = trade['leverage']
+        sl_pct = trade['sl_pct']
+        tp_pct = trade['tp_pct']
+        entry_fee = trade['entry_fee']
+        risk_amount = trade.pop('_risk_amount', 0)
+        token_class = trade.pop('_token_class', 'mid')
+        metadata = signal.get('metadata', {})
+
+        # --- Fix #4: Absolute cap on live order size ---
+        if position_size > _MAX_LIVE_ORDER_USD:
+            cprint(f"[AdaptiveHybrid] LIVE: Position ${position_size:.0f} exceeds cap ${_MAX_LIVE_ORDER_USD}, clamping", "yellow")
+            trade['position_size'] = _MAX_LIVE_ORDER_USD
+            position_size = _MAX_LIVE_ORDER_USD
+
+        # --- Place market order on HyperLiquid ---
+        try:
+            import eth_account as _eth_account
+            from hyperliquid.exchange import Exchange as HLExchange
+            from hyperliquid.info import Info as HLInfo
+            from src.nice_funcs_hyperliquid import ask_bid, get_sz_px_decimals
+
+            private_key = os.getenv('HYPER_LIQUID_ETH_PRIVATE_KEY')
+            if not private_key:
+                cprint("[AdaptiveHybrid] LIVE TRADE ABORTED: HYPER_LIQUID_ETH_PRIVATE_KEY not set", "red")
+                return None
+
+            account = _eth_account.Account.from_key(private_key)
+            exchange = HLExchange(account, 'https://api.hyperliquid.xyz')
+
+            # Set leverage on exchange before placing order
+            try:
+                exchange.update_leverage(leverage, symbol, is_cross=True)
+                cprint(f"[AdaptiveHybrid] Set leverage to {leverage}x for {symbol}", "cyan")
+            except Exception as e:
+                cprint(f"[AdaptiveHybrid] Warning: could not set leverage: {e}", "yellow")
+
+            # Get current market price for IOC fill
+            ask, bid, _ = ask_bid(symbol)
+            if direction == 'BUY':
+                fill_price = ask * 1.001  # 0.1% above ask for fill
+            else:
+                fill_price = bid * 0.999  # 0.1% below bid for fill
+
+            # Calculate size in asset units
+            sz_decimals, px_decimals = get_sz_px_decimals(symbol)
+            asset_size = round(position_size / fill_price, sz_decimals)
+
+            if asset_size <= 0:
+                cprint(f"[AdaptiveHybrid] LIVE TRADE ABORTED: asset_size={asset_size} after rounding", "red")
+                return None
+
+            # Round fill price
+            if symbol == 'BTC':
+                fill_price = round(fill_price)
+            else:
+                fill_price = round(fill_price, px_decimals) if px_decimals > 0 else round(fill_price, 1)
+
+            is_buy = direction == 'BUY'
+            cprint(f"[AdaptiveHybrid] LIVE: Placing IOC {'BUY' if is_buy else 'SELL'} {asset_size} {symbol} @ ${fill_price:,.2f}", "magenta")
+
+            order_result = exchange.order(
+                symbol, is_buy, asset_size, fill_price,
+                {"limit": {"tif": "Ioc"}}, reduce_only=False
+            )
+
+            # Log only relevant fields, not the full response (avoid leaking sensitive info)
+            log_info = {
+                'type': order_result.get('response', {}).get('type', '?') if order_result else '?',
+                'status': 'error' if order_result and order_result.get('response', {}).get('type') == 'error' else 'ok',
+            }
+            cprint(f"[AdaptiveHybrid] LIVE: Order result: {log_info}", "cyan")
+
+            # Check for error response
+            if order_result and order_result.get('response', {}).get('type') == 'error':
+                error_msg = order_result.get('response', {}).get('data', {}).get('msg', 'unknown')
+                cprint(f"[AdaptiveHybrid] LIVE TRADE FAILED: {error_msg}", "red")
+                return None
+
+            # --- Fix #2: Verify IOC fill status ---
+            filled_size = asset_size  # default to full size
+            try:
+                if order_result:
+                    _resp = order_result.get('response', {})
+                    _data = _resp.get('data', {}) if isinstance(_resp, dict) else {}
+                    _statuses = _data.get('statuses', []) if isinstance(_data, dict) else []
+                    if _statuses:
+                        _status = _statuses[0]
+                        if 'filled' in _status:
+                            filled_size = float(_status['filled'].get('totalSz', asset_size))
+                        elif 'resting' in _status:
+                            filled_size = 0  # Order resting, not filled
+                        elif 'error' in _status:
+                            cprint(f"[AdaptiveHybrid] LIVE: Order error: {_status['error']}", "red")
+                            return None
+            except Exception as _parse_err:
+                cprint(f"[AdaptiveHybrid] LIVE: Could not parse fill: {_parse_err}", "yellow")
+
+            if filled_size <= 0:
+                cprint(f"[AdaptiveHybrid] LIVE: Order not filled (IOC expired)", "red")
+                return None
+
+            # Adjust for partial fills
+            if filled_size < asset_size:
+                cprint(f"[AdaptiveHybrid] LIVE: Partial fill: {filled_size}/{asset_size}", "yellow")
+                fill_ratio = filled_size / asset_size
+                trade['position_size'] = round(trade['position_size'] * fill_ratio, 2)
+                trade['entry_fee'] = round(trade['entry_fee'] * fill_ratio, 4)
+                position_size = trade['position_size']
+                entry_fee = trade['entry_fee']
+                asset_size = filled_size
+
+        except Exception as e:
+            cprint(f"[AdaptiveHybrid] LIVE TRADE FAILED: {e}", "red")
+            import traceback
+            traceback.print_exc()
+            return None
+
+        # --- Place bracket SL/TP orders ---
+        bracket = None
+        try:
+            if self._live_order_manager is None:
+                from src.execution.order_manager import LiveOrderManager
+                self._live_order_manager = LiveOrderManager()
+            lom = self._live_order_manager
+            bracket = lom.place_bracket_order(
+                symbol=symbol,
+                direction=direction,
+                size=asset_size,
+                entry_price=price,
+                sl_price=trade['stop_loss'],
+                tp_price=trade['take_profit'],
+            )
+            if bracket:
+                trade['sl_oid'] = bracket.get('sl_oid')
+                trade['tp_oid'] = bracket.get('tp_oid')
+                cprint(f"[AdaptiveHybrid] LIVE: Bracket orders placed (SL/TP)", "green")
+        except Exception as e:
+            cprint(f"[AdaptiveHybrid] LIVE: WARNING - Could not place bracket orders: {e}", "red")
+            bracket = None
+
+        # --- Fix #1: If bracket SL/TP failed, close position immediately ---
+        if not bracket:
+            cprint(f"[AdaptiveHybrid] LIVE: CRITICAL - SL/TP failed, closing position immediately", "red", attrs=['bold'])
+            try:
+                close_side = not is_buy  # reverse direction
+                exchange.order(
+                    symbol, close_side, asset_size, fill_price,
+                    {"limit": {"tif": "Ioc"}}, reduce_only=True
+                )
+                cprint(f"[AdaptiveHybrid] LIVE: Emergency close sent for {asset_size} {symbol}", "yellow")
+            except Exception as close_err:
+                cprint(f"[AdaptiveHybrid] LIVE: EMERGENCY CLOSE FAILED for {symbol}: {close_err}", "red", attrs=['bold'])
+            return None
+
+        # --- Track position in paper_positions for dashboard visibility ---
+        trade['mode'] = 'LIVE'
+        trade['asset_size'] = asset_size
+
+        with self._position_lock:
+            self.paper_positions[position_id] = trade
+            self.paper_balance -= entry_fee
+            self.daily_trades += 1
+            self.last_trade_time = datetime.now()
+            self.last_trade_time_per_token[symbol] = datetime.now()
+
+        # Log to file
+        log_file = os.path.join(self.data_dir, 'paper_trades.csv')
+        df = pd.DataFrame([trade])
+        if os.path.exists(log_file):
+            df.to_csv(log_file, mode='a', header=False, index=False)
+        else:
+            df.to_csv(log_file, index=False)
+
+        cprint(f"\n[ADAPTIVE HYBRID] LIVE Opened {direction} {symbol} (ID: {position_id})", "magenta", attrs=['bold'])
+        cprint(f"  Entry: ${price:,.2f} | Size: ${position_size:,.2f} ({asset_size} {symbol}) | Leverage: {leverage}x", "white")
+        cprint(f"  Risk: ${risk_amount:,.2f} | SL: {sl_pct:.2f}% | Fee: ${entry_fee:.4f}", "white")
+        cprint(f"  SL: ${trade['stop_loss']:,.2f} ({sl_pct:.2f}%)", "white")
+        cprint(f"  TP: ${trade['take_profit']:,.2f} ({tp_pct:.2f}%)", "white")
+
+        # Log decision to trade memory
+        try:
+            module_scores = metadata.get('module_scores', {})
+            modules_firing = [m for m in module_scores if module_scores[m] != 0] if isinstance(module_scores, dict) else None
+            decision_id = self._trade_memory.log_decision(
+                symbol=symbol,
+                direction=direction,
+                confidence=signal.get('signal', 0) * 100,
+                source='adaptive_hybrid_live',
+                reasoning=str(metadata.get('reason', '')),
+                market_regime=self._current_regime,
+                modules_firing=modules_firing,
+            )
+            trade['memory_decision_id'] = decision_id
+        except Exception as e:
+            cprint(f"  [Memory] Warning: could not log decision: {e}", "yellow")
+
+        return trade
+
+    def sync_live_positions(self) -> list:
+        """Sync internal position tracker with actual HyperLiquid positions.
+
+        Queries the exchange for real positions and removes any tracked positions
+        that have been closed on-chain (e.g. SL/TP filled).  Returns list of
+        position_ids that were detected as closed.
+        """
+        closed_ids = []
+        try:
+            import eth_account as _eth_account
+            from hyperliquid.info import Info as HLInfo
+
+            private_key = os.getenv('HYPER_LIQUID_ETH_PRIVATE_KEY')
+            if not private_key:
+                return []
+
+            account = _eth_account.Account.from_key(private_key)
+            info = HLInfo('https://api.hyperliquid.xyz', skip_ws=True)
+            user_state = info.user_state(account.address)
+
+            # Build set of symbols with active positions on exchange
+            exchange_positions = {}  # {symbol: {'size': float, 'side': str}}
+            for pos in user_state.get('assetPositions', []):
+                p = pos.get('position', {})
+                szi = float(p.get('szi', 0))
+                if szi != 0:
+                    coin = p.get('coin', '')
+                    exchange_positions[coin] = {
+                        'size': abs(szi),
+                        'side': 'BUY' if szi > 0 else 'SELL',
+                        'entry_px': float(p.get('entryPx', 0)),
+                        'unrealized_pnl': float(p.get('unrealizedPnl', 0)),
+                    }
+
+            # Check tracked positions against exchange state
+            with self._position_lock:
+                for position_id, trade in list(self.paper_positions.items()):
+                    if trade.get('mode') != 'LIVE':
+                        continue
+                    symbol = trade['symbol']
+                    direction = trade['direction']
+
+                    ex_pos = exchange_positions.get(symbol)
+                    if ex_pos is None or ex_pos['side'] != direction:
+                        # Position closed on exchange (SL/TP filled or manually closed)
+                        cprint(f"[AdaptiveHybrid] LIVE SYNC: Position {position_id} ({direction} {symbol}) no longer on exchange", "yellow")
+                        closed_ids.append(position_id)
+
+            # Close detected positions using last known price
+            for position_id in closed_ids:
+                with self._position_lock:
+                    if position_id not in self.paper_positions:
+                        continue
+                    trade = self.paper_positions[position_id]
+                    symbol = trade['symbol']
+
+                # Fetch close price
+                try:
+                    from src.nice_funcs_hyperliquid import ask_bid
+                    ask, bid, _ = ask_bid(symbol)
+                    close_price = (ask + bid) / 2
+                except Exception:
+                    close_price = trade['entry_price']  # fallback
+
+                self._close_paper_position(position_id, close_price, 'EXCHANGE_CLOSED')
+                self.trailing_stops.pop(position_id, None)
+
+            if exchange_positions:
+                cprint(f"[AdaptiveHybrid] LIVE SYNC: {len(exchange_positions)} active exchange positions, {len(closed_ids)} closed", "cyan")
+
+        except Exception as e:
+            cprint(f"[AdaptiveHybrid] LIVE SYNC error: {e}", "red")
+
+        return closed_ids
+
     def monitor_paper_positions(self) -> list:
-        """Monitor all open paper positions: intra-candle SL/TP, trailing stop, time-based exits."""
-        if not PAPER_TRADING or not self.paper_positions:
+        """Monitor all open positions: intra-candle SL/TP, trailing stop, time-based exits.
+
+        In paper mode: checks prices and simulates SL/TP/trailing locally.
+        In live mode: syncs with exchange to detect filled SL/TP orders.
+        """
+        if not self.paper_positions:
             return []
+
+        # In live mode, SL/TP are native exchange orders -- just sync state
+        if not PAPER_TRADING:
+            closed_ids = self.sync_live_positions()
+            return [{'position_id': pid, 'close_reason': 'EXCHANGE_CLOSED'} for pid in closed_ids]
 
         closed = []
 

@@ -6,10 +6,6 @@ Handles all strategy-based trading decisions
 from src.config import *
 import json
 from termcolor import cprint
-import os
-import importlib
-import inspect
-import time
 import numpy as np
 from src.models.model_factory import ModelFactory
 
@@ -34,14 +30,6 @@ class NumpyEncoder(json.JSONEncoder):
             return obj.tolist()
         return super().default(obj)
 
-
-# Import exchange manager for unified trading
-try:
-    from src.exchange_manager import ExchangeManager
-    USE_EXCHANGE_MANAGER = True
-except ImportError:
-    from src import nice_funcs as n
-    USE_EXCHANGE_MANAGER = False
 
 # 🎯 Strategy Evaluation Prompt - JSON format with Chain-of-Thought
 STRATEGY_EVAL_SYSTEM_PROMPT = """You are Moon Dev's Strategy Validation Assistant. You analyze trading signals and validate recommendations using systematic reasoning. You always respond with valid JSON."""
@@ -84,14 +72,6 @@ class StrategyAgent:
         self.enabled_strategies = []
         self.model = ModelFactory.create_model_with_fallback('anthropic')
 
-        # Initialize exchange manager if available
-        if USE_EXCHANGE_MANAGER:
-            self.em = ExchangeManager()
-            cprint(f"✅ Strategy Agent using ExchangeManager for {EXCHANGE}", "green")
-        else:
-            self.em = None
-            cprint("✅ Strategy Agent using direct nice_funcs", "green")
-        
         # Import active strategy config
         try:
             from src.config import ACTIVE_STRATEGY, PAPER_TRADING
@@ -495,100 +475,54 @@ class StrategyAgent:
                 print("⚠️ No approved signals to execute")
                 return
 
-            # Check for paper trading mode
+            # Unified paper/live execution flow
             try:
                 from src.config import PAPER_TRADING
-                if PAPER_TRADING:
-                    cprint("\n📝 PAPER TRADING MODE - Simulating trades...", "yellow")
-                    for signal in approved_signals:
-                        # Try to use strategy's paper trade method if available
-                        for strategy in self.enabled_strategies:
-                            if hasattr(strategy, 'execute_paper_trade'):
-                                # Execute with timeout to prevent main loop hangs
-                                # Note: don't use `with` — shutdown(wait=True) blocks if worker hangs
-                                import concurrent.futures
-                                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                                future = executor.submit(strategy.execute_paper_trade, signal)
-                                try:
-                                    future.result(timeout=60)
-                                except concurrent.futures.TimeoutError:
-                                    cprint(f"⚠️ execute_paper_trade timed out for {signal.get('token', '?')} after 60s", "red")
-                                except Exception as e:
-                                    cprint(f"⚠️ execute_paper_trade error for {signal.get('token', '?')}: {e}", "red")
-                                finally:
-                                    executor.shutdown(wait=False, cancel_futures=True)
-                                break
-                        else:
-                            cprint(f"  [PAPER] Would execute: {signal['direction']} {signal['token']}", "yellow")
-                    return
             except ImportError:
-                pass
+                PAPER_TRADING = True
 
-            print("\n🚀 Moon Dev executing strategy signals...")
-            print(f"📝 Received {len(approved_signals)} signals to execute")
-            
+            mode_label = "PAPER" if PAPER_TRADING else "LIVE"
+            cprint(f"\n{'📝' if PAPER_TRADING else '🚀'} {mode_label} TRADING MODE - Executing {len(approved_signals)} signals...", "yellow" if PAPER_TRADING else "magenta")
+
             for signal in approved_signals:
-                try:
-                    print(f"\n🔍 Processing signal: {signal}")  # Debug output
-                    
-                    token = signal.get('token')
-                    if not token:
-                        print("❌ Missing token in signal")
-                        print(f"Signal data: {signal}")
-                        continue
-                        
-                    strength = signal.get('signal', 0)
-                    direction = signal.get('direction', 'NOTHING')
-                    
-                    # Skip USDC and other excluded tokens
-                    if token in EXCLUDED_TOKENS:
-                        print(f"💵 Skipping {token} (excluded token)")
-                        continue
-                    
-                    print(f"\n🎯 Processing signal for {token}...")
-                    
-                    # Calculate position size based on signal strength
-                    max_position = usd_size * (MAX_POSITION_PERCENTAGE / 100)
-                    target_size = max_position * strength
-                    
-                    # Get current position value (using exchange manager if available)
-                    if self.em:
-                        current_position = self.em.get_token_balance_usd(token)
+                executed = False
+                for strategy in self.enabled_strategies:
+                    if PAPER_TRADING:
+                        if hasattr(strategy, 'execute_paper_trade'):
+                            import concurrent.futures
+                            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                            future = executor.submit(strategy.execute_paper_trade, signal)
+                            try:
+                                future.result(timeout=60)
+                            except concurrent.futures.TimeoutError:
+                                cprint(f"  [{mode_label}] execute_paper_trade timed out for {signal.get('token', '?')} after 60s", "red")
+                            except Exception as e:
+                                cprint(f"  [{mode_label}] execute_paper_trade error for {signal.get('token', '?')}: {e}", "red")
+                            finally:
+                                executor.shutdown(wait=False, cancel_futures=True)
+                            executed = True
+                            break
                     else:
-                        current_position = n.get_token_balance_usd(token)
+                        if hasattr(strategy, 'execute_live_trade'):
+                            import concurrent.futures
+                            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                            future = executor.submit(strategy.execute_live_trade, signal)
+                            try:
+                                future.result(timeout=60)
+                            except concurrent.futures.TimeoutError:
+                                cprint(f"  [{mode_label}] execute_live_trade timed out for {signal.get('token', '?')} after 60s", "red")
+                            except Exception as e:
+                                cprint(f"  [{mode_label}] execute_live_trade error for {signal.get('token', '?')}: {e}", "red")
+                            finally:
+                                executor.shutdown(wait=False, cancel_futures=True)
+                            executed = True
+                            break
 
-                    print(f"📊 Signal strength: {strength}")
-                    print(f"🎯 Target position: ${target_size:.2f} USD")
-                    print(f"📈 Current position: ${current_position:.2f} USD")
-
-                    if direction == 'BUY':
-                        if current_position < target_size:
-                            print(f"✨ Executing BUY for {token}")
-                            if self.em:
-                                self.em.ai_entry(token, target_size)
-                            else:
-                                n.ai_entry(token, target_size)
-                            print(f"✅ Entry complete for {token}")
-                        else:
-                            print(f"⏸️ Position already at or above target size")
-
-                    elif direction == 'SELL':
-                        if current_position > 0:
-                            print(f"📉 Executing SELL for {token}")
-                            if self.em:
-                                self.em.chunk_kill(token)
-                            else:
-                                n.chunk_kill(token, max_usd_order_size, slippage)
-                            print(f"✅ Exit complete for {token}")
-                        else:
-                            print(f"⏸️ No position to sell")
-                    
-                    time.sleep(2)  # Small delay between trades
-                    
-                except Exception as e:
-                    print(f"❌ Error processing signal: {str(e)}")
-                    print(f"Signal data: {signal}")
-                    continue
+                if not executed:
+                    if PAPER_TRADING:
+                        cprint(f"  [PAPER] Would execute: {signal['direction']} {signal['token']}", "yellow")
+                    else:
+                        cprint(f"  [LIVE] No strategy handler for {signal['token']}", "red")
                 
         except Exception as e:
             print(f"❌ Error executing strategy signals: {str(e)}")
