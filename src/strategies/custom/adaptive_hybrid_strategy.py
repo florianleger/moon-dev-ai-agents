@@ -1495,6 +1495,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
             cash_reserve = self.paper_balance * (CASH_PERCENTAGE / 100)
             available_margin = max(0, self.paper_balance - used_margin - cash_reserve)
 
+            # Score-based exposure factor: stronger signals get larger positions
+            # score 40 → 1.0x, score 55 → 1.5x, score 70+ → 2.0x
+            score_val = metadata.get('score', 40)
+            score_exposure = min(2.0, 1.0 + max(0, score_val - 40) / 30)
+
             # Position sizing: 2% risk per trade, modulated by signal strength
             strength = signal.get('signal', 0.7)
             strength_multiplier = 0.5 + float(strength)  # Range: 0.5x to 1.5x
@@ -1502,14 +1507,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
             sl_fraction = max(sl_pct / 100, 0.001)  # Guard against near-zero SL
             position_size = risk_amount / sl_fraction * leverage
             max_position_by_margin = available_margin * 0.9 * leverage
-            # Cap on notional exposure (not margin)
-            max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100)
+            # Cap on notional exposure, scaled by score
+            max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100) * score_exposure
             position_size = min(position_size, max_position_by_margin, max_position_by_pct)
 
-            # Volatility targeting: cap position so daily vol contribution stays under target
+            # Volatility targeting: cap position so daily vol contribution stays under target, scaled by score
             if atr > 0 and price > 0:
                 daily_vol_pct = atr / price  # ATR as % of price ≈ daily vol
-                vol_target_usd = self.paper_balance * (ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT / 100)
+                vol_target_usd = self.paper_balance * (ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT / 100) * score_exposure
                 if daily_vol_pct > 0:
                     vol_target_size = vol_target_usd / daily_vol_pct
                     position_size = min(position_size, vol_target_size)
