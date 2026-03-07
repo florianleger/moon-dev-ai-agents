@@ -295,6 +295,62 @@ async def get_pnl_history(
     }
 
 
+@router.get("/trades")
+async def get_closed_trades(
+    limit: int = 50,
+    username: str = Depends(verify_credentials),
+) -> Dict:
+    """Get closed trade history from closed_trades.csv."""
+    strategy_folder = os.path.join(DATA_BASE_PATH, _get_strategy_folder())
+    closed_trades_csv = os.path.join(strategy_folder, 'closed_trades.csv')
+    trades = []
+
+    if os.path.exists(closed_trades_csv):
+        try:
+            df = pd.read_csv(closed_trades_csv)
+            if not df.empty:
+                # Sort by exit_time descending (most recent first)
+                time_col = 'exit_time' if 'exit_time' in df.columns else 'timestamp'
+                if time_col in df.columns:
+                    df = df.sort_values(time_col, ascending=False)
+                df = df.head(limit)
+
+                for _, row in df.iterrows():
+                    trades.append({
+                        "symbol": row.get("symbol", ""),
+                        "direction": row.get("direction", ""),
+                        "entry_price": float(row.get("entry_price", 0) or 0),
+                        "close_price": float(row.get("close_price", 0) or 0),
+                        "position_size": float(row.get("position_size", 0) or 0),
+                        "pnl": round(float(row.get("pnl", 0) or 0), 2),
+                        "pnl_pct": round(float(row.get("pnl_pct", 0) or 0), 2),
+                        "close_reason": row.get("close_reason", ""),
+                        "entry_time": str(row.get("timestamp", row.get("entry_time", ""))),
+                        "exit_time": str(row.get("exit_time", "")),
+                        "score": round(float(row.get("score", 0) or 0), 1),
+                        "leverage": float(row.get("leverage", 1) or 1),
+                    })
+        except Exception as e:
+            print(f"[Dashboard API] Error reading closed trades: {e}")
+
+    # Summary stats
+    total_pnl = sum(t["pnl"] for t in trades)
+    wins = [t for t in trades if t["pnl"] > 0]
+    losses = [t for t in trades if t["pnl"] <= 0]
+
+    return {
+        "trades": trades,
+        "summary": {
+            "total": len(trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": round(len(wins) / len(trades) * 100, 1) if trades else 0,
+            "total_pnl": round(total_pnl, 2),
+            "avg_pnl": round(total_pnl / len(trades), 2) if trades else 0,
+        },
+    }
+
+
 def _read_scheduler_status() -> Dict:
     """Read scheduler and light check state files, return formatted status."""
     import json

@@ -99,6 +99,75 @@
         </div>
     </div>
 
+    <!-- Trade History -->
+    <div class="bg-gray-800 rounded-xl p-4 border border-gray-700 mb-6">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold text-white">Trade History</h2>
+            <div class="flex items-center gap-4 text-sm">
+                <span class="text-gray-400">
+                    <span x-text="tradeSummary.total"></span> trades |
+                    Win rate: <span :class="tradeSummary.win_rate >= 50 ? 'text-green-400' : 'text-red-400'" x-text="tradeSummary.win_rate + '%'"></span> |
+                    PnL: <span :class="tradeSummary.total_pnl >= 0 ? 'text-green-400' : 'text-red-400'"
+                          x-text="(tradeSummary.total_pnl >= 0 ? '+$' : '-$') + Math.abs(tradeSummary.total_pnl).toFixed(2)"></span>
+                </span>
+            </div>
+        </div>
+
+        <div class="overflow-x-auto max-h-[400px] overflow-y-auto">
+            <table class="w-full text-sm">
+                <thead class="sticky top-0 bg-gray-800">
+                    <tr class="text-gray-400 border-b border-gray-700">
+                        <th class="text-left py-2">Date</th>
+                        <th class="text-left py-2">Symbol</th>
+                        <th class="text-left py-2">Side</th>
+                        <th class="text-right py-2">Size</th>
+                        <th class="text-right py-2">Entry</th>
+                        <th class="text-right py-2">Exit</th>
+                        <th class="text-right py-2">PnL</th>
+                        <th class="text-right py-2">PnL %</th>
+                        <th class="text-left py-2">Reason</th>
+                        <th class="text-right py-2">Score</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="(trade, i) in closedTrades" :key="i">
+                        <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
+                            <td class="py-2 text-gray-400 text-xs whitespace-nowrap" x-text="formatTradeDate(trade.exit_time)"></td>
+                            <td class="py-2 font-medium text-white" x-text="trade.symbol"></td>
+                            <td class="py-2">
+                                <span :class="trade.direction === 'BUY' ? 'text-green-400' : 'text-red-400'"
+                                      x-text="trade.direction === 'BUY' ? 'LONG' : 'SHORT'"></span>
+                            </td>
+                            <td class="py-2 text-right text-gray-300" x-text="'$' + trade.position_size.toFixed(2)"></td>
+                            <td class="py-2 text-right text-gray-300" x-text="'$' + trade.entry_price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})"></td>
+                            <td class="py-2 text-right text-gray-300" x-text="'$' + trade.close_price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6})"></td>
+                            <td class="py-2 text-right font-medium"
+                                :class="trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'"
+                                x-text="(trade.pnl >= 0 ? '+$' : '-$') + Math.abs(trade.pnl).toFixed(2)"></td>
+                            <td class="py-2 text-right"
+                                :class="trade.pnl_pct >= 0 ? 'text-green-400' : 'text-red-400'"
+                                x-text="(trade.pnl_pct >= 0 ? '+' : '') + trade.pnl_pct.toFixed(2) + '%'"></td>
+                            <td class="py-2 text-xs">
+                                <span :class="{
+                                    'text-green-400': trade.close_reason === 'TAKE_PROFIT',
+                                    'text-red-400': trade.close_reason === 'STOP_LOSS',
+                                    'text-yellow-400': trade.close_reason === 'MANUAL',
+                                    'text-gray-400': !['TAKE_PROFIT','STOP_LOSS','MANUAL'].includes(trade.close_reason)
+                                }" x-text="trade.close_reason"></span>
+                            </td>
+                            <td class="py-2 text-right text-gray-400" x-text="trade.score > 0 ? trade.score.toFixed(1) : '-'"></td>
+                        </tr>
+                    </template>
+                    <tr x-show="closedTrades.length === 0">
+                        <td colspan="10" class="py-8 text-center text-gray-500">
+                            No closed trades yet
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- Open Positions Table -->
         <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
@@ -261,6 +330,8 @@ function dashboardData() {
         effectiveLeverage: 0.0,
         positions: [],
         signals: [],
+        closedTrades: [],
+        tradeSummary: { total: 0, wins: 0, losses: 0, win_rate: 0, total_pnl: 0, avg_pnl: 0 },
         pnlChart: null,
         lastUpdated: null,
         mode: 'paper',
@@ -275,6 +346,7 @@ function dashboardData() {
             this.fetchStats();
             this.fetchPositions();
             this.fetchSignals();
+            this.fetchTrades();
             this.setupSSE();
 
             setTimeout(() => this.initChart(), 100);
@@ -292,6 +364,7 @@ function dashboardData() {
                     this.fetchStats();
                     this.fetchPositions();
                     this.fetchSignals();
+                    this.fetchTrades();
                 }
             }, 10000);
         },
@@ -328,6 +401,16 @@ function dashboardData() {
                 this.lastUpdated = new Date();
             } catch (e) {
                 console.error('Failed to fetch positions:', e);
+            }
+        },
+
+        async fetchTrades() {
+            try {
+                const data = await apiFetch('/api/dashboard/trades?limit=50');
+                this.closedTrades = data.trades || [];
+                this.tradeSummary = data.summary || this.tradeSummary;
+            } catch (e) {
+                console.error('Failed to fetch trades:', e);
             }
         },
 
@@ -576,6 +659,16 @@ function dashboardData() {
             }
             return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' +
                    date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        },
+
+        formatTradeDate(timestamp) {
+            if (!timestamp || timestamp === 'nan') return '-';
+            try {
+                const date = new Date(timestamp);
+                if (isNaN(date.getTime())) return '-';
+                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
+                       date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            } catch { return '-'; }
         },
 
         formatLastUpdated() {
