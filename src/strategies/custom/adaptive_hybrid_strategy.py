@@ -261,6 +261,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self.last_trade_date = None
         self.last_trade_time = None
         self.last_trade_time_per_token = {}  # {symbol: datetime} — per-token urgency tracking
+        self.consecutive_losses = 0  # Circuit breaker: pause after 3 consecutive losses
+        self._loss_breaker_until = None  # datetime when breaker expires
 
         # Paper trading state
         self.paper_balance = PAPER_TRADING_BALANCE
@@ -1098,7 +1100,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self._update_benchmark()
 
         # Daily limits
-        if self.daily_trades >= ADAPTIVE_HYBRID_MAX_DAILY_TRADES:
+        if self._loss_breaker_until and datetime.now() < self._loss_breaker_until:
             return None
         if self.daily_pnl <= -ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD:
             return None
@@ -1411,6 +1413,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
             if self.last_trade_date != today:
                 self.daily_trades = 0
                 self.daily_pnl = 0.0
+                self.consecutive_losses = 0
+                self._loss_breaker_until = None
                 self.last_trade_date = today
 
     @staticmethod
@@ -2251,6 +2255,16 @@ class AdaptiveHybridStrategy(BaseStrategy):
             self.daily_pnl += pnl
             self.paper_balance += pnl
             del self.paper_positions[position_id]
+
+            # Consecutive loss circuit breaker
+            if pnl < 0:
+                self.consecutive_losses += 1
+                if self.consecutive_losses >= 3:
+                    self._loss_breaker_until = datetime.now() + timedelta(hours=2)
+                    cprint(f"  [CIRCUIT BREAKER] {self.consecutive_losses} consecutive losses — pausing trading for 2h", "red", attrs=['bold'])
+            else:
+                self.consecutive_losses = 0
+                self._loss_breaker_until = None
 
             self.closed_positions.append(trade)
             balance_snapshot = self.paper_balance

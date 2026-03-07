@@ -82,9 +82,7 @@
             <div class="flex items-center justify-between">
                 <div>
                     <p class="text-gray-400 text-sm">Trades Today</p>
-                    <p class="text-2xl font-bold"
-                       :class="dailyTrades >= maxDailyTrades ? 'text-red-400' : 'text-white'"
-                       x-text="dailyTrades + '/' + maxDailyTrades"></p>
+                    <p class="text-2xl font-bold text-white" x-text="dailyTrades"></p>
                 </div>
                 <div class="text-3xl">&#128203;</div>
             </div>
@@ -336,7 +334,6 @@ function dashboardData() {
         lastUpdated: null,
         mode: 'paper',
         dailyTrades: 0,
-        maxDailyTrades: 5,
         regime: null,
         _tick: 0,
         _sseConnected: false,
@@ -382,7 +379,7 @@ function dashboardData() {
                 this.running = data.running ?? this.running;
                 this.mode = data.mode ?? this.mode;
                 this.dailyTrades = data.daily_trades ?? 0;
-                this.maxDailyTrades = data.max_daily_trades ?? 5;
+
                 this.regime = data.regime ?? null;
                 this.lastUpdated = new Date();
             } catch (e) {
@@ -575,7 +572,7 @@ function dashboardData() {
                     this.running = data.running ?? this.running;
                     this.mode = data.mode ?? this.mode;
                     this.dailyTrades = data.daily_trades ?? this.dailyTrades;
-                    this.maxDailyTrades = data.max_daily_trades ?? this.maxDailyTrades;
+
                     this.regime = data.regime ?? this.regime;
                     this.lastUpdated = new Date();
                 });
