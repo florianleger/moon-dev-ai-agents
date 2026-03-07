@@ -22,8 +22,10 @@ _CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
 SYSTEM_PROMPT = (
-    "You are a professional crypto trading risk filter. "
-    "You analyze aggregated trading signals and decide whether to CONFIRM, REJECT, or ADJUST a trade. "
+    "You are a crypto trading coherence checker reviewing pre-screened signals. "
+    "These signals have already passed through 14 independent quantitative scoring modules. "
+    "Your role is to catch clear contradictions or risks the modules may have missed, "
+    "NOT to re-evaluate metrics already incorporated in the aggregated score. "
     "You always respond with valid JSON."
 )
 
@@ -38,14 +40,12 @@ USER_PROMPT_TEMPLATE = """Evaluate this proposed trade:
 ## Module Scores (who voted for this direction)
 {module_scores}
 
-## Market Context
+## Market Snapshot (already factored into the score above)
 - Price: ${price:,.2f}
-- RSI: {rsi:.1f}
-- ADX: {adx:.1f}
-- ATR: {atr:.4f}
+- RSI: {rsi:.1f} | ADX: {adx:.1f} | ATR: {atr:.4f}
 - Volume Ratio: {volume_ratio:.2f}x
-- Proposed SL: {sl_pct:.2f}%
-- Proposed TP: {tp_pct:.2f}%
+- Proposed SL: {sl_pct:.2f}% | TP: {tp_pct:.2f}%
+Note: These metrics are ALREADY incorporated in the module scores above. Do not reject based on individual metrics.
 
 ## Trade Memory
 {memory_context}
@@ -71,10 +71,13 @@ Respond ONLY with valid JSON:
 }}
 
 Rules:
-- CONFIRM: Take the trade as-is
-- REJECT: Skip this trade (set adjusted_score to 0)
-- ADJUST: Modify score or SL/TP (provide adjusted values)
-- If in doubt, REJECT (protecting capital is priority)
+- CONFIRM: The signal is coherent and no critical contradiction exists
+- REJECT: You identify a SPECIFIC risk NOT already captured by the scoring modules
+- ADJUST: Modify score or SL/TP if you see a clear improvement
+- For scores well above threshold (>55): lean toward CONFIRM unless critical red flags
+- For scores near threshold (40-55): apply moderate scrutiny
+- Do NOT reject solely based on low volume or single metrics — the scoring modules already weigh these
+- The scoring system has already penalized conflicting modules. Do not double-penalize.
 """
 
 
@@ -117,7 +120,7 @@ def _parse_llm_response(response_text):
             raise
 
     # Validate required fields
-    decision = result.get('decision', 'REJECT').upper()
+    decision = result.get('decision', 'CONFIRM').upper()
     if decision not in ('CONFIRM', 'REJECT', 'ADJUST'):
         decision = 'REJECT'
 
@@ -246,7 +249,7 @@ def llm_confirm_trade(
         response = model.generate_response(
             system_prompt=SYSTEM_PROMPT,
             user_content=user_content,
-            temperature=0.2,
+            temperature=0.4,
             max_tokens=1024,
         )
         latency_ms = int((time.time() - start_time) * 1000)

@@ -873,11 +873,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if long_weighted >= short_weighted:
             direction = 'BUY'
             winning_modules = long_modules
+            losing_modules = short_modules
             losing_weight = short_weight_total
             winning_weight = long_weight_total
         else:
             direction = 'SELL'
             winning_modules = short_modules
+            losing_modules = long_modules
             losing_weight = long_weight_total
             winning_weight = short_weight_total
 
@@ -924,10 +926,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     final_score *= btc_penalty
                     details = f" | BTC bullish penalty -{btc_penalty_amount:.0%} (corr={corr:.2f})"
 
-        # Graduated conflict penalty
-        conflict_ratio = losing_weight / max(winning_weight, 0.01)
+        # Graduated conflict penalty (contrarians count at 50% - they oppose by design)
+        CONTRARIAN_MODULES = {'mean_reversion', 'sentiment', 'sniper_lite', 'funding_contrarian', 'funding_divergence'}
+        contrarian_losing_weight = sum(weights.get(m, 0) for m in losing_modules if m in CONTRARIAN_MODULES)
+        non_contrarian_losing_weight = losing_weight - contrarian_losing_weight
+        effective_losing_weight = non_contrarian_losing_weight + contrarian_losing_weight * 0.5
+        conflict_ratio = effective_losing_weight / max(winning_weight, 0.01)
         if conflict_ratio > 0.15:
-            conflict_factor = max(0.50, 1.0 - conflict_ratio * 0.60)
+            conflict_factor = max(0.60, 1.0 - conflict_ratio * 0.50)
         else:
             conflict_factor = 1.0
         final_score *= conflict_factor
@@ -1233,7 +1239,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
             # LLM Trade Confirmation (final gate before signal emission)
             llm_decision = None
-            if ADAPTIVE_HYBRID_LLM_CONFIRMATION:
+            if score >= 55:
+                cprint(f"  [{symbol}] LLM bypassed: score {score:.1f} >= 55 (auto-confirmed)", "green")
+            elif ADAPTIVE_HYBRID_LLM_CONFIRMATION:
                 try:
                     signal_metadata = {
                         'score': score,
