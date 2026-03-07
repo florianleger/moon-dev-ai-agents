@@ -1413,6 +1413,17 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 self.daily_pnl = 0.0
                 self.last_trade_date = today
 
+    @staticmethod
+    def _price_decimals(price: float) -> int:
+        """Return appropriate number of decimal places for rounding based on price magnitude."""
+        if price >= 100:
+            return 2
+        if price >= 1:
+            return 3
+        if price >= 0.01:
+            return 5
+        return 7  # micro-price tokens like kPEPE
+
     def _prepare_trade(self, signal: dict) -> dict:
         """Validate signal and compute all trade parameters (shared by paper and live).
 
@@ -1571,8 +1582,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
             'entry_price': price,
             'position_size': round(position_size, 2),
             'leverage': leverage,
-            'stop_loss': round(stop_loss_price, 2),
-            'take_profit': round(take_profit_price, 2),
+            'stop_loss': round(stop_loss_price, self._price_decimals(price)),
+            'take_profit': round(take_profit_price, self._price_decimals(price)),
             'sl_pct': sl_pct,
             'tp_pct': tp_pct,
             'atr': atr,
@@ -1625,11 +1636,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
         else:
             df.to_csv(log_file, index=False)
 
+        _pd = self._price_decimals(price)
         cprint(f"\n[ADAPTIVE HYBRID] Opened {direction} {symbol} (ID: {position_id})", "magenta", attrs=['bold'])
-        cprint(f"  Entry: ${price:,.2f} | Size: ${position_size:,.2f} | Leverage: {leverage}x | Score: {metadata.get('score', 0):.1f}", "white")
+        cprint(f"  Entry: ${price:,.{_pd}f} | Size: ${position_size:,.2f} | Leverage: {leverage}x | Score: {metadata.get('score', 0):.1f}", "white")
         cprint(f"  Risk: ${risk_amount:,.2f} | SL: {sl_pct:.2f}% | Fee: ${entry_fee:.4f}", "white")
-        cprint(f"  SL: ${trade['stop_loss']:,.2f} ({sl_pct:.2f}%)", "white")
-        cprint(f"  TP: ${trade['take_profit']:,.2f} ({tp_pct:.2f}%)", "white")
+        cprint(f"  SL: ${trade['stop_loss']:,.{_pd}f} ({sl_pct:.2f}%)", "white")
+        cprint(f"  TP: ${trade['take_profit']:,.{_pd}f} ({tp_pct:.2f}%)", "white")
 
         # Log decision to trade memory
         try:
@@ -2213,6 +2225,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
             pnl = position_size * price_change_pct
 
+            # Sanity check: PnL cannot exceed position size (prevent rounding bugs on micro-prices)
+            if abs(pnl) > position_size * 1.5:
+                cprint(f"  [WARNING] Absurd PnL detected: ${pnl:+,.2f} on ${position_size:.2f} position. "
+                       f"Entry={entry_price}, Close={close_price}, Eff={effective_close_price}. Clamping.", "red")
+                pnl = max(-position_size, min(position_size, pnl))
+
             # Deduct only exit fee (entry fee already deducted at open time)
             total_fees = exit_fee
             pnl = pnl - total_fees
@@ -2245,7 +2263,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         color = 'green' if pnl > 0 else 'red'
         cprint(f"\n[ADAPTIVE HYBRID] Closed {trade['symbol']} ({reason})", color, attrs=['bold'])
-        cprint(f"  Entry: ${entry_price:,.2f} -> Exit: ${close_price:,.2f} (eff: ${effective_close_price:,.2f})", "white")
+        _pd = self._price_decimals(entry_price)
+        cprint(f"  Entry: ${entry_price:,.{_pd}f} -> Exit: ${close_price:,.{_pd}f} (eff: ${effective_close_price:,.{_pd}f})", "white")
         cprint(f"  PnL: ${pnl:+,.2f} ({price_change_pct*100:+.2f}%) | Fees: ${total_fees:.4f} | Slip: {slippage:.3%}", color)
         cprint(f"  Balance: ${balance_snapshot:,.2f}", "white")
 
