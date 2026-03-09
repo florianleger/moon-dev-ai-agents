@@ -31,4 +31,4 @@ def score_funding_divergence(symbol: str, indicators: dict, config: dict = None)
             'reason': f'FundingDiv: {signal["reason"]}',
         }
     except Exception as e:
-        return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'FundingDiv error: {e}'}
+        return None

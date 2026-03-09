@@ -18,7 +18,7 @@ def score_order_imbalance(symbol: str, indicators: dict, config: dict = None) ->
         l2_data = info.l2_snapshot(symbol)
 
         if not l2_data or 'levels' not in l2_data:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No L2 data'}
+            return None
 
         levels = l2_data['levels']
         if len(levels) < 2:
@@ -50,4 +50,4 @@ def score_order_imbalance(symbol: str, indicators: dict, config: dict = None) ->
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'Book imbalance={imbalance:+.2f} bid={bid_depth:.0f} ask={ask_depth:.0f}'}
     except Exception as e:
-        return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'L2 error: {e}'}
+        return None

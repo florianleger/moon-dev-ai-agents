@@ -75,6 +75,8 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'sentiment': 0.8,
         'squeeze_detector': 1.5,
         'order_imbalance': 1.2,
+        'cvd': 1.0, 'vwap_deviation': 1.3, 'market_memory': 1.2,
+        'stablecoin_flow': 1.0, 'options_sentiment': 1.0, 'liquidation_cascade': 1.0,
     },
     'DISTRIBUTION': {
         'mean_reversion': 1.2,
@@ -88,6 +90,8 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'sentiment': 1.2,
         'squeeze_detector': 1.0,
         'order_imbalance': 1.3,
+        'cvd': 1.3, 'vwap_deviation': 1.0, 'market_memory': 1.0,
+        'stablecoin_flow': 1.2, 'options_sentiment': 1.3, 'liquidation_cascade': 1.2,
     },
     'MARKUP': {
         'mean_reversion': 0.5,
@@ -101,6 +105,8 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'sentiment': 1.0,
         'squeeze_detector': 0.8,
         'order_imbalance': 1.0,
+        'cvd': 1.3, 'vwap_deviation': 0.8, 'market_memory': 0.8,
+        'stablecoin_flow': 1.0, 'options_sentiment': 0.8, 'liquidation_cascade': 0.7,
     },
     'MARKDOWN': {
         'mean_reversion': 0.5,
@@ -114,6 +120,8 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'sentiment': 1.0,
         'squeeze_detector': 0.8,
         'order_imbalance': 1.0,
+        'cvd': 1.3, 'vwap_deviation': 0.8, 'market_memory': 0.8,
+        'stablecoin_flow': 1.0, 'options_sentiment': 0.8, 'liquidation_cascade': 1.3,
     },
     'CAPITULATION': {
         'mean_reversion': 1.5,
@@ -127,6 +135,8 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'sentiment': 1.3,
         'squeeze_detector': 1.2,
         'order_imbalance': 1.0,
+        'cvd': 1.5, 'vwap_deviation': 1.0, 'market_memory': 0.7,
+        'stablecoin_flow': 1.3, 'options_sentiment': 1.2, 'liquidation_cascade': 1.5,
     },
     'EUPHORIA': {
         'mean_reversion': 1.3,
@@ -140,6 +150,8 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'sentiment': 1.5,
         'squeeze_detector': 1.0,
         'order_imbalance': 1.0,
+        'cvd': 1.5, 'vwap_deviation': 1.0, 'market_memory': 0.7,
+        'stablecoin_flow': 1.3, 'options_sentiment': 1.5, 'liquidation_cascade': 1.5,
     },
 }
 

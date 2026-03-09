@@ -3,6 +3,7 @@ Dashboard API endpoints
 """
 
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta
 from typing import Dict, List
@@ -187,6 +188,26 @@ async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
     stats["max_daily_trades"] = max_daily_trades
     stats["strategy_name"] = ACTIVE_STRATEGY.replace('_', ' ').title()
 
+    # Read regime from scheduler state
+    scheduler = _read_scheduler_status()
+    for tok in scheduler.get('tokens', []):
+        if tok.get('regime'):
+            stats['regime'] = tok['regime']
+            break
+
+    # Count today's trades
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    strategy_folder = os.path.join(DATA_BASE_PATH, _get_strategy_folder())
+    closed_csv = os.path.join(strategy_folder, 'closed_trades.csv')
+    if os.path.exists(closed_csv):
+        try:
+            closed_df = pd.read_csv(closed_csv)
+            time_col = 'exit_time' if 'exit_time' in closed_df.columns else 'timestamp'
+            if time_col in closed_df.columns:
+                stats['daily_trades'] = int(closed_df[closed_df[time_col].str.startswith(today_str, na=False)].shape[0])
+        except Exception:
+            pass
+
     # If CSV has data, return it
     if stats["total_pnl"] != 0 or stats["open_positions"] > 0:
         return stats
@@ -329,6 +350,7 @@ async def get_closed_trades(
                         "exit_time": str(row.get("exit_time", "")),
                         "score": round(float(row.get("score", 0) or 0), 1),
                         "leverage": float(row.get("leverage", 1) or 1),
+                        "memory_decision_id": str(row.get("memory_decision_id", "")) if pd.notna(row.get("memory_decision_id")) else None,
                     })
         except Exception as e:
             print(f"[Dashboard API] Error reading closed trades: {e}")
@@ -353,7 +375,6 @@ async def get_closed_trades(
 
 def _read_scheduler_status() -> Dict:
     """Read scheduler and light check state files, return formatted status."""
-    import json
     now = datetime.now().timestamp()
 
     result = {
@@ -441,8 +462,19 @@ async def sse_updates(username: str = Depends(verify_credentials)):
             stats = _get_stats_from_csv()
             stats["running"] = is_strategy_running()
             stats["strategy_name"] = ACTIVE_STRATEGY.replace('_', ' ').title()
+
             positions = _get_positions_from_csv()
             signals = get_signals_history(limit=5)
+
+            # Send scheduler status (also used for regime below)
+            scheduler = _read_scheduler_status()
+
+            # Get regime from scheduler state (already read above for scheduler event)
+            if 'regime' not in stats:
+                for tok in scheduler.get('tokens', []):
+                    if tok.get('regime'):
+                        stats['regime'] = tok['regime']
+                        break
 
             # Send stats update
             yield f"event: stats\ndata: {_json_dumps(stats)}\n\n"
@@ -452,9 +484,6 @@ async def sse_updates(username: str = Depends(verify_credentials)):
 
             # Send latest signals
             yield f"event: signals\ndata: {_json_dumps(signals)}\n\n"
-
-            # Send scheduler status
-            scheduler = _read_scheduler_status()
             yield f"event: scheduler\ndata: {_json_dumps(scheduler)}\n\n"
 
             # Wait before next update
@@ -472,5 +501,4 @@ async def sse_updates(username: str = Depends(verify_credentials)):
 
 def _json_dumps(obj) -> str:
     """Convert object to JSON string."""
-    import json
     return json.dumps(obj, default=str)

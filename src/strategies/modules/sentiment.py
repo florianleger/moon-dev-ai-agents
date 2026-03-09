@@ -49,4 +49,4 @@ def score_sentiment(symbol: str, indicators: dict, config: dict = None) -> dict:
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'F&G={fg_score:+.2f} token={token_sentiment:+.2f}'}
     except Exception as e:
-        return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'Sentiment error: {e}'}
+        return None

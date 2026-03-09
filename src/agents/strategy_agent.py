@@ -312,6 +312,14 @@ class StrategyAgent:
                                     'threshold': metadata.get('threshold'),
                                     'diagnostic': metadata.get('diagnostic'),
                                     'current_price': metadata.get('current_price'),
+                                    'urgency_multiplier': metadata.get('urgency_multiplier'),
+                                    'active_modules': metadata.get('active_modules'),
+                                    'total_fired': metadata.get('total_fired'),
+                                    'coverage': metadata.get('coverage'),
+                                    'module_scores': metadata.get('module_scores'),
+                                    'llm_regime': metadata.get('llm_regime'),
+                                    'stop_loss_pct': metadata.get('stop_loss_pct'),
+                                    'take_profit_pct': metadata.get('take_profit_pct'),
                                 })
                             except Exception as e:
                                 cprint(f"⚠️ Error logging signal to web dashboard: {e}", "yellow")
@@ -332,6 +340,14 @@ class StrategyAgent:
                                 'threshold': metadata.get('threshold'),
                                 'diagnostic': metadata.get('diagnostic'),
                                 'current_price': metadata.get('current_price'),
+                                'urgency_multiplier': metadata.get('urgency_multiplier'),
+                                'module_scores': metadata.get('module_scores'),
+                                'coverage': metadata.get('coverage'),
+                                'llm_regime': metadata.get('llm_regime'),
+                                'active_modules': metadata.get('active_modules'),
+                                'total_fired': metadata.get('total_fired'),
+                                'stop_loss_pct': metadata.get('stop_loss_pct'),
+                                'take_profit_pct': metadata.get('take_profit_pct'),
                             })
                         except Exception as e:
                             cprint(f"⚠️ Error logging signal to web dashboard: {e}", "yellow")
@@ -384,6 +400,14 @@ class StrategyAgent:
                                         'market_state': metadata.get('market_state'),
                                         'skip_reasons': metadata.get('skip_reasons'),
                                         'diagnostic': metadata.get('diagnostic'),
+                                        'urgency_multiplier': metadata.get('urgency_multiplier'),
+                                        'active_modules': metadata.get('active_modules'),
+                                        'total_fired': metadata.get('total_fired'),
+                                        'coverage': metadata.get('coverage'),
+                                        'module_scores': metadata.get('module_scores'),
+                                        'llm_regime': metadata.get('llm_regime'),
+                                        'stop_loss_pct': metadata.get('stop_loss_pct'),
+                                        'take_profit_pct': metadata.get('take_profit_pct'),
                                     })
                                 except Exception as e:
                                     cprint(f"⚠️ Error logging signal to web dashboard: {e}", "yellow")
@@ -417,6 +441,14 @@ class StrategyAgent:
                                         'ai_reasoning': metadata.get('ai_reasoning'),
                                         'checklist_details': metadata.get('checklist_details'),
                                         'current_price': metadata.get('current_price'),
+                                        'urgency_multiplier': metadata.get('urgency_multiplier'),
+                                        'active_modules': metadata.get('active_modules'),
+                                        'total_fired': metadata.get('total_fired'),
+                                        'coverage': metadata.get('coverage'),
+                                        'module_scores': metadata.get('module_scores'),
+                                        'llm_regime': metadata.get('llm_regime'),
+                                        'stop_loss_pct': metadata.get('stop_loss_pct'),
+                                        'take_profit_pct': metadata.get('take_profit_pct'),
                                     })
                                 except Exception as e:
                                     cprint(f"⚠️ Error logging signal to web dashboard: {e}", "yellow")

@@ -475,7 +475,7 @@ ADAPTIVE_HYBRID_WEIGHTS = {
     'ema_trend': 0.06,           # was 0.08 — EMA trend (merged ema_crossover + trend_rider)
     'funding_contrarian': 0.06,  # was 0.07 — Extreme funding rate contrarian
     'rsi_divergence': 0.06,      # was 0.07 — Price vs RSI divergence
-    'sniper_lite': 0.10,         # was 0.12 — Relaxed Sniper (extreme move + volume)
+    'sniper_lite': 0.08,         # was 0.12 → 0.10 → 0.08 (rebalanced for liq_cascade)
     'trend_rider_lite': 0.00,    # still 0.00 — Merged into ema_trend
     'ramf_lite': 0.05,           # was 0.07 — Volatility regime (no dead zone)
     'oi_delta': 0.06,            # was 0.05 — Open Interest delta (now persisted)
@@ -486,11 +486,12 @@ ADAPTIVE_HYBRID_WEIGHTS = {
     'social_hype': 0.04,         # was 0.05 — CoinGecko trending + global macro
     'funding_divergence': 0.04,  # was 0.05 — Cross-exchange funding HL vs Binance
     # New modules (Phase 2)
-    'cvd': 0.08,                 # CVD - highest impact new signal (now persisted)
+    'cvd': 0.06,                 # CVD - highest impact new signal (was 0.08, rebalanced for liq_cascade)
     'vwap_deviation': 0.05,      # VWAP deviation bands
     'market_memory': 0.04,       # Hurst exponent + ACF
     'stablecoin_flow': 0.03,     # Macro liquidity proxy
     'options_sentiment': 0.01,   # Deribit P/C + max pain (BTC/ETH only, 0 for others)
+    'liquidation_cascade': 0.04, # Liquidation cascade contrarian
 }
 
 # Weight profiles by token behavior class
@@ -502,7 +503,8 @@ ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
         'oi_delta': 0.05, 'sentiment': 0.04, 'squeeze_detector': 0.04, 'order_imbalance': 0.04,
         'crowd_positioning': 0.06, 'social_hype': 0.04, 'funding_divergence': 0.04,
         # New modules (Phase 2)
-        'cvd': 0.07, 'vwap_deviation': 0.06, 'market_memory': 0.04, 'stablecoin_flow': 0.03, 'options_sentiment': 0.03,
+        'cvd': 0.05, 'vwap_deviation': 0.05, 'market_memory': 0.03, 'stablecoin_flow': 0.03, 'options_sentiment': 0.03,
+        'liquidation_cascade': 0.04,
     },
     'trending': {  # DOGE, kPEPE, SUI, TAO — strong momentum
         'mean_reversion': 0.04, 'momentum_breakout': 0.09, 'ema_trend': 0.06,
@@ -511,7 +513,8 @@ ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
         'oi_delta': 0.09, 'sentiment': 0.05, 'squeeze_detector': 0.05, 'order_imbalance': 0.05,
         'crowd_positioning': 0.06, 'social_hype': 0.05, 'funding_divergence': 0.04,
         # New modules (Phase 2)
-        'cvd': 0.10, 'vwap_deviation': 0.04, 'market_memory': 0.03, 'stablecoin_flow': 0.03, 'options_sentiment': 0.00,
+        'cvd': 0.06, 'vwap_deviation': 0.04, 'market_memory': 0.03, 'stablecoin_flow': 0.03, 'options_sentiment': 0.00,
+        'liquidation_cascade': 0.04,
     },
 }
 ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']

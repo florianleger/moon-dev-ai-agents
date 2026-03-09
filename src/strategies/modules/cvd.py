@@ -129,4 +129,4 @@ def score_cvd(symbol: str, indicators: dict, config: dict = None) -> dict:
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'CVD={cvd_ratio:+.3f} buy={buy_vol:,.0f} sell={sell_vol:,.0f}'}
     except Exception as e:
-        return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'CVD error: {e}'}
+        return None

@@ -31,4 +31,4 @@ def score_crowd_positioning(symbol: str, indicators: dict, config: dict = None) 
             'reason': f'Crowd: {signal["reason"]}',
         }
     except Exception as e:
-        return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'Crowd error: {e}'}
+        return None

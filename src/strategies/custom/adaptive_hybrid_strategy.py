@@ -64,6 +64,7 @@ from src.strategies.modules.trade_learner import analyze_closed_trade
 from src.strategies.modules.mtf_confluence import score_mtf_confluence
 
 # New scoring modules (Phase 2)
+from src.strategies.modules.liquidation_cascade import score_liquidation_cascade
 from src.strategies.modules.cvd import score_cvd
 from src.strategies.modules.vwap_deviation import score_vwap_deviation
 from src.strategies.modules.market_memory import score_market_memory
@@ -146,15 +147,16 @@ except ImportError:
     ADAPTIVE_HYBRID_WEIGHTS = {
         'mean_reversion': 0.08, 'momentum_breakout': 0.06,
         'ema_trend': 0.06, 'funding_contrarian': 0.06,
-        'rsi_divergence': 0.06, 'sniper_lite': 0.10,
+        'rsi_divergence': 0.06, 'sniper_lite': 0.08,
         'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
         'oi_delta': 0.05, 'sentiment': 0.04,
         'squeeze_detector': 0.04, 'order_imbalance': 0.04,
         'crowd_positioning': 0.06, 'social_hype': 0.04,
         'funding_divergence': 0.04,
-        'cvd': 0.07, 'vwap_deviation': 0.05,
+        'cvd': 0.05, 'vwap_deviation': 0.05,
         'market_memory': 0.04, 'stablecoin_flow': 0.03,
         'options_sentiment': 0.03,
+        'liquidation_cascade': 0.04,
     }
     ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
         'ranging': {
@@ -164,9 +166,9 @@ except ImportError:
             'oi_delta': 0.05, 'sentiment': 0.04, 'squeeze_detector': 0.04,
             'order_imbalance': 0.04, 'crowd_positioning': 0.06,
             'social_hype': 0.04, 'funding_divergence': 0.04,
-            'cvd': 0.07, 'vwap_deviation': 0.06,
-            'market_memory': 0.04, 'stablecoin_flow': 0.03,
-            'options_sentiment': 0.03,
+            'cvd': 0.05, 'vwap_deviation': 0.05,
+            'market_memory': 0.03, 'stablecoin_flow': 0.03,
+            'options_sentiment': 0.03, 'liquidation_cascade': 0.04,
         },
         'trending': {
             'mean_reversion': 0.04, 'momentum_breakout': 0.09, 'ema_trend': 0.06,
@@ -175,9 +177,9 @@ except ImportError:
             'oi_delta': 0.08, 'sentiment': 0.05, 'squeeze_detector': 0.05,
             'order_imbalance': 0.05, 'crowd_positioning': 0.06,
             'social_hype': 0.05, 'funding_divergence': 0.04,
-            'cvd': 0.09, 'vwap_deviation': 0.04,
-            'market_memory': 0.03, 'stablecoin_flow': 0.03,
-            'options_sentiment': 0.02,
+            'cvd': 0.06, 'vwap_deviation': 0.04,
+            'market_memory': 0.02, 'stablecoin_flow': 0.03,
+            'options_sentiment': 0.02, 'liquidation_cascade': 0.04,
         },
     }
     ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
@@ -236,6 +238,25 @@ except ImportError:
 
 # Absolute cap on any single live order (safety net)
 _MAX_LIVE_ORDER_USD = 1000
+
+# Module families for convergence gate (require signals from >= 2 families)
+MODULE_FAMILIES = {
+    'technical': {'mean_reversion', 'momentum_breakout', 'ema_trend', 'rsi_divergence', 'mtf_confluence'},
+    'volatility': {'sniper_lite', 'ramf_lite', 'squeeze_detector'},
+    'derivatives': {'funding_contrarian', 'oi_delta', 'order_imbalance', 'funding_divergence', 'liquidation_cascade'},
+    'sentiment': {'crowd_positioning', 'social_hype', 'sentiment'},
+    'structure': {'cvd', 'vwap_deviation', 'market_memory'},
+    'macro': {'stablecoin_flow', 'options_sentiment'},
+}
+
+# Regimes where urgency-based threshold relaxation is permitted
+URGENCY_RELAXATION_REGIMES = {'ACCUMULATION', 'MARKUP'}
+
+# Regime-based adjustments to the base score threshold
+REGIME_THRESHOLD_ADJUSTMENTS = {
+    'ACCUMULATION': 0.0, 'MARKUP': -3.0, 'DISTRIBUTION': +5.0,
+    'MARKDOWN': +3.0, 'CAPITULATION': +4.0, 'EUPHORIA': +4.0,
+}
 
 
 class AdaptiveHybridStrategy(BaseStrategy):
@@ -903,6 +924,17 @@ class AdaptiveHybridStrategy(BaseStrategy):
             return {'direction': 'NEUTRAL', 'score': 0, 'agreement': 0,
                     'details': f'Only {len(winning_modules)} module(s) converge (min {ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES} required)'}
 
+        # Family-based convergence: require modules from at least 2 different families
+        winning_families = set()
+        for mod_name in winning_modules:
+            for family, members in MODULE_FAMILIES.items():
+                if mod_name in members:
+                    winning_families.add(family)
+                    break
+        if len(winning_families) < 2:
+            return {'direction': 'NEUTRAL', 'score': 0, 'agreement': 0,
+                    'details': f'Only {len(winning_families)} signal family(ies) ({", ".join(winning_families)}), need 2+'}
+
         # Weighted average of ACTIVE modules in winning direction
         active_weighted_sum = sum(r['score'] * weights.get(n, 0) for n, r in winning_modules.items())
         active_weight_total = sum(weights.get(n, 0) for n in winning_modules)
@@ -918,7 +950,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         directional_count = len(long_modules) + len(short_modules)
         n_active = len(winning_modules)
         convergence_ratio = n_active / max(directional_count, 1)
-        coverage_penalty = convergence_ratio ** 0.3  # Softer exponent (was 0.5)
+        coverage_penalty = convergence_ratio ** 0.5  # Hardened: was 0.3, stronger penalty for low coverage
         final_score = raw_score * coverage_penalty
 
         # BTC macro filter: penalize signals against BTC trend, proportional to correlation
@@ -1036,7 +1068,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
     # =========================================================================
 
     def _get_urgency_multiplier(self, symbol: str = None) -> float:
-        """Progressive threshold relaxation if no trades recently (per-token)."""
+        """Progressive threshold relaxation if no trades recently (per-token).
+        Only relaxes in favorable regimes (ACCUMULATION, MARKUP).
+        """
+        # Check regime first - only relax in favorable regimes
+        current_regime = (self._current_regime or 'unknown').upper()
+        if current_regime not in URGENCY_RELAXATION_REGIMES:
+            return 1.0
+
         # Read trade times under lock (written by execute_paper_trade under lock)
         with self._position_lock:
             per_token_time = self.last_trade_time_per_token.get(symbol) if symbol else None
@@ -1065,12 +1104,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
         return max(0.70, 1.0 - reduction)
 
     def _get_effective_threshold(self, symbol: str = None) -> float:
-        """Get current threshold adjusted by urgency and global regime."""
+        """Get current threshold adjusted by urgency, regime, and feedback."""
         base = ADAPTIVE_HYBRID_BASE_THRESHOLD
 
-        # Note: ranging_calm +5% bonus removed — in Extreme Fear markets, low realized
-        # volatility doesn't mean low opportunity (contrarian signals are most relevant).
-        # The LLM confirmation + anomaly filter provide sufficient protection.
+        # Regime-based threshold adjustment
+        regime = (self._current_regime or '').upper()
+        base += REGIME_THRESHOLD_ADJUSTMENTS.get(regime, 0.0)
 
         urgency = self._get_urgency_multiplier(symbol)
         effective = base * urgency
@@ -1172,11 +1211,35 @@ class AdaptiveHybridStrategy(BaseStrategy):
             ('market_memory', score_market_memory, (df, ind)),
             ('stablecoin_flow', score_stablecoin_flow, (symbol, ind)),
             ('options_sentiment', score_options_sentiment, (symbol, ind)),
+            ('liquidation_cascade', score_liquidation_cascade, (symbol, ind)),
         ]:
             try:
                 module_results[_name] = _fn(*_args)
-            except Exception as e:
-                module_results[_name] = {**_neutral, 'reason': f'{_name}: {e}'}
+            except Exception:
+                module_results[_name] = None
+
+        # Filter out None results (modules with data unavailability)
+        available_modules = {k: v for k, v in module_results.items() if v is not None}
+        unavailable_modules = {k for k, v in module_results.items() if v is None}
+        if unavailable_modules:
+            cprint(f"  ⚠️ [{symbol}] {len(unavailable_modules)} modules unavailable: {', '.join(unavailable_modules)}", "yellow")
+        availability_ratio = len(available_modules) / max(len(module_results), 1)
+        if availability_ratio < 0.6:
+            cprint(f"  ⚠️ [{symbol}] Only {availability_ratio:.0%} modules available, skipping signal", "red")
+            return None
+
+        # Liquidation cascade suppression: dampen breakout/momentum signals that oppose cascade direction
+        liq_result = available_modules.get('liquidation_cascade')
+        if liq_result and liq_result.get('suppress_breakout'):
+            cascade_direction = liq_result.get('direction', 'NEUTRAL')
+            for suppress_mod in ('momentum_breakout', 'ema_trend'):
+                if suppress_mod in available_modules and available_modules[suppress_mod]['score'] > 0:
+                    mod_direction = available_modules[suppress_mod].get('direction', 'NEUTRAL')
+                    # Only suppress if module direction opposes the cascade signal
+                    if mod_direction != cascade_direction and mod_direction != 'NEUTRAL':
+                        old_score = available_modules[suppress_mod]['score']
+                        available_modules[suppress_mod] = {**available_modules[suppress_mod], 'score': int(old_score * 0.3)}
+                        cprint(f"    [Cascade] Suppressed {suppress_mod} ({mod_direction} vs cascade {cascade_direction}): {old_score} -> {available_modules[suppress_mod]['score']}", "yellow")
 
         # Anomaly observation (feed data to Isolation Forest)
         try:
@@ -1185,7 +1248,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             pass
 
         # Aggregate scores (regime-adjusted weights applied inside _get_weights_for_symbol)
-        aggregated = self._aggregate_scores(module_results, symbol=symbol, ind=ind)
+        aggregated = self._aggregate_scores(available_modules, symbol=symbol, ind=ind)
 
         # Multi-Timeframe Confluence bonus/penalty
         if ADAPTIVE_HYBRID_MTF_CONFLUENCE and aggregated['direction'] != 'NEUTRAL':
@@ -1216,19 +1279,19 @@ class AdaptiveHybridStrategy(BaseStrategy):
         urgency = self._get_urgency_multiplier(symbol)
 
         # Log analysis
-        fired_modules = {n: r for n, r in module_results.items() if r['score'] > 0 and r['direction'] != 'NEUTRAL'}
-        silent_modules = {n: r for n, r in module_results.items() if r['score'] == 0}
+        fired_modules = {n: r for n, r in available_modules.items() if r['score'] > 0 and r['direction'] != 'NEUTRAL'}
+        silent_modules = {n: r for n, r in available_modules.items() if r['score'] == 0}
         cprint(f"  [{symbol}] Score: {aggregated['score']:.1f}/{threshold:.0f} | "
-               f"Modules: {len(fired_modules)}/{len(module_results)} | Direction: {aggregated['direction']} | "
+               f"Modules: {len(fired_modules)}/{len(available_modules)} | Direction: {aggregated['direction']} | "
                f"Urgency: {urgency:.0%}", "white")
 
         for name, result in fired_modules.items():
             cprint(f"    {name}: {result['direction']} {result['score']} - {result['reason']}", "white")
 
         # Warn about silent/failed modules for diagnostics
-        if len(silent_modules) > len(module_results) // 2:
+        if len(silent_modules) > len(available_modules) // 2:
             silent_names = ', '.join(silent_modules.keys())
-            cprint(f"  ⚠️ [{symbol}] {len(silent_modules)}/{len(module_results)} modules returned score=0: {silent_names}", "yellow")
+            cprint(f"  ⚠️ [{symbol}] {len(silent_modules)}/{len(available_modules)} modules returned score=0: {silent_names}", "yellow")
 
         # Decision
         if aggregated['direction'] != 'NEUTRAL' and aggregated['score'] >= threshold:
@@ -1658,9 +1721,18 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 source='adaptive_hybrid',
                 reasoning=str(metadata.get('reason', '')),
                 market_regime=self._current_regime,
+                key_indicators={
+                    'rsi': metadata.get('rsi'),
+                    'adx': metadata.get('adx'),
+                    'atr': trade.get('atr'),
+                    'score': trade.get('score'),
+                },
                 modules_firing=modules_firing,
             )
             trade['memory_decision_id'] = decision_id
+            with self._position_lock:
+                if position_id in self.paper_positions:
+                    self.paper_positions[position_id]['memory_decision_id'] = decision_id
         except Exception as e:
             cprint(f"  [Memory] Warning: could not log decision: {e}", "yellow")
 
@@ -1889,6 +1961,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 source='adaptive_hybrid_live',
                 reasoning=str(metadata.get('reason', '')),
                 market_regime=self._current_regime,
+                key_indicators={
+                    'rsi': metadata.get('rsi'),
+                    'adx': metadata.get('adx'),
+                    'atr': trade.get('atr'),
+                    'score': trade.get('score'),
+                },
                 modules_firing=modules_firing,
             )
             trade['memory_decision_id'] = decision_id
@@ -2099,8 +2177,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
                         }
 
                     ts = self.trailing_stops[position_id]
-                    ts['highest'] = max(ts['highest'], candle_high)
-                    ts['lowest'] = min(ts['lowest'], candle_low)
+                    # Use candle high/low for watermark (track true extremes), close for trigger
+                    reference_high = candle_high if candle_high else current_price
+                    reference_low = candle_low if candle_low else current_price
+                    ts['highest'] = max(ts['highest'], reference_high)
+                    ts['lowest'] = min(ts['lowest'], reference_low)
 
                     atr = trade.get('atr', 0)
                     if atr <= 0:

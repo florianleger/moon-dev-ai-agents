@@ -64,4 +64,4 @@ def score_options_sentiment(symbol: str, indicators: dict, config: dict = None) 
         direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
         return {'score': min(100, best), 'direction': direction, 'reason': ' '.join(parts)}
     except Exception as e:
-        return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'Options error: {e}'}
+        return None

@@ -55,11 +55,11 @@ def score_oi_delta(indicators: dict, market_data, oi_history: dict,
         dict with 'score' (0-100), 'direction', and 'reason'.
     """
     if not market_data:
-        return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No market data'}
+        return None
     try:
         oi_data = market_data.get_open_interest(symbol)
         if oi_data is None:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No OI data'}
+            return None
 
         current_oi = oi_data.get('open_interest', 0)
         if current_oi <= 0:
@@ -112,4 +112,4 @@ def score_oi_delta(indicators: dict, market_data, oi_history: dict,
         return {'score': min(100, best), 'direction': direction,
                 'reason': f'OI delta={oi_change_pct:+.1f}% (OI={current_oi:,.0f}, {len(history)} pts) price_chg={price_change:+.2f}'}
     except Exception as e:
-        return {'score': 0, 'direction': 'NEUTRAL', 'reason': f'OI error: {e}'}
+        return None

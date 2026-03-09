@@ -10,7 +10,13 @@
             <h1 class="text-2xl font-bold text-white">Trading Dashboard</h1>
             <span :class="mode === 'live' ? 'bg-red-600 text-white' : 'bg-yellow-500 text-black'"
                   class="px-2 py-0.5 rounded text-xs font-bold uppercase" x-text="mode"></span>
-            <span x-show="regime" class="bg-purple-500/20 text-purple-400 px-2 py-0.5 rounded text-xs font-medium" x-text="regime"></span>
+            <span x-show="regime" class="px-2 py-0.5 rounded text-xs font-medium"
+                  :class="{
+                      'bg-red-500/20 text-red-400': ['CAPITULATION','DISTRIBUTION'].includes(regime),
+                      'bg-green-500/20 text-green-400': ['ACCUMULATION','MARKUP'].includes(regime),
+                      'bg-yellow-500/20 text-yellow-400': regime === 'EUPHORIA',
+                      'bg-purple-500/20 text-purple-400': !['CAPITULATION','DISTRIBUTION','ACCUMULATION','MARKUP','EUPHORIA'].includes(regime)
+                  }" x-text="regime"></span>
             <span class="text-gray-500 text-xs" x-show="lastUpdated" x-text="formatLastUpdated()"></span>
         </div>
         <div class="flex gap-2">
@@ -23,7 +29,7 @@
     </div>
 
     <!-- Stats Cards -->
-    <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
+    <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
         <!-- Balance -->
         <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
             <div class="flex items-center justify-between">
@@ -87,6 +93,18 @@
                 <div class="text-3xl">&#128203;</div>
             </div>
         </div>
+
+        <!-- Scheduler -->
+        <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-gray-400 text-sm">Scheduler</p>
+                    <p class="text-2xl font-bold text-white" x-text="schedulerQueue + ' queued'">-</p>
+                    <p class="text-xs text-gray-500" x-text="schedulerTokens + ' tokens tracked'"></p>
+                </div>
+                <div class="text-3xl">&#128337;</div>
+            </div>
+        </div>
     </div>
 
     <!-- PnL Chart -->
@@ -125,6 +143,7 @@
                         <th class="text-right py-2">PnL %</th>
                         <th class="text-left py-2">Reason</th>
                         <th class="text-right py-2">Score</th>
+                        <th class="text-center py-2">Memory</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -154,10 +173,13 @@
                                 }" x-text="trade.close_reason"></span>
                             </td>
                             <td class="py-2 text-right text-gray-400" x-text="trade.score > 0 ? trade.score.toFixed(1) : '-'"></td>
+                            <td class="py-2 text-center">
+                                <span x-show="trade.memory_decision_id" class="text-purple-400 text-xs" title="Trade logged to memory">&#128278;</span>
+                            </td>
                         </tr>
                     </template>
                     <tr x-show="closedTrades.length === 0">
-                        <td colspan="10" class="py-8 text-center text-gray-500">
+                        <td colspan="11" class="py-8 text-center text-gray-500">
                             No closed trades yet
                         </td>
                     </tr>
@@ -302,6 +324,30 @@
                                       x-text="signal.approved ? 'Approved' : 'Rejected'"></span>
                                 <span x-show="signal.reason && !signal.approved" class="text-gray-500" x-text="signal.reason"></span>
                             </div>
+
+                            <!-- Module Scores & Coverage -->
+                            <div x-show="signal.module_scores && Object.keys(signal.module_scores).length > 0" class="mt-3">
+                                <p class="text-gray-400 text-xs mb-2">Module Scores
+                                    <span x-show="signal.coverage" class="ml-2 text-gray-500">(coverage: <span x-text="signal.coverage + '%'"></span>)</span>
+                                    <span x-show="signal.active_modules" class="ml-2 text-gray-500">(<span x-text="signal.active_modules"></span>/<span x-text="signal.total_fired || '?'"></span> modules)</span>
+                                </p>
+                                <div class="flex flex-wrap gap-1">
+                                    <template x-for="(score, name) in signal.module_scores" :key="name">
+                                        <span class="px-2 py-0.5 rounded text-xs"
+                                              :class="score >= 60 ? 'bg-green-500/20 text-green-400' : score >= 30 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-gray-600/30 text-gray-400'"
+                                              x-text="name + '=' + score"></span>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- Urgency & Regime -->
+                            <div class="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                                <span x-show="signal.urgency_multiplier != null && signal.urgency_multiplier !== 1.0"
+                                      :class="signal.urgency_multiplier > 1 ? 'text-green-400' : 'text-yellow-400'"
+                                      x-text="'Urgency: ' + signal.urgency_multiplier + 'x'"></span>
+                                <span x-show="signal.llm_regime" class="text-purple-400"
+                                      x-text="'Regime: ' + signal.llm_regime"></span>
+                            </div>
                         </div>
                     </div>
                 </template>
@@ -335,6 +381,8 @@ function dashboardData() {
         mode: 'paper',
         dailyTrades: 0,
         regime: null,
+        schedulerQueue: 0,
+        schedulerTokens: 0,
         _tick: 0,
         _sseConnected: false,
         _pollTimer: null,
@@ -344,6 +392,7 @@ function dashboardData() {
             this.fetchPositions();
             this.fetchSignals();
             this.fetchTrades();
+            this.fetchScheduler();
             this.setupSSE();
 
             setTimeout(() => this.initChart(), 100);
@@ -362,6 +411,7 @@ function dashboardData() {
                     this.fetchPositions();
                     this.fetchSignals();
                     this.fetchTrades();
+                    this.fetchScheduler();
                 }
             }, 10000);
         },
@@ -411,6 +461,16 @@ function dashboardData() {
             }
         },
 
+        async fetchScheduler() {
+            try {
+                const data = await apiFetch('/api/dashboard/scheduler');
+                this.schedulerQueue = data.queue_size ?? 0;
+                this.schedulerTokens = (data.tokens ?? []).length;
+            } catch (e) {
+                console.error('Failed to fetch scheduler:', e);
+            }
+        },
+
         async fetchSignals() {
             try {
                 // Preserve expanded state before refresh
@@ -447,6 +507,15 @@ function dashboardData() {
                 current_price: s.current_price,
                 approved: s.approved,
                 reason: s.reason,
+                // New pipeline metadata
+                module_scores: s.module_scores,
+                active_modules: s.active_modules,
+                total_fired: s.total_fired,
+                coverage: s.coverage,
+                urgency_multiplier: s.urgency_multiplier,
+                llm_regime: s.llm_regime,
+                stop_loss_pct: s.stop_loss_pct,
+                take_profit_pct: s.take_profit_pct,
                 expanded: false,
             };
         },
@@ -584,6 +653,12 @@ function dashboardData() {
                         ...p,
                         _uid: p.position_id || `${p.symbol}-${i}-${p.entry_price}`
                     }));
+                });
+
+                eventSource.addEventListener('scheduler', (e) => {
+                    const data = JSON.parse(e.data);
+                    this.schedulerQueue = data.queue_size ?? 0;
+                    this.schedulerTokens = (data.tokens ?? []).length;
                 });
 
                 eventSource.addEventListener('signals', (e) => {
