@@ -17,6 +17,37 @@ from termcolor import cprint
 _regime_cache = {}
 _REGIME_TTL_SECONDS = 900  # 15 minutes
 
+# Hysteresis: only switch regime after N consecutive same classifications
+_regime_history = {}   # {symbol: [list of recent classifications]}
+_stable_regime = {}    # {symbol: last stable regime}
+
+# Extreme regimes bypass hysteresis (flash crash / blow-off top)
+IMMEDIATE_REGIMES = {'CAPITULATION', 'EUPHORIA'}
+
+
+def _apply_hysteresis(symbol, new_regime, required_count=3):
+    """Only switch regime after N consecutive same classifications."""
+    # Extreme regimes bypass hysteresis (flash crash / blow-off top)
+    if new_regime in IMMEDIATE_REGIMES:
+        _stable_regime[symbol] = new_regime
+        _regime_history.setdefault(symbol, []).append(new_regime)
+        return new_regime
+
+    if symbol not in _regime_history:
+        _regime_history[symbol] = []
+    _regime_history[symbol].append(new_regime)
+    # Keep only last required_count * 2 entries
+    _regime_history[symbol] = _regime_history[symbol][-(required_count * 2):]
+
+    # Check if last N are all the same
+    recent = _regime_history[symbol][-required_count:]
+    if len(recent) >= required_count and all(r == new_regime for r in recent):
+        _stable_regime[symbol] = new_regime
+        return new_regime
+
+    # Return previous stable regime, or new if no history
+    return _stable_regime.get(symbol, new_regime)
+
 
 SYSTEM_PROMPT = (
     "You are a professional crypto market regime classifier. "
@@ -76,7 +107,7 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'squeeze_detector': 1.5,
         'order_imbalance': 1.2,
         'cvd': 1.0, 'vwap_deviation': 1.3, 'market_memory': 1.2,
-        'stablecoin_flow': 1.0, 'options_sentiment': 1.0, 'liquidation_cascade': 1.0,
+        'stablecoin_flow': 1.0, 'options_sentiment': 1.0, 'liquidation_cascade': 1.2,
     },
     'DISTRIBUTION': {
         'mean_reversion': 1.2,
@@ -91,7 +122,7 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'squeeze_detector': 1.0,
         'order_imbalance': 1.3,
         'cvd': 1.3, 'vwap_deviation': 1.0, 'market_memory': 1.0,
-        'stablecoin_flow': 1.2, 'options_sentiment': 1.3, 'liquidation_cascade': 1.2,
+        'stablecoin_flow': 1.2, 'options_sentiment': 1.3, 'liquidation_cascade': 1.0,
     },
     'MARKUP': {
         'mean_reversion': 0.5,
@@ -106,7 +137,7 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'squeeze_detector': 0.8,
         'order_imbalance': 1.0,
         'cvd': 1.3, 'vwap_deviation': 0.8, 'market_memory': 0.8,
-        'stablecoin_flow': 1.0, 'options_sentiment': 0.8, 'liquidation_cascade': 0.7,
+        'stablecoin_flow': 1.0, 'options_sentiment': 0.8, 'liquidation_cascade': 0.8,
     },
     'MARKDOWN': {
         'mean_reversion': 0.5,
@@ -151,7 +182,7 @@ REGIME_WEIGHT_ADJUSTMENTS = {
         'squeeze_detector': 1.0,
         'order_imbalance': 1.0,
         'cvd': 1.5, 'vwap_deviation': 1.0, 'market_memory': 0.7,
-        'stablecoin_flow': 1.3, 'options_sentiment': 1.5, 'liquidation_cascade': 1.5,
+        'stablecoin_flow': 1.3, 'options_sentiment': 1.5, 'liquidation_cascade': 1.3,
     },
 }
 
@@ -166,10 +197,10 @@ def _parse_regime_response(response_text):
 
     result = json.loads(text)
 
-    regime = result.get('regime', 'ACCUMULATION').upper()
+    regime = result.get('regime', 'MARKDOWN').upper()
     valid_regimes = {'ACCUMULATION', 'DISTRIBUTION', 'MARKUP', 'MARKDOWN', 'CAPITULATION', 'EUPHORIA'}
     if regime not in valid_regimes:
-        regime = 'ACCUMULATION'
+        regime = 'MARKDOWN'
 
     bias = result.get('bias', 'NEUTRAL').upper()
     if bias not in ('LONG', 'SHORT', 'NEUTRAL'):
@@ -190,6 +221,8 @@ def classify_regime(
     extra_context: str = "",
     model=None,
     bypass: bool = False,
+    indicator_history: dict = None,  # type: ignore[assignment]
+    hysteresis: int = 3,
 ) -> dict:
     """Classify market regime for the given symbol.
 
@@ -200,6 +233,10 @@ def classify_regime(
         extra_context: Additional context string (sentiment, OI, etc.)
         model: LLM model instance. If None, uses rule-based fallback.
         bypass: If True, use rule-based classification only (no LLM).
+        indicator_history: Optional dict of lists with recent values (last 5)
+            for key indicators (rsi, adx, volume_ratio, bb_pct).
+        hysteresis: Number of consecutive same classifications required
+            before switching regime (default 3).
 
     Returns:
         dict with 'regime', 'confidence', 'reasoning', 'bias'
@@ -222,6 +259,19 @@ def classify_regime(
     ema_21 = indicators.get('ema_21', price)
     change_24h = ((price - ema_21) / ema_21 * 100) if ema_21 > 0 else 0
 
+    # Build extra context with indicator history if available
+    full_extra = extra_context or "No additional data"
+    if indicator_history:
+        history_lines = ["\n## Recent Trend (last 5 periods, newest first)"]
+        for key, label in [('rsi', 'RSI'), ('adx', 'ADX'),
+                           ('volume_ratio', 'Volume Ratio'), ('bb_pct', 'BB%B')]:
+            values = indicator_history.get(key)
+            if values:
+                formatted = ', '.join(f'{v:.2f}' for v in values)
+                history_lines.append(f"- {label}: [{formatted}]")
+        if len(history_lines) > 1:
+            full_extra = full_extra + '\n' + '\n'.join(history_lines)
+
     user_content = USER_PROMPT_TEMPLATE.format(
         symbol=symbol,
         price=price,
@@ -237,7 +287,7 @@ def classify_regime(
         macd=indicators.get('macd', 0),
         macd_signal=indicators.get('macd_signal', 0),
         funding_zscore=funding_zscore,
-        extra_context=extra_context or "No additional data",
+        extra_context=full_extra,
     )
 
     try:
@@ -264,6 +314,13 @@ def classify_regime(
 
         response_text = response.content if hasattr(response, 'content') else str(response)
         result = _parse_regime_response(response_text)
+
+        # Apply hysteresis: only switch regime after N consecutive same classifications
+        raw_regime = result['regime']
+        result['regime'] = _apply_hysteresis(symbol, raw_regime, required_count=hysteresis)
+        if result['regime'] != raw_regime:
+            cprint(f"  [LLM Regime] {symbol}: hysteresis held {result['regime']} "
+                   f"(LLM said {raw_regime})", "cyan")
 
         _regime_cache[symbol] = (now, result)
 
@@ -316,8 +373,8 @@ def _rule_based_regime(indicators: dict, funding_zscore: float = 0.0) -> dict:
     if bullish_trend and not strong_trend and rsi > 60 and volume_ratio < 0.8:
         return {'regime': 'DISTRIBUTION', 'confidence': 55, 'reasoning': 'High price, declining volume', 'bias': 'SHORT'}
 
-    # Default: Accumulation (range-bound, low volatility)
-    return {'regime': 'ACCUMULATION', 'confidence': 50, 'reasoning': 'Range-bound, low directional bias', 'bias': 'NEUTRAL'}
+    # Default: Markdown (conservative fallback, avoids systematic bias toward permissive regime)
+    return {'regime': 'MARKDOWN', 'confidence': 50, 'reasoning': 'Range-bound, defaulting to conservative regime', 'bias': 'NEUTRAL'}
 
 
 def adjust_weights_for_regime(base_weights: dict, regime: str) -> dict:

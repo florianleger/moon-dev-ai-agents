@@ -444,8 +444,8 @@ ADAPTIVE_HYBRID_TRAILING_ACTIVATE_ATR = 1.5  # Deprecated: use TRAILING_LEVELS i
 ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR = 2.0  # Deprecated: use TRAILING_LEVELS instead
 
 # Session filter (UTC hours)
-ADAPTIVE_HYBRID_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 15, 19, 20, 21]  # London + NY + Asia open
-ADAPTIVE_HYBRID_AVOID_HOURS = [0, 1, 2, 3, 4, 5]  # Low liquidity
+ADAPTIVE_HYBRID_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 20, 21]  # London + NY + Asia open (removed 15, 19: 18% WR, -$46 PnL)
+ADAPTIVE_HYBRID_AVOID_HOURS = [0, 1, 2, 3, 4, 5, 15]  # Low liquidity + UTC 15 (known loss hour)
 
 # Time-based exit
 ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48  # Force close after 48h
@@ -519,6 +519,33 @@ ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
 }
 ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
 ADAPTIVE_HYBRID_TRENDING_TOKENS = ['DOGE', 'kPEPE', 'SUI', 'TAO']
+
+# --- Risk: Notional exposure cap ---
+ADAPTIVE_HYBRID_MAX_NOTIONAL_PCT = 500  # Max total notional exposure as % of balance
+
+# --- Weekend size reduction ---
+ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION = 0.30  # Reduce position size by 30% on weekends
+
+# --- Escalating cooldowns after consecutive losses ---
+ADAPTIVE_HYBRID_ESCALATING_COOLDOWNS = {3: 2, 4: 6, 5: 24}  # {consecutive_losses: cooldown_hours}
+
+# --- Choppiness Index threshold ---
+ADAPTIVE_HYBRID_CHOPPINESS_THRESHOLD = 61.8  # CI above this = choppy market, penalize signals
+
+# --- Regime hysteresis ---
+ADAPTIVE_HYBRID_REGIME_HYSTERESIS = 3  # Require N consecutive same classifications before switching
+
+# --- Funding cluster cap ---
+ADAPTIVE_HYBRID_FUNDING_CLUSTER_CAP = 0.10  # Max combined effective weight for funding-based modules
+
+# --- Kelly-adaptive sizing ---
+ADAPTIVE_HYBRID_KELLY_LOOKBACK = 30  # Number of recent trades for rolling Kelly calculation
+ADAPTIVE_HYBRID_KELLY_FRACTION = 0.5  # Half-Kelly for safety
+
+# --- Event calendar ---
+ADAPTIVE_HYBRID_EVENT_CALENDAR_FILE = os.path.join(os.path.dirname(__file__), 'data', 'event_calendar.json')
+ADAPTIVE_HYBRID_EVENT_SIZE_REDUCTION = 0.50  # Reduce position size by 50% near high-impact events
+ADAPTIVE_HYBRID_EVENT_WINDOW_HOURS = 2  # Hours before/after event to apply reduction
 
 # ============================================================================
 # Risk Agent Settings (for paper trading mode)

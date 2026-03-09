@@ -1,0 +1,14 @@
+{
+    "description": "High-impact events that affect crypto markets. Update monthly.",
+    "last_updated": "2026-03-09",
+    "events": [
+        {"date": "2026-03-19", "time": "18:00", "type": "FOMC", "impact": "high", "description": "Fed Interest Rate Decision"},
+        {"date": "2026-04-10", "time": "12:30", "type": "CPI", "impact": "high", "description": "US CPI Release"},
+        {"date": "2026-04-29", "time": "18:00", "type": "FOMC", "impact": "high", "description": "Fed Interest Rate Decision"},
+        {"date": "2026-05-02", "time": "12:30", "type": "NFP", "impact": "high", "description": "Non-Farm Payrolls"},
+        {"date": "2026-05-13", "time": "12:30", "type": "CPI", "impact": "high", "description": "US CPI Release"},
+        {"date": "2026-06-10", "time": "12:30", "type": "CPI", "impact": "high", "description": "US CPI Release"},
+        {"date": "2026-06-17", "time": "18:00", "type": "FOMC", "impact": "high", "description": "Fed Interest Rate Decision"},
+        {"date": "2026-07-29", "time": "18:00", "type": "FOMC", "impact": "high", "description": "Fed Interest Rate Decision"}
+    ]
+}

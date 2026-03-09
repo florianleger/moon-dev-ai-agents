@@ -252,11 +252,18 @@ MODULE_FAMILIES = {
 # Regimes where urgency-based threshold relaxation is permitted
 URGENCY_RELAXATION_REGIMES = {'ACCUMULATION', 'MARKUP'}
 
-# Regime-based adjustments to the base score threshold
+# Regime-based adjustments to the base score threshold (direction-aware)
 REGIME_THRESHOLD_ADJUSTMENTS = {
-    'ACCUMULATION': 0.0, 'MARKUP': -3.0, 'DISTRIBUTION': +5.0,
-    'MARKDOWN': +3.0, 'CAPITULATION': +4.0, 'EUPHORIA': +4.0,
+    'ACCUMULATION': {'BUY': 0, 'SELL': +2},
+    'MARKUP':       {'BUY': -3, 'SELL': +5},
+    'DISTRIBUTION': {'BUY': +8, 'SELL': -3},
+    'MARKDOWN':     {'BUY': +5, 'SELL': -2},
+    'CAPITULATION': {'BUY': -4, 'SELL': +6},
+    'EUPHORIA':     {'BUY': +6, 'SELL': -4},
 }
+
+# Regime transition tracking per symbol
+_regime_transition_cache = {}  # {symbol: {'prev': regime, 'current': regime, 'transition_at': timestamp}}
 
 
 class AdaptiveHybridStrategy(BaseStrategy):
@@ -282,8 +289,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self.last_trade_date = None
         self.last_trade_time = None
         self.last_trade_time_per_token = {}  # {symbol: datetime} — per-token urgency tracking
-        self.consecutive_losses = 0  # Circuit breaker: pause after 3 consecutive losses
+        self.consecutive_losses = 0  # Circuit breaker: pause after consecutive losses (escalating cooldowns)
         self._loss_breaker_until = None  # datetime when breaker expires
+        self._post_breaker_trades = 0  # Countdown: reduce size by 50% for N trades after breaker
 
         # Paper trading state
         self.paper_balance = PAPER_TRADING_BALANCE
@@ -701,13 +709,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
     # BTC MACRO FILTER
     # =========================================================================
 
-    def _check_btc_trend(self) -> bool:
+    def _check_btc_trend(self) -> float:
         """
-        Check if BTC is in an uptrend (price > EMA200).
+        Check BTC macro trend. Returns float -1.0 (strong bear) to +1.0 (strong bull).
+        Computed as (btc_price - ema200) / ema200, clamped to [-0.15, +0.15], scaled to [-1.0, +1.0].
         Cached for 15 minutes.
-
-        Returns:
-            bool: True if BTC is bullish (price above EMA200)
         """
         if self._btc_trend_cache is not None and self._btc_trend_timestamp:
             age = (datetime.now() - self._btc_trend_timestamp).total_seconds()
@@ -717,7 +723,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         try:
             df = self._fetch_candles('BTC', interval='1h', candles=250)
             if df is None or len(df) < 200:
-                return True  # Default to allowing trades
+                return 0.0  # Neutral default when data unavailable
 
             close = df['close']
             ema200 = EMAIndicator(close, window=200).ema_indicator()
@@ -725,19 +731,27 @@ class AdaptiveHybridStrategy(BaseStrategy):
             current_price = float(close.iloc[-1])
             current_ema200 = float(ema200.iloc[-1])
 
-            is_bullish = current_price > current_ema200
+            if current_ema200 <= 0:
+                return 0.0
 
-            self._btc_trend_cache = is_bullish
+            # Compute trend strength: deviation from EMA200 as fraction
+            raw_strength = (current_price - current_ema200) / current_ema200
+            # Clamp to [-0.15, +0.15] then scale to [-1.0, +1.0]
+            clamped = max(-0.15, min(0.15, raw_strength))
+            trend_strength = round(clamped / 0.15, 2)
+
+            self._btc_trend_cache = trend_strength
             self._btc_trend_timestamp = datetime.now()
 
+            label = 'BULLISH' if trend_strength > 0 else 'BEARISH' if trend_strength < 0 else 'NEUTRAL'
             cprint(f"  [BTC Macro] Price=${current_price:,.0f} EMA200=${current_ema200:,.0f} "
-                   f"-> {'BULLISH' if is_bullish else 'BEARISH'}", "cyan")
+                   f"-> {label} (strength={trend_strength:+.2f})", "cyan")
 
-            return is_bullish
+            return trend_strength
 
         except Exception as e:
             cprint(f"[AdaptiveHybrid] Error checking BTC trend: {e}", "yellow")
-            return True  # Default to allowing trades
+            return 0.0  # Neutral default
 
     def _detect_global_regime(self) -> str:
         """Detect global market regime based on BTC ADX and volatility ratio.
@@ -848,19 +862,20 @@ class AdaptiveHybridStrategy(BaseStrategy):
         else:
             base_profile = None
 
-        # Per-token ADX override
+        # Per-token ADX override (no longer short-circuits — falls through to LLM adjustments)
+        selected_profile = None
         if ind is not None and 'adx' in ind:
             if ind['adx'] > 30:
-                return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('trending', self.weights)
+                selected_profile = 'trending'
             elif ind['adx'] < 20:
-                return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('ranging', self.weights)
+                selected_profile = 'ranging'
 
-        # Use global regime profile if available
-        if base_profile:
-            return ADAPTIVE_HYBRID_WEIGHT_PROFILES.get(base_profile, self.weights)
-
-        # Fallback: static mapping
-        if symbol in ADAPTIVE_HYBRID_RANGING_TOKENS:
+        if selected_profile:
+            selected = ADAPTIVE_HYBRID_WEIGHT_PROFILES.get(selected_profile, self.weights)
+        elif base_profile:
+            # Use global regime profile if available
+            selected = ADAPTIVE_HYBRID_WEIGHT_PROFILES.get(base_profile, self.weights)
+        elif symbol in ADAPTIVE_HYBRID_RANGING_TOKENS:
             selected = ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('ranging', self.weights)
         elif symbol in ADAPTIVE_HYBRID_TRENDING_TOKENS:
             selected = ADAPTIVE_HYBRID_WEIGHT_PROFILES.get('trending', self.weights)
@@ -935,6 +950,21 @@ class AdaptiveHybridStrategy(BaseStrategy):
             return {'direction': 'NEUTRAL', 'score': 0, 'agreement': 0,
                     'details': f'Only {len(winning_families)} signal family(ies) ({", ".join(winning_families)}), need 2+'}
 
+        # Funding cluster cap: limit combined contribution of funding-based modules
+        FUNDING_MODULES = {'funding_contrarian', 'squeeze_detector', 'funding_divergence'}
+        try:
+            from src.config import ADAPTIVE_HYBRID_FUNDING_CLUSTER_CAP
+            funding_cap = ADAPTIVE_HYBRID_FUNDING_CLUSTER_CAP
+        except ImportError:
+            funding_cap = 0.10
+
+        funding_weight_in_winning = sum(weights.get(m, 0) for m in winning_modules if m in FUNDING_MODULES)
+        if funding_weight_in_winning > funding_cap:
+            excess_ratio = funding_cap / funding_weight_in_winning
+            for m in list(winning_modules.keys()):
+                if m in FUNDING_MODULES:
+                    winning_modules[m] = {**winning_modules[m], 'score': round(winning_modules[m]['score'] * excess_ratio)}
+
         # Weighted average of ACTIVE modules in winning direction
         active_weighted_sum = sum(r['score'] * weights.get(n, 0) for n, r in winning_modules.items())
         active_weight_total = sum(weights.get(n, 0) for n in winning_modules)
@@ -949,12 +979,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Only count directional modules (BUY/SELL), not NEUTRAL/failed ones
         directional_count = len(long_modules) + len(short_modules)
         n_active = len(winning_modules)
-        convergence_ratio = n_active / max(directional_count, 1)
+        # Count available modules (non-None results passed to this function)
+        total_available = len(module_results)
+        convergence_ratio = n_active / max(directional_count, total_available * 0.35, 1)
         coverage_penalty = convergence_ratio ** 0.5  # Hardened: was 0.3, stronger penalty for low coverage
         final_score = raw_score * coverage_penalty
 
-        # BTC macro filter: penalize signals against BTC trend, proportional to correlation
-        btc_trend = self._check_btc_trend()
+        # BTC macro filter: graduated penalty proportional to BTC trend strength and correlation
+        btc_trend = self._check_btc_trend()  # float: -1.0 (bear) to +1.0 (bull)
         btc_penalty = 1.0
         details = ""
         if btc_trend is not None and symbol:
@@ -962,16 +994,17 @@ class AdaptiveHybridStrategy(BaseStrategy):
             if corr is not None:
                 # Clamp correlation to [0.33, 1.0] for penalty range
                 corr_clamped = max(0.33, min(1.0, abs(corr)))
-                btc_penalty_amount = 0.30 * corr_clamped  # 10% to 30% penalty
 
-                if not btc_trend and direction == 'BUY':
+                if btc_trend < 0 and direction == 'BUY':
+                    btc_penalty_amount = abs(btc_trend) * 0.30 * corr_clamped
                     btc_penalty = 1.0 - btc_penalty_amount
                     final_score *= btc_penalty
-                    details = f" | BTC bearish penalty -{btc_penalty_amount:.0%} (corr={corr:.2f})"
-                elif btc_trend and direction == 'SELL':
+                    details = f" | BTC bearish penalty -{btc_penalty_amount:.0%} (trend={btc_trend:+.2f}, corr={corr:.2f})"
+                elif btc_trend > 0 and direction == 'SELL':
+                    btc_penalty_amount = abs(btc_trend) * 0.30 * corr_clamped
                     btc_penalty = 1.0 - btc_penalty_amount
                     final_score *= btc_penalty
-                    details = f" | BTC bullish penalty -{btc_penalty_amount:.0%} (corr={corr:.2f})"
+                    details = f" | BTC bullish penalty -{btc_penalty_amount:.0%} (trend={btc_trend:+.2f}, corr={corr:.2f})"
 
         # Graduated conflict penalty (contrarians count at 50% - they oppose by design)
         CONTRARIAN_MODULES = {'mean_reversion', 'sentiment', 'sniper_lite', 'funding_contrarian', 'funding_divergence'}
@@ -1103,13 +1136,35 @@ class AdaptiveHybridStrategy(BaseStrategy):
         reduction = min(steps * 0.05, 0.30)  # Max 30% reduction
         return max(0.70, 1.0 - reduction)
 
-    def _get_effective_threshold(self, symbol: str = None) -> float:
-        """Get current threshold adjusted by urgency, regime, and feedback."""
+    def _get_effective_threshold(self, symbol: str = None, ind: dict = None, direction: str = None) -> float:
+        """Get current threshold adjusted by urgency, regime, direction, choppiness, transitions, and feedback."""
         base = ADAPTIVE_HYBRID_BASE_THRESHOLD
 
-        # Regime-based threshold adjustment
+        # Regime-based threshold adjustment (direction-aware)
         regime = (self._current_regime or '').upper()
-        base += REGIME_THRESHOLD_ADJUSTMENTS.get(regime, 0.0)
+        adj = REGIME_THRESHOLD_ADJUSTMENTS.get(regime, {}).get(direction, 0) if direction else 0
+        base += adj
+
+        # Regime transition bonus/penalty
+        if symbol and regime:
+            transition_adj = self._detect_regime_transition(symbol, regime)
+            if transition_adj != 0:
+                base += transition_adj
+                cprint(f"    [Regime Transition] {symbol}: adj={transition_adj:+.0f} (threshold now {base:.0f})", "cyan")
+
+        # Choppiness index: raise threshold in choppy markets
+        try:
+            from src.config import ADAPTIVE_HYBRID_CHOPPINESS_THRESHOLD
+            chop_threshold = ADAPTIVE_HYBRID_CHOPPINESS_THRESHOLD
+        except ImportError:
+            chop_threshold = 61.8
+
+        if ind is not None:
+            df = ind.get('_df')
+            ci = self._get_choppiness_index(df)
+            if ci > chop_threshold:
+                base += 2
+                cprint(f"    [Choppiness] {symbol or '?'}: CI={ci:.1f} > {chop_threshold} -> threshold +2", "yellow")
 
         urgency = self._get_urgency_multiplier(symbol)
         effective = base * urgency
@@ -1119,7 +1174,59 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if hasattr(self, '_feedback'):
             threshold = self._feedback.suggest_threshold_adjustment(threshold)
 
+        threshold = max(35, min(75, threshold))  # Prevent extreme thresholds
         return threshold
+
+    def _detect_regime_transition(self, symbol: str, current_regime: str) -> float:
+        """Detect regime transitions and return threshold bonus/penalty."""
+        prev = _regime_transition_cache.get(symbol, {}).get('current')
+        if prev and prev != current_regime:
+            _regime_transition_cache[symbol] = {
+                'prev': prev, 'current': current_regime,
+                'transition_at': datetime.utcnow()
+            }
+        elif not prev:
+            _regime_transition_cache[symbol] = {
+                'prev': None, 'current': current_regime,
+                'transition_at': datetime.utcnow()
+            }
+
+        # Favorable transitions (negative = lower threshold = easier entry)
+        TRANSITION_BONUSES = {
+            ('ACCUMULATION', 'MARKUP'): -5,    # Best entry: accumulation complete
+            ('MARKDOWN', 'ACCUMULATION'): -3,   # Bottom forming
+            ('MARKUP', 'DISTRIBUTION'): +3,     # Top forming, be cautious
+            ('DISTRIBUTION', 'MARKDOWN'): +3,   # Breakdown starting
+        }
+
+        transition = (prev, current_regime) if prev else None
+        return TRANSITION_BONUSES.get(transition, 0)
+
+    def _get_choppiness_index(self, df) -> float:
+        """Calculate Choppiness Index (0-100). >61.8 = choppy, <38.2 = trending."""
+        period = 14
+        if df is None or len(df) < period + 1:
+            return 50.0  # neutral default
+
+        import math
+        atr_sum = 0.0
+        for i in range(len(df) - period, len(df)):
+            tr = max(
+                df['high'].iloc[i] - df['low'].iloc[i],
+                abs(df['high'].iloc[i] - df['close'].iloc[i-1]),
+                abs(df['low'].iloc[i] - df['close'].iloc[i-1])
+            )
+            atr_sum += tr
+
+        highest = df['high'].iloc[-period:].max()
+        lowest = df['low'].iloc[-period:].min()
+        hl_range = highest - lowest
+
+        if hl_range <= 0:
+            return 50.0
+
+        ci = 100 * math.log10(atr_sum / hl_range) / math.log10(period)
+        return round(min(100, max(0, ci)), 1)
 
     def _get_atr_profile(self, symbol: str) -> tuple:
         """Get (sl_mult, tp_mult) for this token's class."""
@@ -1139,9 +1246,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
         self._update_benchmark()
 
         # Daily limits
-        if self._loss_breaker_until and datetime.now() < self._loss_breaker_until:
+        if self._loss_breaker_until and datetime.utcnow() < self._loss_breaker_until:
             return None
-        if self.daily_pnl <= -ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD:
+
+        # Include unrealized losses in daily limit check
+        with self._position_lock:
+            _unrealized_pnl_daily = self._calc_unrealized_pnl()
+        effective_daily_pnl = self.daily_pnl + min(0, _unrealized_pnl_daily)  # Only count unrealized losses, not gains
+        if effective_daily_pnl <= -ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD:
             return None
 
         # If no symbol, return None (main.py iterates symbols)
@@ -1168,12 +1280,28 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if ADAPTIVE_HYBRID_LLM_REGIME:
             try:
                 funding_zscore = self._get_funding_zscore_per_token(symbol)
+                # Build indicator history for LLM regime enrichment
+                _indicator_history = None
+                if df is not None and len(df) >= 5:
+                    try:
+                        _last5 = df.iloc[-5:]
+                        _indicator_history = {}
+                        if 'rsi' in _last5.columns:
+                            _indicator_history['rsi'] = [round(v, 1) for v in _last5['rsi'].dropna().tolist()]
+                        if 'adx' in _last5.columns:
+                            _indicator_history['adx'] = [round(v, 1) for v in _last5['adx'].dropna().tolist()]
+                        if 'volume' in _last5.columns and 'volume_sma' in _last5.columns:
+                            _vol_ratio = (_last5['volume'] / _last5['volume_sma'].replace(0, float('nan'))).dropna()
+                            _indicator_history['volume_ratio'] = [round(v, 2) for v in _vol_ratio.tolist()]
+                    except Exception:
+                        _indicator_history = None
                 regime_result = classify_regime(
                     symbol=symbol,
                     indicators=ind,
                     funding_zscore=funding_zscore,
                     model=self._llm_model,
                     bypass=not ADAPTIVE_HYBRID_LLM_REGIME,
+                    indicator_history=_indicator_history,
                 )
                 self._llm_regime_cache[symbol] = regime_result
                 self._current_regime = regime_result.get('regime', self._current_regime)
@@ -1274,8 +1402,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 aggregated['score'] = aggregated['score'] / ADAPTIVE_HYBRID_ANOMALY_SCORE_DIVISOR
                 cprint(f"  ⚠️ [{symbol}] ANOMALY detected (score={anom_score:.2f}), score {original_score:.1f} -> {aggregated['score']:.1f}", "red")
 
-        # Get threshold
-        threshold = self._get_effective_threshold(symbol)
+        # Get threshold (direction-aware)
+        threshold = self._get_effective_threshold(symbol, ind=ind, direction=aggregated.get('direction'))
         urgency = self._get_urgency_multiplier(symbol)
 
         # Log analysis
@@ -1308,8 +1436,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 sl_pct = (atr * sl_mult / ind['close']) * 100
                 tp_pct = (atr * tp_mult / ind['close']) * 100
             else:
-                sl_pct = 1.5
-                tp_pct = 2.5
+                cprint(f"  [{symbol}] ATR=0, rejecting signal (insufficient data)", "yellow")
+                return None
 
             # Enforce minimum reward:risk ratio
             if tp_pct < sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO:
@@ -1469,14 +1597,30 @@ class AdaptiveHybridStrategy(BaseStrategy):
     # PAPER TRADING
     # =========================================================================
 
+    def _calc_unrealized_pnl(self) -> float:
+        """Calculate total unrealized PnL from open positions. Caller must hold _position_lock."""
+        unrealized = 0.0
+        for pos in self.paper_positions.values():
+            entry_price = pos.get('entry_price', 0)
+            current_price = pos.get('current_price', entry_price)
+            position_size = pos.get('position_size', 0)
+            direction = pos.get('direction', 'BUY')
+            if entry_price > 0:
+                if direction == 'BUY':
+                    unrealized += position_size * (current_price - entry_price) / entry_price
+                else:
+                    unrealized += position_size * (entry_price - current_price) / entry_price
+        return unrealized
+
     def _reset_daily_counters(self):
         """Reset daily counters if new day. Thread-safe."""
-        today = datetime.now().date()
+        today = datetime.utcnow().date()
         with self._position_lock:
             if self.last_trade_date != today:
                 self.daily_trades = 0
                 self.daily_pnl = 0.0
-                self.consecutive_losses = 0
+                # Note: consecutive_losses is NOT reset on date change —
+                # it only resets after a winning trade (handled in _close_paper_position)
                 self._loss_breaker_until = None
                 self.last_trade_date = today
 
@@ -1524,10 +1668,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
             cprint(f"[AdaptiveHybrid] Max positions reached ({_risk_max_pos}), skipping", "yellow")
             return None
 
-        # HWM Drawdown check
+        # HWM Drawdown check (mark-to-market: includes unrealized PnL)
         cprint(f"[AdaptiveHybrid] Passed duplicate check, checking HWM drawdown...", "cyan")
-        self.peak_balance = max(self.peak_balance, self.paper_balance)
-        hwm_drawdown_pct = (self.peak_balance - self.paper_balance) / self.peak_balance * 100
+        with self._position_lock:
+            unrealized_pnl = self._calc_unrealized_pnl()
+
+        mark_to_market_equity = self.paper_balance + unrealized_pnl
+        self.peak_balance = max(self.peak_balance, mark_to_market_equity)
+        hwm_drawdown_pct = (self.peak_balance - mark_to_market_equity) / self.peak_balance * 100
         if hwm_drawdown_pct >= RISK_MAX_DRAWDOWN_PCT:
             cprint(f"[AdaptiveHybrid] HWM DRAWDOWN BREAKER: {hwm_drawdown_pct:.1f}% from peak ${self.peak_balance:,.2f}", "red", attrs=['bold'])
             return None
@@ -1544,6 +1692,19 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     if avg_corr > 0.6:
                         cprint(f"[AdaptiveHybrid] CORRELATION LIMIT: {len(same_direction_positions)} correlated {direction} positions (avg corr={avg_corr:.2f})", "yellow")
                         return None
+
+        # Total notional exposure cap
+        try:
+            from src.config import ADAPTIVE_HYBRID_MAX_NOTIONAL_PCT
+        except ImportError:
+            ADAPTIVE_HYBRID_MAX_NOTIONAL_PCT = 500
+
+        with self._position_lock:
+            current_notional = sum(p.get('position_size', 0) for p in self.paper_positions.values())
+        max_notional = self.paper_balance * ADAPTIVE_HYBRID_MAX_NOTIONAL_PCT / 100
+        if current_notional >= max_notional:
+            cprint(f"[AdaptiveHybrid] NOTIONAL CAP: ${current_notional:.0f} >= ${max_notional:.0f} ({ADAPTIVE_HYBRID_MAX_NOTIONAL_PCT}% of balance)", "yellow")
+            return None
 
         metadata = signal.get('metadata', {})
         price = metadata.get('current_price', 0)
@@ -1628,6 +1789,68 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 if recovery_factor < 1.0:
                     position_size *= recovery_factor
                     cprint(f"[AdaptiveHybrid] Recovery mode: position size reduced by {(1-recovery_factor)*100:.0f}%", "yellow")
+
+            # Weekend size reduction
+            if datetime.utcnow().weekday() >= 5:  # Saturday=5, Sunday=6
+                try:
+                    from src.config import ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION
+                except ImportError:
+                    ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION = 0.30
+                position_size *= (1.0 - ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION)
+                cprint(f"  [{symbol}] Weekend reduction: size reduced by {ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION*100:.0f}%", "cyan")
+
+            # Event calendar: reduce size near high-impact macro events
+            try:
+                from src.strategies.modules.event_calendar import check_upcoming_events
+                upcoming = check_upcoming_events()
+                if upcoming:
+                    position_size *= (1.0 - upcoming['size_reduction'])
+                    cprint(f"  [{symbol}] Event reduction: {upcoming['event']} in {upcoming['hours_until']:.1f}h, size -{upcoming['size_reduction']*100:.0f}%", "cyan")
+            except ImportError:
+                pass
+
+            # Post-breaker size reduction (50% for 3 trades after loss breaker)
+            if hasattr(self, '_post_breaker_trades') and self._post_breaker_trades > 0:
+                position_size *= 0.5
+                self._post_breaker_trades -= 1
+                cprint(f"  [{symbol}] Post-breaker reduction: size *= 0.5 ({self._post_breaker_trades} trades remaining)", "yellow")
+
+            # Kelly-adaptive sizing from trade memory
+            try:
+                from src.config import ADAPTIVE_HYBRID_KELLY_LOOKBACK, ADAPTIVE_HYBRID_KELLY_FRACTION
+                if self._trade_memory:
+                    import sqlite3
+                    conn = sqlite3.connect(self._trade_memory.db_path)
+                    try:
+                        cursor = conn.execute(
+                            "SELECT outcome_pnl FROM decisions WHERE outcome_pnl IS NOT NULL ORDER BY timestamp DESC LIMIT ?",
+                            (ADAPTIVE_HYBRID_KELLY_LOOKBACK,)
+                        )
+                        recent_pnls = [row[0] for row in cursor.fetchall()]
+                    finally:
+                        conn.close()
+
+                    if len(recent_pnls) >= 10:
+                        wins = [p for p in recent_pnls if p > 0]
+                        losses = [p for p in recent_pnls if p <= 0]
+                        if wins and losses:
+                            win_rate = len(wins) / len(recent_pnls)
+                            avg_win = sum(wins) / len(wins)
+                            avg_loss = abs(sum(losses) / len(losses))
+                            if avg_loss > 0:
+                                payoff_ratio = avg_win / avg_loss
+                                kelly = win_rate - (1 - win_rate) / payoff_ratio
+                                kelly = max(0, kelly)  # Never negative
+                                kelly_size_pct = kelly * ADAPTIVE_HYBRID_KELLY_FRACTION
+
+                                # Only reduce, never increase beyond base
+                                base_risk_pct = ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100
+                                if kelly_size_pct < base_risk_pct:
+                                    reduction = kelly_size_pct / base_risk_pct
+                                    position_size *= reduction
+                                    cprint(f"  [{symbol}] Kelly adjustment: {kelly:.1%} optimal, using {kelly_size_pct:.1%} (half-Kelly), size *= {reduction:.2f}", "cyan")
+            except Exception as e:
+                cprint(f"  [{symbol}] Kelly sizing skipped: {e}", "yellow")
 
             if position_size < ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD:
                 cprint(f"[AdaptiveHybrid] Insufficient margin (${position_size:.0f} < ${ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD})", "red")
@@ -2102,6 +2325,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
                 cd = candle_data[symbol]
                 current_price = cd['close']
+                trade['current_price'] = current_price
                 candle_high = cd['high']
                 candle_low = cd['low']
                 direction = trade['direction']
@@ -2166,6 +2390,33 @@ class AdaptiveHybridStrategy(BaseStrategy):
                                 cprint(f"  [Scale-Out] {symbol} L{i+1}: closed {close_pct:.0%} (${partial_size:.0f}) at {level['tp_pct']:.0%} TP, PnL=${partial_pnl-partial_fee:.2f}", "green")
                                 # Persist scale-out state to CSV
                                 self._update_open_position_in_csv(position_id, trade)
+
+                # Periodic ATR recalculation for trailing stop (every 4 hours)
+                if close_reason is None:
+                    import time as _trail_time
+                    _last_atr_update = trade.get('last_atr_update', 0)
+                    if isinstance(_last_atr_update, (int, float)):
+                        _now_epoch = _trail_time.time()
+                        if _now_epoch - _last_atr_update > 4 * 3600:
+                            try:
+                                _atr_df = self._fetch_candles(symbol, interval='1h', candles=20)
+                                if _atr_df is not None and len(_atr_df) >= 14:
+                                    _high_low = _atr_df['high'] - _atr_df['low']
+                                    _high_close = (_atr_df['high'] - _atr_df['close'].shift()).abs()
+                                    _low_close = (_atr_df['low'] - _atr_df['close'].shift()).abs()
+                                    _true_range = pd.concat([_high_low, _high_close, _low_close], axis=1).max(axis=1)
+                                    _new_atr = float(_true_range.rolling(14).mean().iloc[-1])
+
+                                    if _new_atr > 0:
+                                        _old_atr = trade.get('atr', _new_atr)
+                                        # Blend: 70% new ATR, 30% old (smooth transition)
+                                        _blended_atr = _new_atr * 0.7 + _old_atr * 0.3
+                                        trade['entry_atr'] = trade.get('entry_atr', _old_atr)
+                                        trade['atr'] = _blended_atr
+                                        trade['last_atr_update'] = _now_epoch
+                                        cprint(f"    [ATR Update] {symbol}: ATR {_old_atr:.6f} -> {_blended_atr:.6f}", "cyan")
+                            except Exception:
+                                pass
 
                 # Progressive trailing stop (Phase 1)
                 if close_reason is None:
@@ -2337,12 +2588,26 @@ class AdaptiveHybridStrategy(BaseStrategy):
             self.paper_balance += pnl
             del self.paper_positions[position_id]
 
-            # Consecutive loss circuit breaker
+            # Consecutive loss circuit breaker with escalating cooldowns
             if pnl < 0:
                 self.consecutive_losses += 1
-                if self.consecutive_losses >= 3:
-                    self._loss_breaker_until = datetime.now() + timedelta(hours=2)
-                    cprint(f"  [CIRCUIT BREAKER] {self.consecutive_losses} consecutive losses — pausing trading for 2h", "red", attrs=['bold'])
+                try:
+                    from src.config import ADAPTIVE_HYBRID_ESCALATING_COOLDOWNS
+                except ImportError:
+                    ADAPTIVE_HYBRID_ESCALATING_COOLDOWNS = {3: 2, 4: 6, 5: 24}
+
+                # Find the matching cooldown (highest applicable)
+                cooldown_hours = 0
+                for loss_count, hours in sorted((int(k), v) for k, v in ADAPTIVE_HYBRID_ESCALATING_COOLDOWNS.items()):
+                    if self.consecutive_losses >= loss_count:
+                        cooldown_hours = hours
+                if cooldown_hours > 0:
+                    self._loss_breaker_until = datetime.utcnow() + timedelta(hours=cooldown_hours)
+                    # Set post-breaker size reduction counter
+                    if not hasattr(self, '_post_breaker_trades'):
+                        self._post_breaker_trades = 0
+                    self._post_breaker_trades = 3
+                    cprint(f"  [CIRCUIT BREAKER] {self.consecutive_losses} consecutive losses — pausing trading for {cooldown_hours}h", "red", attrs=['bold'])
             else:
                 self.consecutive_losses = 0
                 self._loss_breaker_until = None
