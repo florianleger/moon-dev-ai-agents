@@ -27,4 +27,4 @@ def score_stablecoin_flow(symbol: str, indicators: dict, config: dict = None) ->
 
         return {'score': min(100, score), 'direction': direction, 'reason': reason}
     except Exception as e:
-        return None
+        return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'API unavailable', 'data_quality': 0.0}

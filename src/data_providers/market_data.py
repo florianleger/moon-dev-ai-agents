@@ -187,7 +187,7 @@ class MarketDataProvider:
             return data.get('mark_price')
         return None
 
-    def get_funding_zscore(self, symbol: str) -> float:
+    def get_funding_zscore(self, symbol: str) -> Optional[float]:
         """
         Calculate funding rate Z-score using adaptive parameters from cache.
 
@@ -229,12 +229,12 @@ class MarketDataProvider:
                 zscore = (annual_rate - mean_funding) / std_funding
                 return round(zscore, 2)
 
-            cprint(f"[MarketData] No funding data for {symbol}, returning Z=0", "yellow")
-            return 0.0
+            cprint(f"[MarketData] No funding data for {symbol}, returning None (not Z=0)", "yellow")
+            return None
 
         except Exception as e:
             cprint(f"[MarketData] Error calculating funding Z-score for {symbol}: {e}", "yellow")
-            return 0.0
+            return None
 
     def get_liquidation_ratio(self, minutes: int = 15) -> float:
         """
@@ -348,7 +348,7 @@ class MarketDataProvider:
         return {
             'symbol': symbol,
             'funding_rate': funding.get('funding_rate', 0) if funding else 0,
-            'funding_zscore': self.get_funding_zscore(symbol),
+            'funding_zscore': self.get_funding_zscore(symbol) or 0.0,
             'open_interest': funding.get('open_interest', 0) if funding else 0,
             'mark_price': funding.get('mark_price', 0) if funding else 0,
             'liquidation_ratio': liq_summary.get('ratio', 1.0),
@@ -391,8 +391,8 @@ def get_open_interest(symbol: str) -> Optional[Dict]:
     return get_market_data_provider().get_open_interest(symbol)
 
 
-def get_funding_zscore(symbol: str) -> float:
-    """Get funding rate Z-score for a symbol."""
+def get_funding_zscore(symbol: str) -> Optional[float]:
+    """Get funding rate Z-score for a symbol. Returns None if data unavailable."""
     return get_market_data_provider().get_funding_zscore(symbol)
 
 
@@ -422,7 +422,10 @@ if __name__ == "__main__":
             cprint(f"  Mark Price: ${funding['mark_price']:,.2f}", "white")
 
         zscore = provider.get_funding_zscore(symbol)
-        cprint(f"  Funding Z-Score: {zscore:.2f}", "yellow" if abs(zscore) > 1.5 else "white")
+        if zscore is not None:
+            cprint(f"  Funding Z-Score: {zscore:.2f}", "yellow" if abs(zscore) > 1.5 else "white")
+        else:
+            cprint(f"  Funding Z-Score: N/A (no data)", "red")
 
     # Test liquidation data
     cprint("\nLiquidation Data (last 15 min):", "white", attrs=['bold'])

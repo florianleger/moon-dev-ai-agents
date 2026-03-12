@@ -87,9 +87,14 @@ def score_oi_delta(indicators: dict, market_data, oi_history: dict,
             return {'score': 0, 'direction': 'NEUTRAL',
                     'reason': f'Insufficient OI history ({len(history)}/2 points)'}
 
-        # Calculate delta from oldest available point
-        oldest_oi = history[0][1]
-        oi_change_pct = ((current_oi - oldest_oi) / oldest_oi * 100) if oldest_oi > 0 else 0
+        # Calculate delta from previous snapshot (not oldest)
+        if len(history) >= 2:
+            previous_oi = history[-2][1]
+        else:
+            previous_oi = history[0][1]
+        if previous_oi == 0:
+            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'no OI baseline'}
+        oi_change_pct = ((current_oi - previous_oi) / previous_oi * 100)
 
         price_change = indicators.get('close', 0) - indicators.get('open', indicators.get('close', 0))
 

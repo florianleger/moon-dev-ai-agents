@@ -412,7 +412,7 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 ADAPTIVE_HYBRID_BASE_THRESHOLD = 40      # Base score threshold (0-100) - lowered from 42: stacked penalties + 10-12 inactive modules make 42+ unreachable in bear markets
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
 ADAPTIVE_HYBRID_URGENCY_FLOOR = 35       # Minimum threshold (never go below this) - lowered from 50
-ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 5     # Max trades per day
+ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 12    # Max trades per day (raised from 5: production showed 10/day profitable at 94% WR, bottleneck was R:R not frequency)
 ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30  # Daily loss limit in USD
 ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
 ADAPTIVE_HYBRID_ATR_SL_MULT = 2.8       # Stop loss = 2.8x ATR (was 1.5 - widened to reduce premature SL exits)
@@ -574,10 +574,13 @@ REGIME_VOL_LOW = 0.8
 # ============================================================================
 
 # --- Trailing Stop Progressive (Phase 1) ---
+# Production data (Mar 12, 2026): 88.6% of exits were trailing stops at +0.21%
+# because breakeven locked at 1.0 ATR. Average win was $0.30 vs average loss $4.62
+# (1:15 risk/reward). Raised breakeven to 2.0 ATR to let winners run.
 ADAPTIVE_HYBRID_TRAILING_LEVELS = [
-    {'activate_atr': 1.0, 'distance_atr': None, 'breakeven': True},   # Lock breakeven
-    {'activate_atr': 2.0, 'distance_atr': 1.5},                       # Wide trail
-    {'activate_atr': 3.5, 'distance_atr': 1.0},                       # Tight trail
+    {'activate_atr': 2.0, 'distance_atr': None, 'breakeven': True},   # Lock breakeven at 2.0 ATR (was 1.0 — too early, 67% of wins were +0.21%)
+    {'activate_atr': 3.0, 'distance_atr': 1.5},                       # Wide trail at 3.0 ATR (was 2.0)
+    {'activate_atr': 4.0, 'distance_atr': 0.8},                       # Tight trail at 4.0 ATR (was 3.5, tighter distance for lock-in)
 ]
 
 # --- Scale-Out Partial Take Profit (Phase 3) ---

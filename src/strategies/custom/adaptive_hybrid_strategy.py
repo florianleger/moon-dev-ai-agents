@@ -673,7 +673,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
             if len(history) < 5:
                 # Not enough history: fall back to cross-sectional Z-score
-                return self._market_data.get_funding_zscore(symbol)
+                zscore = self._market_data.get_funding_zscore(symbol)
+                return zscore if zscore is not None else 0.0
 
             arr = np.array(history)
             mean = float(arr.mean())
@@ -966,8 +967,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     winning_modules[m] = {**winning_modules[m], 'score': round(winning_modules[m]['score'] * excess_ratio)}
 
         # Weighted average of ACTIVE modules in winning direction
+        # Recompute weights after funding cap to avoid diluting non-funding modules
         active_weighted_sum = sum(r['score'] * weights.get(n, 0) for n, r in winning_modules.items())
-        active_weight_total = sum(weights.get(n, 0) for n in winning_modules)
+        active_weight_total = sum(
+            weights.get(n, 0) * (excess_ratio if (n in FUNDING_MODULES and funding_weight_in_winning > funding_cap) else 1.0)
+            for n in winning_modules
+        )
 
         if active_weight_total <= 0:
             return {'direction': 'NEUTRAL', 'score': 0, 'agreement': 0,
@@ -982,7 +987,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Count available modules (non-None results passed to this function)
         total_available = len(module_results)
         convergence_ratio = n_active / max(directional_count, total_available * 0.35, 1)
-        coverage_penalty = convergence_ratio ** 0.5  # Hardened: was 0.3, stronger penalty for low coverage
+        coverage_penalty = convergence_ratio ** 0.35  # Middle ground: 0.3 too lenient, 0.5 too aggressive
         final_score = raw_score * coverage_penalty
 
         # BTC macro filter: graduated penalty proportional to BTC trend strength and correlation
@@ -1249,11 +1254,17 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if self._loss_breaker_until and datetime.utcnow() < self._loss_breaker_until:
             return None
 
+        # Daily trade count limit (uses in-memory counter, restored from CSV on startup)
+        if self.daily_trades >= ADAPTIVE_HYBRID_MAX_DAILY_TRADES:
+            cprint(f"[AdaptiveHybrid] Daily trade limit reached ({self.daily_trades}/{ADAPTIVE_HYBRID_MAX_DAILY_TRADES}), skipping", "yellow")
+            return None
+
         # Include unrealized losses in daily limit check
         with self._position_lock:
             _unrealized_pnl_daily = self._calc_unrealized_pnl()
         effective_daily_pnl = self.daily_pnl + min(0, _unrealized_pnl_daily)  # Only count unrealized losses, not gains
         if effective_daily_pnl <= -ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD:
+            cprint(f"[AdaptiveHybrid] Daily loss limit reached (${abs(effective_daily_pnl):.2f} >= ${ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD}), skipping", "red")
             return None
 
         # If no symbol, return None (main.py iterates symbols)
@@ -1649,14 +1660,14 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if not symbol or direction == 'NEUTRAL':
             return None
 
-        # Check for duplicate position on same symbol+direction
+        # Check for ANY existing position on same symbol (block opposite-direction too)
         cprint(f"[AdaptiveHybrid] Acquiring _position_lock for duplicate check...", "cyan")
         with self._position_lock:
             existing = [p for p in self.paper_positions.values()
-                        if p['symbol'] == symbol and p['direction'] == direction]
+                        if p['symbol'] == symbol]
             num_positions = len(self.paper_positions)
         if existing:
-            cprint(f"[AdaptiveHybrid] Already have {direction} position on {symbol}, skipping", "yellow")
+            cprint(f"[AdaptiveHybrid] {symbol} already has open position ({existing[0]['direction']}), skipping", "yellow")
             return None
 
         # Max simultaneous positions check
@@ -1893,25 +1904,32 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
     def execute_paper_trade(self, signal: dict) -> dict:
         """Execute a paper trade (simulation) with capital protection checks."""
-        trade = self._prepare_trade(signal)
-        if trade is None:
-            return None
-
-        position_id = trade['position_id']
-        symbol = trade['symbol']
-        direction = trade['direction']
-        price = trade['entry_price']
-        position_size = trade['position_size']
-        leverage = trade['leverage']
-        sl_pct = trade['sl_pct']
-        tp_pct = trade['tp_pct']
-        entry_fee = trade['entry_fee']
-        risk_amount = trade.pop('_risk_amount', 0)
-        trade.pop('_token_class', None)
-        metadata = signal.get('metadata', {})
-
-        # Atomic insertion + balance update
+        # Hold _position_lock through prepare + registration to prevent race conditions.
+        # _position_lock is an RLock so nested acquisitions inside _prepare_trade() are safe.
         with self._position_lock:
+            trade = self._prepare_trade(signal)
+            if trade is None:
+                return None
+
+            position_id = trade['position_id']
+            symbol = trade['symbol']
+            direction = trade['direction']
+            price = trade['entry_price']
+            position_size = trade['position_size']
+            leverage = trade['leverage']
+            sl_pct = trade['sl_pct']
+            tp_pct = trade['tp_pct']
+            entry_fee = trade['entry_fee']
+            risk_amount = trade.pop('_risk_amount', 0)
+            trade.pop('_token_class', None)
+            metadata = signal.get('metadata', {})
+
+            # Balance floor check: reject trade if balance would go negative
+            if self.paper_balance - entry_fee < 0:
+                cprint(f"[AdaptiveHybrid] Rejecting trade: balance {self.paper_balance:.2f} < entry_fee {entry_fee:.4f}", "red")
+                return None
+
+            # Atomic insertion + balance update
             self.paper_positions[position_id] = trade
             self.paper_balance -= entry_fee
             self.daily_trades += 1
@@ -2377,12 +2395,15 @@ class AdaptiveHybridStrategy(BaseStrategy):
                                 # Partial close: reduce position size
                                 trade['position_size'] -= partial_size
                                 trade['scale_out_level'] = i + 1
-                                # Calculate partial PnL
+                                # Calculate partial PnL (with slippage + fees, matching _close_paper_position)
+                                slippage = PAPER_SLIPPAGE_V2.get(token_class, 0.001)
                                 if direction == 'BUY':
                                     partial_price = entry_price + tp_dist * level['tp_pct']
+                                    partial_price = partial_price * (1 - slippage)  # worse fill for selling
                                     partial_pnl = partial_size * ((partial_price - entry_price) / entry_price)
                                 else:
                                     partial_price = entry_price - tp_dist * level['tp_pct']
+                                    partial_price = partial_price * (1 + slippage)  # worse fill for buying back
                                     partial_pnl = partial_size * ((entry_price - partial_price) / entry_price)
                                 partial_fee = partial_size * PAPER_TAKER_FEE_V2
                                 self.paper_balance += partial_pnl - partial_fee
@@ -2452,12 +2473,16 @@ class AdaptiveHybridStrategy(BaseStrategy):
                             continue
                         if profit_in_atr >= level['activate_atr']:
                             if level.get('breakeven'):
-                                # Breakeven lock: SL at entry + estimated round-trip fees
+                                if ts.get('breakeven_locked'):
+                                    break  # Already locked, skip recalculation
+                                # Breakeven lock: SL at entry +/- estimated round-trip fees
+                                # BUY: SL below entry, exit if price drops back (lock in fee-adjusted breakeven)
+                                # SELL: SL above entry, exit if price rises back (lock in fee-adjusted breakeven)
                                 fee_offset = entry_price * 2 * (PAPER_TAKER_FEE_V2 + PAPER_SLIPPAGE_V2.get(token_class, 0.001))
                                 if direction == 'BUY':
-                                    be_sl = entry_price + fee_offset
-                                else:
                                     be_sl = entry_price - fee_offset
+                                else:
+                                    be_sl = entry_price + fee_offset
                                 best_trailing_sl = be_sl
                                 ts['breakeven_locked'] = True
                             else:
@@ -2479,7 +2504,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
                                 close_reason = 'TRAILING_STOP'
                                 close_price = best_trailing_sl
                         else:
-                            best_trailing_sl = min(best_trailing_sl, ts.get('locked_sl', float('inf')))
+                            # SELL: ratchet SL upward (tighter) — higher SL = more protective for shorts
+                            best_trailing_sl = max(best_trailing_sl, ts.get('locked_sl', 0))
                             ts['locked_sl'] = best_trailing_sl
                             if best_trailing_sl < stop_loss and candle_high >= best_trailing_sl:
                                 close_reason = 'TRAILING_STOP'
@@ -2933,14 +2959,58 @@ class AdaptiveHybridStrategy(BaseStrategy):
                         closed_partial_pnl = closed_df['partial_pnl_realized'].fillna(0).sum()
                     self.closed_positions = closed_df.to_dict('records')
 
+                    # Update trade memory outcomes for trades that closed while system was down
+                    if hasattr(self, '_trade_memory') and self._trade_memory:
+                        for _, row in closed_df.iterrows():
+                            if 'memory_decision_id' in row and pd.notna(row.get('memory_decision_id')):
+                                try:
+                                    self._trade_memory.update_outcome(
+                                        int(row['memory_decision_id']),
+                                        pnl=row.get('pnl_usd', 0),
+                                        correct=1 if row.get('pnl_usd', 0) > 0 else 0,
+                                        hold_hours=row.get('hold_hours', 0),
+                                        close_reason=row.get('close_reason', 'unknown')
+                                    )
+                                except Exception:
+                                    pass  # Already updated or missing
+
             # Subtract entry fees of currently open positions (already deducted at open time)
             open_entry_fees = sum(t.get('entry_fee', 0) for t in self.paper_positions.values())
             # Add back partial PnL already credited to balance (not in realized_pnl from closed_trades.csv)
             open_partial_pnl = sum(t.get('partial_pnl_realized', 0) for t in self.paper_positions.values())
-            # Balance = initial + closed PnL - ALL entry fees + ALL partial PnL from scale-outs
+            # Balance = initial + closed PnL - ALL entry fees + open partial PnL
+            # NOTE: closed_partial_pnl is NOT added here — it was already credited to
+            # paper_balance during the session (line ~2400) and is included in realized_pnl
+            # from closed_trades.csv. Only open_partial_pnl needs re-adding for positions
+            # still open whose partials were credited in a previous session.
             self.paper_balance = (PAPER_TRADING_BALANCE + realized_pnl
                                   - closed_entry_fees - open_entry_fees
-                                  + closed_partial_pnl + open_partial_pnl)
+                                  + open_partial_pnl)
+
+            # Restore daily_trades count from CSV so limit survives restarts
+            today_str = datetime.utcnow().date().isoformat()
+            today_trades = 0
+
+            # Count open positions opened today
+            for pos in self.paper_positions.values():
+                ts = pos.get('timestamp', '')
+                if ts and str(ts)[:10] == today_str:
+                    today_trades += 1
+
+            # Count closed trades from today
+            if os.path.exists(closed_trades_file):
+                try:
+                    closed_df_today = pd.read_csv(closed_trades_file)
+                    if not closed_df_today.empty and 'timestamp' in closed_df_today.columns:
+                        closed_df_today['_date'] = closed_df_today['timestamp'].astype(str).str[:10]
+                        today_trades += int((closed_df_today['_date'] == today_str).sum())
+                except Exception:
+                    pass  # Already counted what we could
+
+            self.daily_trades = today_trades
+            self.last_trade_date = datetime.utcnow().date()
+            if today_trades > 0:
+                cprint(f"[AdaptiveHybrid] Restored daily_trades={today_trades} from CSV (date={today_str})", "cyan")
 
         except Exception as e:
             cprint(f"[AdaptiveHybrid] Warning: Could not load state: {e}", "yellow")

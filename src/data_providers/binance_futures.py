@@ -184,7 +184,7 @@ class BinanceLiquidationStream:
                 break
             if self.connected and self._last_message_epoch > 0:
                 silence = time.time() - self._last_message_epoch
-                if silence > 120:  # 2 minutes without a message
+                if silence > 60:  # 1 minute without a message (was 120s)
                     cprint(f"[BinanceFutures] WebSocket zombie detected ({silence:.0f}s silent), reconnecting...", "yellow")
                     if self.ws:
                         self.ws.close()

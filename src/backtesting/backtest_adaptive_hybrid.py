@@ -2,9 +2,11 @@
 """
 Backtest runner for the Adaptive Hybrid Strategy.
 
-Replays historical OHLCV data through the 6 pure-technical scoring modules
-(mean_reversion, momentum_breakout, ema_trend, rsi_divergence, sniper_lite,
-ramf_lite) and simulates execution via BacktestEngine.
+WARNING: This backtester only runs 6 pure-technical modules (mean_reversion,
+momentum_breakout, ema_trend, rsi_divergence, sniper_lite, ramf_lite).
+Live trading uses 24+ modules including real-time data modules (funding, OI,
+sentiment, liquidation, CVD, etc.) that are NOT validated here.
+Backtest results represent ~49% of the live signal mix.
 
 Modules requiring live data (funding_contrarian, oi_delta, sentiment,
 squeeze_detector, order_imbalance) are excluded since they depend on
@@ -32,9 +34,15 @@ from ta.volume import VolumeWeightedAveragePrice
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.backtesting.backtest_engine import BacktestEngine
+from src.config import (
+    ADAPTIVE_HYBRID_BASE_THRESHOLD,
+    ADAPTIVE_HYBRID_ATR_PROFILES,
+    PAPER_TAKER_FEE_V2,
+    PAPER_SLIPPAGE_V2,
+)
 
 # ---------------------------------------------------------------------------
-# Config defaults (mirroring src/config.py)
+# Config defaults (read from src/config.py for single-source-of-truth)
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS = {
     'mean_reversion': 0.12, 'momentum_breakout': 0.10,
@@ -60,21 +68,31 @@ for _profile in [DEFAULT_WEIGHTS] + list(WEIGHT_PROFILES.values()):
         for _k in _profile:
             _profile[_k] /= _total
 
-ATR_PROFILES = {
-    'btc': {'sl_mult': 2.8, 'tp_mult': 4.2, 'tokens': ['BTC']},
-    'eth': {'sl_mult': 4.0, 'tp_mult': 8.0, 'tokens': ['ETH']},
-    'mid': {'sl_mult': 2.2, 'tp_mult': 3.3, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
-    'alt': {'sl_mult': 1.8, 'tp_mult': 2.7, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
-}
+ATR_PROFILES = ADAPTIVE_HYBRID_ATR_PROFILES  # Read from config (single source of truth)
 
-BASE_THRESHOLD = 55
+BASE_THRESHOLD = ADAPTIVE_HYBRID_BASE_THRESHOLD  # Read from config (was hardcoded to 55)
 MIN_CONVERGENT_MODULES = 2
 MIN_RR_RATIO = 1.5
 LEVERAGE = 3
 MAX_POSITION_PCT = 25
 CASH_PCT = 20
-PAPER_TAKER_FEE = 0.035  # in % (0.035%)
-PAPER_SLIPPAGE = 0.1      # in %
+# BacktestEngine expects fee/slippage as percentages (it divides by 100 internally)
+PAPER_TAKER_FEE = PAPER_TAKER_FEE_V2 * 100       # Convert decimal 0.00045 -> 0.045%
+# Slippage is now token-class-specific; default used when symbol not found
+PAPER_SLIPPAGE_DEFAULT = PAPER_SLIPPAGE_V2.get('mid', 0.0012) * 100  # Convert decimal -> %
+
+
+def get_token_slippage_pct(symbol: str) -> float:
+    """Get slippage % for a symbol based on its token class in ATR_PROFILES.
+
+    BacktestEngine expects a percentage value (e.g. 0.12 means 0.12%).
+    PAPER_SLIPPAGE_V2 stores decimals (e.g. 0.0012 means 0.12%), so we multiply by 100.
+    """
+    for profile_name, profile in ATR_PROFILES.items():
+        if symbol in profile.get('tokens', []):
+            return PAPER_SLIPPAGE_V2.get(profile_name, 0.0012) * 100
+    return PAPER_SLIPPAGE_DEFAULT
+
 REGIME_ADX_TRENDING = 30
 REGIME_ADX_RANGING = 20
 
@@ -650,7 +668,7 @@ def run_backtest(df: pd.DataFrame, symbol: str, initial_balance: float = 500.0,
     engine = BacktestEngine(
         initial_balance=initial_balance,
         fee_pct=PAPER_TAKER_FEE,
-        slippage_pct=PAPER_SLIPPAGE
+        slippage_pct=get_token_slippage_pct(symbol)
     )
 
     warmup = 55  # Need at least 50 bars for indicators

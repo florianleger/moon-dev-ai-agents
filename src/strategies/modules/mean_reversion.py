@@ -35,12 +35,6 @@ def score_mean_reversion(df: pd.DataFrame, indicators: dict, config: dict = None
     elif indicators['rsi'] < (indicators['rsi_oversold'] + 50) / 2:
         long_score += 20
 
-    # Ranging market bonus (ADX < 25)
-    if indicators['adx'] < 20:
-        long_score += 20
-    elif indicators['adx'] < 30:
-        long_score += 10
-
     # Short: Price near upper band
     if bb_pct > 0.90:
         short_score += 45
@@ -52,10 +46,18 @@ def score_mean_reversion(df: pd.DataFrame, indicators: dict, config: dict = None
     elif indicators['rsi'] > (indicators['rsi_overbought'] + 50) / 2:
         short_score += 20
 
+    # Ranging market bonus (ADX < 25) — apply only to the winning direction
+    adx_bonus = 0
     if indicators['adx'] < 20:
-        short_score += 20
+        adx_bonus = 20
     elif indicators['adx'] < 30:
-        short_score += 10
+        adx_bonus = 10
+
+    if adx_bonus > 0:
+        if long_score >= short_score:
+            long_score += adx_bonus
+        else:
+            short_score += adx_bonus
 
     best = max(long_score, short_score)
     direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'

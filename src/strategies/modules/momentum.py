@@ -31,10 +31,6 @@ def score_momentum_breakout(df: pd.DataFrame, indicators: dict, config: dict = N
             long_score += 15
         if indicators['adx'] > 25:
             long_score += 20
-    elif close >= high_20 * 0.997:
-        long_score += 20
-        if vol_ratio > 1.3:
-            long_score += 15
 
     # Downside breakout
     if close <= low_20:
@@ -45,10 +41,6 @@ def score_momentum_breakout(df: pd.DataFrame, indicators: dict, config: dict = N
             short_score += 15
         if indicators['adx'] > 25:
             short_score += 20
-    elif close <= low_20 * 1.003:
-        short_score += 20
-        if vol_ratio > 1.3:
-            short_score += 15
 
     best = max(long_score, short_score)
     direction = 'BUY' if long_score > short_score else 'SELL' if short_score > long_score else 'NEUTRAL'

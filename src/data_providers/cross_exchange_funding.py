@@ -109,8 +109,8 @@ class CrossExchangeFundingProvider:
             return None
 
         # Both are hourly rates (HL) vs 8h rates (Binance)
-        # Normalize: convert Binance 8h rate to hourly
-        binance_hourly = binance_rate / 8
+        # Normalize: convert Binance 8h rate to hourly using compound conversion
+        binance_hourly = (1 + binance_rate) ** (1/8) - 1
 
         spread = hl_rate - binance_hourly
         avg_rate = (hl_rate + binance_hourly) / 2

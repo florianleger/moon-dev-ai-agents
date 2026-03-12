@@ -31,4 +31,4 @@ def score_social_hype(symbol: str, indicators: dict, config: dict = None) -> dic
             'reason': f'Social: {signal["reason"]}',
         }
     except Exception as e:
-        return None
+        return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'API unavailable', 'data_quality': 0.0}

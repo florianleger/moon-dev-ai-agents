@@ -56,8 +56,14 @@ class CoinGeckoSocialProvider:
                 cprint("[CoinGecko] 401 with API key, falling back to public API", "yellow")
                 resp = requests.get(url, params=params, headers={'accept': 'application/json'}, timeout=15)
             if resp.status_code == 429:
-                cprint("[CoinGecko] Rate limited, using stale cache", "yellow")
-                return self._cache.get(cache_key)
+                cached = self._cache.get(cache_key)
+                cache_time = self._cache_time.get(cache_key, 0)
+                if cached and (time.time() - cache_time) < 1800:  # 30min hard limit
+                    cprint("[CoinGecko] Rate limited, using recent cache", "yellow")
+                    return cached
+                else:
+                    cprint("[CoinGecko] Rate limited and cache too old, returning None", "red")
+                    return None
             resp.raise_for_status()
             data = resp.json()
             self._cache[cache_key] = data

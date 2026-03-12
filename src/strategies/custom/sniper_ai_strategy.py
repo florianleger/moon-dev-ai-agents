@@ -1048,6 +1048,8 @@ class SniperAIStrategy(BaseStrategy):
                 return {'passed': False, 'funding_rate': 0, 'funding_zscore': 0, 'is_contrarian': False, 'threshold': SNIPER_FUNDING_EXTREME_THRESHOLD}
 
             funding_zscore = self._market_data.get_funding_zscore(symbol)
+            if funding_zscore is None:
+                funding_zscore = 0.0
             funding_data = self._market_data.get_funding_rate(symbol)
 
             funding_rate = funding_data['funding_rate'] if funding_data else 0

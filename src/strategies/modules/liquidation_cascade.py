@@ -61,10 +61,12 @@ def score_liquidation_cascade(symbol: str, indicators: dict, config: dict = None
         dict with 'score' (0-100), 'direction', 'reason', and 'suppress_breakout'.
         None if data provider is unavailable.
     """
+    _neutral = {'score': 0, 'direction': 'NEUTRAL', 'reason': 'API unavailable', 'data_quality': 0.0, 'suppress_breakout': False}
+
     try:
         from src.data_providers.binance_futures import get_liquidation_stream
     except Exception:
-        return None
+        return _neutral
 
     cfg = config or {}
     lookback_minutes = cfg.get('cascade_lookback_minutes', 5)
@@ -79,13 +81,13 @@ def score_liquidation_cascade(symbol: str, indicators: dict, config: dict = None
     try:
         stream = get_liquidation_stream()
     except Exception:
-        return None
+        return _neutral
 
     # Get recent liquidations from the stream buffer
     try:
         df = stream.get_recent_liquidations(minutes=lookback_minutes)
     except Exception:
-        return None
+        return _neutral
 
     if df is None or df.empty:
         return {
@@ -119,8 +121,11 @@ def score_liquidation_cascade(symbol: str, indicators: dict, config: dict = None
     total_volume = liq_volume_buy + liq_volume_sell
     total_count = liq_count_buy + liq_count_sell
 
-    # How one-sided the liquidations are (0.5 = balanced, 1.0 = fully one-sided)
-    cascade_ratio = max(liq_volume_buy, liq_volume_sell) / (total_volume + 1)
+    # Liquidation volume as ratio of total market volume
+    if total_volume > 0:
+        cascade_ratio = total_volume / (typical_5min_volume + 1)
+    else:
+        cascade_ratio = 0
 
     # How extreme vs normal activity
     cascade_intensity = total_volume / (typical_5min_volume + 1)

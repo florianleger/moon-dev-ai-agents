@@ -18,7 +18,16 @@ def score_squeeze_detector(funding_zscore: float, indicators: dict, config: dict
     bb_pct = indicators.get('bb_pct', 0.5)
 
     # Bollinger squeeze (BB width compression)
-    bb_squeeze = bb_pct > 0.3 and bb_pct < 0.7  # Price near middle = compression
+    # Measure actual band width relative to price using std dev of close over 20 periods
+    df = indicators.get('_df')
+    if df is not None and len(df) >= 20:
+        close_20 = df['close'].tail(20)
+        bb_width = close_20.std() / close_20.mean()
+        bb_width_series = df['close'].rolling(20).std() / df['close'].rolling(20).mean()
+        bb_width_percentile = bb_width_series.rank(pct=True).iloc[-1]
+        bb_squeeze = bb_width_percentile < 0.25  # Bottom 25% of recent width = squeeze
+    else:
+        bb_squeeze = False
 
     # Short squeeze: very negative funding + compression
     if funding_zscore < -1.5:

@@ -43,23 +43,27 @@ def score_rsi_divergence(indicators: dict, config: dict = None) -> dict:
     long_score = 0
     short_score = 0
 
+    min_diff_pct = 0.005  # 0.5% minimum difference between pivots
+
     # Bullish divergence: price lower lows, RSI higher lows
     price_lows = find_swing_lows(prices)
     if len(price_lows) >= 2:
         i, j = price_lows[-2], price_lows[-1]
-        if prices[j] < prices[i] and rsis[j] > rsis[i]:
-            long_score += 60
-            if indicators['rsi'] < indicators['rsi_oversold'] + 10:
-                long_score += 25
+        if abs(prices[j] - prices[i]) / prices[i] >= min_diff_pct:
+            if prices[j] < prices[i] and rsis[j] > rsis[i]:
+                long_score += 60
+                if indicators['rsi'] < indicators['rsi_oversold'] + 10:
+                    long_score += 25
 
     # Bearish divergence: price higher highs, RSI lower highs
     price_highs = find_swing_highs(prices)
     if len(price_highs) >= 2:
         i, j = price_highs[-2], price_highs[-1]
-        if prices[j] > prices[i] and rsis[j] < rsis[i]:
-            short_score += 60
-            if indicators['rsi'] > indicators['rsi_overbought'] - 10:
-                short_score += 25
+        if abs(prices[j] - prices[i]) / prices[i] >= min_diff_pct:
+            if prices[j] > prices[i] and rsis[j] < rsis[i]:
+                short_score += 60
+                if indicators['rsi'] > indicators['rsi_overbought'] - 10:
+                    short_score += 25
 
     best = max(long_score, short_score)
     direction = 'BUY' if long_score > short_score else ('SELL' if short_score > long_score else 'NEUTRAL')
