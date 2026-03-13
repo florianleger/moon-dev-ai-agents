@@ -120,31 +120,23 @@
     <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
 
     <script>
-        // API fetch helper with credentials
-        // Builds absolute URLs without embedded credentials to avoid browser security blocks
+        // API fetch helper with credentials (uses session cookie set on page load)
         async function apiFetch(url, options = {}) {
-            // Build a clean base URL (origin without credentials)
-            const origin = window.location.origin || (window.location.protocol + '//' + window.location.host);
-            const cleanUrl = url.startsWith('/') ? origin + url : url;
+            const cleanUrl = url.startsWith('/') ? (window.location.origin + url) : url;
 
-            // Extract credentials from current page URL if present, and send via Authorization header
-            const authHeaders = {};
-            try {
-                const pageUrl = new URL(window.location.href);
-                if (pageUrl.username) {
-                    authHeaders['Authorization'] = 'Basic ' + btoa(decodeURIComponent(pageUrl.username) + ':' + decodeURIComponent(pageUrl.password || ''));
-                }
-            } catch(e) {}
-
-            const defaultOptions = {
-                credentials: 'include',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    ...authHeaders,
-                }
+            // Merge headers: only set Content-Type for non-GET requests
+            const method = (options.method || 'GET').toUpperCase();
+            const headers = {
+                'X-Requested-With': 'XMLHttpRequest',
+                ...(method !== 'GET' ? { 'Content-Type': 'application/json' } : {}),
+                ...(options.headers || {}),
             };
-            const response = await fetch(cleanUrl, { ...defaultOptions, ...options });
+
+            const response = await fetch(cleanUrl, {
+                credentials: 'same-origin',
+                ...options,
+                headers,
+            });
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }

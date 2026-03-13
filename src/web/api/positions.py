@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 
-from src.web.auth import verify_credentials
+from src.web.auth import verify_credentials_or_cookie as verify_credentials
 from src.web.state import get_paper_positions
 
 router = APIRouter()

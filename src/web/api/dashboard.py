@@ -12,7 +12,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from src.web.auth import verify_credentials
+from src.web.auth import verify_credentials_or_cookie as verify_credentials
 from src.web.state import get_dashboard_stats, get_signals_history, get_paper_positions
 
 router = APIRouter()

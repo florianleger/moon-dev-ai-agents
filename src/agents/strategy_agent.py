@@ -317,7 +317,7 @@ class StrategyAgent:
                                     'total_fired': metadata.get('total_fired'),
                                     'coverage': metadata.get('coverage'),
                                     'module_scores': metadata.get('module_scores'),
-                                    'llm_regime': metadata.get('llm_regime'),
+                                    'llm_regime': metadata.get('llm_regime', {}).get('regime') if isinstance(metadata.get('llm_regime'), dict) else metadata.get('llm_regime'),
                                     'stop_loss_pct': metadata.get('stop_loss_pct'),
                                     'take_profit_pct': metadata.get('take_profit_pct'),
                                 })
@@ -332,7 +332,7 @@ class StrategyAgent:
                             web_add_signal({
                                 'token': signal.get('token', token),
                                 'direction': signal['direction'],
-                                'confidence': round(float(signal['signal']) * 100, 1),
+                                'confidence': round(float(signal['signal']) * 100, 1) if signal['direction'] != 'NEUTRAL' else round(metadata.get('score', 0), 1),
                                 'strategy': signal['strategy_name'],
                                 'approved': False,
                                 'reason': metadata.get('reason', 'NEUTRAL'),
@@ -343,7 +343,7 @@ class StrategyAgent:
                                 'urgency_multiplier': metadata.get('urgency_multiplier'),
                                 'module_scores': metadata.get('module_scores'),
                                 'coverage': metadata.get('coverage'),
-                                'llm_regime': metadata.get('llm_regime'),
+                                'llm_regime': metadata.get('llm_regime', {}).get('regime') if isinstance(metadata.get('llm_regime'), dict) else metadata.get('llm_regime'),
                                 'active_modules': metadata.get('active_modules'),
                                 'total_fired': metadata.get('total_fired'),
                                 'stop_loss_pct': metadata.get('stop_loss_pct'),
@@ -405,7 +405,7 @@ class StrategyAgent:
                                         'total_fired': metadata.get('total_fired'),
                                         'coverage': metadata.get('coverage'),
                                         'module_scores': metadata.get('module_scores'),
-                                        'llm_regime': metadata.get('llm_regime'),
+                                        'llm_regime': metadata.get('llm_regime', {}).get('regime') if isinstance(metadata.get('llm_regime'), dict) else metadata.get('llm_regime'),
                                         'stop_loss_pct': metadata.get('stop_loss_pct'),
                                         'take_profit_pct': metadata.get('take_profit_pct'),
                                     })
@@ -446,7 +446,7 @@ class StrategyAgent:
                                         'total_fired': metadata.get('total_fired'),
                                         'coverage': metadata.get('coverage'),
                                         'module_scores': metadata.get('module_scores'),
-                                        'llm_regime': metadata.get('llm_regime'),
+                                        'llm_regime': metadata.get('llm_regime', {}).get('regime') if isinstance(metadata.get('llm_regime'), dict) else metadata.get('llm_regime'),
                                         'stop_loss_pct': metadata.get('stop_loss_pct'),
                                         'take_profit_pct': metadata.get('take_profit_pct'),
                                     })

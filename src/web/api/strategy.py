@@ -6,7 +6,7 @@ from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from src.web.auth import verify_credentials
+from src.web.auth import verify_credentials_or_cookie as verify_credentials
 from src.web.state import is_strategy_running, set_strategy_running, get_signals_history
 
 router = APIRouter()

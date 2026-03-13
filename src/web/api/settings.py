@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-from src.web.auth import verify_credentials
+from src.web.auth import verify_credentials_or_cookie as verify_credentials
 
 router = APIRouter()
 

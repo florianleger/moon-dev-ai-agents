@@ -21,7 +21,7 @@ sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 load_dotenv()
 
-from src.web.auth import verify_credentials
+from src.web.auth import verify_credentials, _sign_session, SESSION_COOKIE, SESSION_MAX_AGE
 from src.web.api import api_router
 from src.web.state import get_strategy_state
 
@@ -89,18 +89,33 @@ async def health_check():
     return {"status": "healthy", "service": "moon-dev-trading-dashboard"}
 
 
+# Helper to set session cookie on page responses
+def _set_session_cookie(response, username: str):
+    """Set a signed session cookie so fetch()/EventSource can authenticate."""
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=_sign_session(username),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
 # Page routes
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request, username: str = Depends(verify_credentials)):
     """Redirect to dashboard."""
-    return RedirectResponse(url="/dashboard", status_code=302)
+    response = RedirectResponse(url="/dashboard", status_code=302)
+    _set_session_cookie(response, username)
+    return response
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request, username: str = Depends(verify_credentials)):
     """Main dashboard page."""
     state = get_strategy_state()
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
@@ -108,30 +123,36 @@ async def dashboard_page(request: Request, username: str = Depends(verify_creden
             "strategy_running": state.get("running", False),
         }
     )
+    _set_session_cookie(response, username)
+    return response
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, username: str = Depends(verify_credentials)):
     """Settings page."""
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         "settings.html",
         {
             "request": request,
             "username": username,
         }
     )
+    _set_session_cookie(response, username)
+    return response
 
 
 @app.get("/signals", response_class=HTMLResponse)
 async def signals_page(request: Request, username: str = Depends(verify_credentials)):
     """Signals history page."""
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         "signals.html",
         {
             "request": request,
             "username": username,
         }
     )
+    _set_session_cookie(response, username)
+    return response
 
 
 # Run with uvicorn

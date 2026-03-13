@@ -1138,8 +1138,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Reduce by 5 points per hour after start, down to floor
         steps = hours_since - start
-        reduction = min(steps * 0.05, 0.30)  # Max 30% reduction
-        return max(0.70, 1.0 - reduction)
+        reduction = min(steps * 0.02, 0.10)  # Max 10% reduction (was 30%, caused premature entries)
+        return max(0.90, 1.0 - reduction)
 
     def _get_effective_threshold(self, symbol: str = None, ind: dict = None, direction: str = None) -> float:
         """Get current threshold adjusted by urgency, regime, direction, choppiness, transitions, and feedback."""
@@ -1432,8 +1432,39 @@ class AdaptiveHybridStrategy(BaseStrategy):
             silent_names = ', '.join(silent_modules.keys())
             cprint(f"  ⚠️ [{symbol}] {len(silent_modules)}/{len(available_modules)} modules returned score=0: {silent_names}", "yellow")
 
+        # Coverage penalty: reduce score when too few modules contributed
+        total_modules = len(available_modules)
+        fired_count = len(fired_modules)
+        if total_modules > 0:
+            coverage = fired_count / total_modules
+            if coverage < 0.40:
+                penalty = 0.70  # 30% penalty for very low coverage
+                aggregated['score'] *= penalty
+                cprint(f"  [{symbol}] Coverage penalty: {fired_count}/{total_modules} modules ({coverage:.0%}) -> score * {penalty}", "yellow")
+            elif coverage < 0.60:
+                penalty = 0.85  # 15% penalty for low coverage
+                aggregated['score'] *= penalty
+                cprint(f"  [{symbol}] Coverage penalty: {fired_count}/{total_modules} modules ({coverage:.0%}) -> score * {penalty}", "yellow")
+
         # Decision
         if aggregated['direction'] != 'NEUTRAL' and aggregated['score'] >= threshold:
+            # Volume filter: reject signals with extremely low volume
+            volume_ratio = ind.get('volume_ratio', 1.0)
+            if volume_ratio < 0.3:
+                cprint(f"  [{symbol}] REJECTED: volume ratio {volume_ratio:.2f}x too low (min 0.3x)", "red")
+                return {
+                    'token': symbol,
+                    'signal': 0,
+                    'direction': 'NEUTRAL',
+                    'metadata': {
+                        'strategy': 'Adaptive Hybrid',
+                        'score': aggregated['score'],
+                        'threshold': threshold,
+                        'reason': f"Volume filter: ratio {volume_ratio:.2f}x < 0.3x minimum",
+                        'current_price': ind['close'],
+                    }
+                }
+
             # Map score linearly to signal strength (0.45 to 0.95)
             score = round(aggregated['score'], 1)
             score_range = max(100 - threshold, 1)  # Guard against division by zero
@@ -1456,8 +1487,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
             # LLM Trade Confirmation (final gate before signal emission)
             llm_decision = None
-            if score >= 55:
-                cprint(f"  [{symbol}] LLM bypassed: score {score:.1f} >= 55 (auto-confirmed)", "green")
+            if score >= 80:
+                cprint(f"  [{symbol}] LLM bypassed: score {score:.1f} >= 80 (auto-confirmed)", "green")
             elif ADAPTIVE_HYBRID_LLM_CONFIRMATION:
                 try:
                     signal_metadata = {

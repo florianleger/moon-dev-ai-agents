@@ -50,7 +50,7 @@
                 <!-- Paper Balance -->
                 <div x-show="settings.paper_trading" class="p-4 bg-gray-700/30 rounded-lg">
                     <p class="text-gray-400 text-sm">Paper Trading Balance</p>
-                    <p class="text-white font-medium text-xl" x-text="'$' + (settings.paper_balance || 1000)"></p>
+                    <p class="text-white font-medium text-xl" x-text="'$' + (settings.paper_balance ?? '-')"></p>
                 </div>
             </div>
         </div>
@@ -236,7 +236,7 @@
             </div>
             <div class="p-4 bg-gray-700/30 rounded-lg">
                 <p class="text-gray-400 text-sm">Max Daily Loss</p>
-                <p class="text-white font-medium" x-text="'$' + (settings.max_daily_loss_usd || 25)"></p>
+                <p class="text-white font-medium" x-text="'$' + (settings.max_daily_loss_usd ?? '-')"></p>
             </div>
             <div class="p-4 bg-gray-700/30 rounded-lg" x-show="settings.strategy !== 'adaptive_hybrid' || (settings.max_daily_gain_usd != null && settings.max_daily_gain_usd !== '')">
                 <p class="text-gray-400 text-sm">Max Daily Gain</p>
@@ -299,21 +299,22 @@
 function settingsData() {
     return {
         settings: {
-            strategy: 'adaptive_hybrid',
+            strategy: '',
             paper_trading: true,
-            paper_balance: 1000,
-            leverage: 3,
-            min_confidence: 70,
-            max_daily_trades: 6,
-            assets: ['BTC', 'ETH', 'SOL'],
-            stop_loss_pct: 1.0,
-            take_profit_pct: 2.0,
-            max_daily_loss_usd: 25,
+            paper_balance: null,
+            leverage: null,
+            min_confidence: null,
+            max_daily_trades: null,
+            assets: [],
+            stop_loss_pct: null,
+            take_profit_pct: null,
+            max_daily_loss_usd: null,
             max_daily_gain_usd: null,
             features: {},
             checklist: {},
             feature_params: {}
         },
+        loading: true,
         assetsInput: '',
         saving: false,
         isDirty: false,
@@ -332,17 +333,17 @@ function settingsData() {
 
         async fetchSettings() {
             try {
-                const res = await fetch('/api/settings');
-                const data = await res.json();
+                const data = await apiFetch('/api/settings');
                 this.settings = {
                     ...this.settings,
                     ...data,
                 };
-                this.assetsInput = data.assets?.join(', ') || '';
-                this.$nextTick(() => { this._initializing = false; });
+                this.assetsInput = Array.isArray(data.assets) ? data.assets.join(', ') : '';
+                this.$nextTick(() => { this._initializing = false; this.loading = false; });
             } catch (e) {
                 console.error('Failed to fetch settings:', e);
                 this._initializing = false;
+                this.loading = false;
             }
         },
 
@@ -401,24 +402,17 @@ function settingsData() {
             }
 
             try {
-                const res = await fetch('/api/settings', {
+                const data = await apiFetch('/api/settings', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
 
-                const data = await res.json();
-
-                if (res.ok) {
-                    showToast('Settings saved! Restart strategy for changes to take effect.', 'success');
-                    this.settings.assets = assetsArray;
-                    this.changedFeatures = {};
-                    this.isDirty = false;
-                } else {
-                    showToast(data.detail || 'Failed to save settings', 'error');
-                }
+                showToast('Settings saved! Restart strategy for changes to take effect.', 'success');
+                this.settings.assets = assetsArray;
+                this.changedFeatures = {};
+                this.isDirty = false;
             } catch (e) {
-                showToast('Failed to save settings', 'error');
+                showToast('Failed to save settings: ' + e.message, 'error');
             } finally {
                 this.saving = false;
             }
