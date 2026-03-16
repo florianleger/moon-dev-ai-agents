@@ -409,33 +409,35 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 # Multi-module scoring strategy that aggregates 8 independent signal generators.
 # Target: 1-3 trades/day with 55%+ win rate.
 
-ADAPTIVE_HYBRID_BASE_THRESHOLD = 40      # Base score threshold (0-100) - lowered from 42: stacked penalties + 10-12 inactive modules make 42+ unreachable in bear markets
+ADAPTIVE_HYBRID_BASE_THRESHOLD = 50      # Base score threshold (0-100)
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
-ADAPTIVE_HYBRID_URGENCY_FLOOR = 35       # Minimum threshold (never go below this) - lowered from 50
-ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 12    # Max trades per day (raised from 5: production showed 10/day profitable at 94% WR, bottleneck was R:R not frequency)
+ADAPTIVE_HYBRID_URGENCY_FLOOR = 45       # Minimum threshold (never go below this)
+ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 6     # Max trades per day
 ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30  # Daily loss limit in USD
 ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
-ADAPTIVE_HYBRID_ATR_SL_MULT = 2.8       # Stop loss = 2.8x ATR (was 1.5 - widened to reduce premature SL exits)
-ADAPTIVE_HYBRID_ATR_TP_MULT = 4.2       # Take profit = 4.2x ATR (was 3.0 - adjusted for new R:R)
+ADAPTIVE_HYBRID_ATR_SL_MULT = 3.5       # Stop loss = 3.5x ATR (widened for fewer premature exits)
+ADAPTIVE_HYBRID_ATR_TP_MULT = 7.0       # Take profit = 7.0x ATR (2:1 R:R target)
 ADAPTIVE_HYBRID_SKIP_LLM = True          # Skip LLM re-evaluation (strategy has own filters)
+ADAPTIVE_HYBRID_RISK_PCT = 0.015         # 1.5% risk per trade
+ADAPTIVE_HYBRID_VOLUME_FILTER_MIN = 0.15 # Minimum volume ratio to accept signal (was 0.3)
 
 # LLM-Enhanced Pipeline Settings
-ADAPTIVE_HYBRID_LLM_CONFIRMATION = True  # Enable LLM trade confirmation before entry
-ADAPTIVE_HYBRID_LLM_REGIME = True        # Enable LLM market regime classifier
+ADAPTIVE_HYBRID_LLM_CONFIRMATION = False  # Disabled: remove LLM from execution path
+ADAPTIVE_HYBRID_LLM_REGIME = False        # Disabled: regime detection without LLM
 ADAPTIVE_HYBRID_LLM_LEARNER = True       # Enable post-trade LLM learning
 ADAPTIVE_HYBRID_MTF_CONFLUENCE = True    # Enable multi-timeframe confluence scoring
 ADAPTIVE_HYBRID_LLM_PROVIDER = 'anthropic'  # LLM provider — switched from groq (qwen3-32b rate-limited, 100% failures)
 ADAPTIVE_HYBRID_LLM_TIMEOUT_S = 8       # Max seconds to wait for LLM response (raised from 5 for Sonnet latency)
 ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25    # Max position size as % of paper balance
 ADAPTIVE_HYBRID_MIN_CONVERGENT_MODULES = 2  # Minimum modules agreeing for a trade signal
-ADAPTIVE_HYBRID_MIN_RR_RATIO = 1.5       # Minimum reward:risk ratio (was 2.0 - lowered to capture more TP exits)
+ADAPTIVE_HYBRID_MIN_RR_RATIO = 2.0       # Minimum reward:risk ratio
 
 # ATR SL/TP profiles by token class
 ADAPTIVE_HYBRID_ATR_PROFILES = {
-    'btc':    {'sl_mult': 2.8, 'tp_mult': 4.2, 'tokens': ['BTC']},        # Optimized: was 1.8/3.6
-    'eth':    {'sl_mult': 4.0, 'tp_mult': 8.0, 'tokens': ['ETH']},        # ETH needs wider stops due to higher volatility
-    'mid':    {'sl_mult': 2.2, 'tp_mult': 3.3, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},  # Was 1.5/3.0
-    'alt':    {'sl_mult': 1.8, 'tp_mult': 2.7, 'tokens': ['DOGE', 'kPEPE', 'ENA']},  # Was 1.2/2.4
+    'btc':    {'sl_mult': 3.5, 'tp_mult': 7.0, 'tokens': ['BTC']},
+    'eth':    {'sl_mult': 4.0, 'tp_mult': 8.0, 'tokens': ['ETH']},
+    'mid':    {'sl_mult': 3.5, 'tp_mult': 7.0, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
+    'alt':    {'sl_mult': 3.0, 'tp_mult': 6.0, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
 }
 ADAPTIVE_HYBRID_RESET_PAPER = False       # One-shot flag: reset paper trading state on next startup
 
@@ -468,53 +470,44 @@ ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {
     'alt': 2,     # DOGE, kPEPE, ENA — lower leverage for volatile alts
 }
 
-# Module weights (must sum to 1.0)
+# Module weights (must sum to 1.0) — 15 modules, noise modules removed
 ADAPTIVE_HYBRID_WEIGHTS = {
-    'mean_reversion': 0.08,      # was 0.10 — Bollinger Bands + RSI in ranging markets
-    'momentum_breakout': 0.06,   # was 0.08 — Range breakout + volume confirmation
-    'ema_trend': 0.06,           # was 0.08 — EMA trend (merged ema_crossover + trend_rider)
-    'funding_contrarian': 0.06,  # was 0.07 — Extreme funding rate contrarian
-    'rsi_divergence': 0.06,      # was 0.07 — Price vs RSI divergence
-    'sniper_lite': 0.08,         # was 0.12 → 0.10 → 0.08 (rebalanced for liq_cascade)
-    'trend_rider_lite': 0.00,    # still 0.00 — Merged into ema_trend
-    'ramf_lite': 0.05,           # was 0.07 — Volatility regime (no dead zone)
-    'oi_delta': 0.06,            # was 0.05 — Open Interest delta (now persisted)
-    'sentiment': 0.04,           # was 0.06 — Sentiment composite (Fear & Greed + Twitter)
-    'squeeze_detector': 0.04,    # was 0.05 — Squeeze detection
-    'order_imbalance': 0.04,     # was 0.05 — Order book imbalance
-    'crowd_positioning': 0.06,   # was 0.07 — Binance L/S ratio + Taker volume (contrarian)
-    'social_hype': 0.04,         # was 0.05 — CoinGecko trending + global macro
-    'funding_divergence': 0.04,  # was 0.05 — Cross-exchange funding HL vs Binance
-    # New modules (Phase 2)
-    'cvd': 0.06,                 # CVD - highest impact new signal (was 0.08, rebalanced for liq_cascade)
-    'vwap_deviation': 0.05,      # VWAP deviation bands
-    'market_memory': 0.04,       # Hurst exponent + ACF
-    'stablecoin_flow': 0.03,     # Macro liquidity proxy
-    'options_sentiment': 0.01,   # Deribit P/C + max pain (BTC/ETH only, 0 for others)
-    'liquidation_cascade': 0.04, # Liquidation cascade contrarian
+    'mean_reversion': 0.09,
+    'momentum_breakout': 0.07,
+    'ema_trend': 0.07,
+    'funding_composite': 0.08,
+    'rsi_divergence': 0.06,
+    'sniper_lite': 0.08,
+    'ramf_lite': 0.06,
+    'oi_delta': 0.07,
+    'sentiment': 0.05,
+    'squeeze_detector': 0.05,
+    'order_imbalance': 0.07,
+    'crowd_positioning': 0.07,
+    'cvd': 0.09,
+    'vwap_deviation': 0.06,
+    'liquidation_cascade': 0.03,
 }
 
 # Weight profiles by token behavior class
 ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
     'ranging': {  # BTC, ETH — often range-bound
-        'mean_reversion': 0.11, 'momentum_breakout': 0.04, 'ema_trend': 0.05,
-        'funding_contrarian': 0.06, 'rsi_divergence': 0.06, 'sniper_lite': 0.09,
-        'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
-        'oi_delta': 0.05, 'sentiment': 0.04, 'squeeze_detector': 0.04, 'order_imbalance': 0.04,
-        'crowd_positioning': 0.06, 'social_hype': 0.04, 'funding_divergence': 0.04,
-        # New modules (Phase 2)
-        'cvd': 0.05, 'vwap_deviation': 0.05, 'market_memory': 0.03, 'stablecoin_flow': 0.03, 'options_sentiment': 0.03,
-        'liquidation_cascade': 0.04,
+        'mean_reversion': 0.12, 'momentum_breakout': 0.04, 'ema_trend': 0.05,
+        'funding_composite': 0.08, 'rsi_divergence': 0.07, 'sniper_lite': 0.09,
+        'ramf_lite': 0.05,
+        'oi_delta': 0.06, 'sentiment': 0.04, 'squeeze_detector': 0.05, 'order_imbalance': 0.05,
+        'crowd_positioning': 0.07,
+        'cvd': 0.08, 'vwap_deviation': 0.07,
+        'liquidation_cascade': 0.08,
     },
     'trending': {  # DOGE, kPEPE, SUI, TAO — strong momentum
-        'mean_reversion': 0.04, 'momentum_breakout': 0.09, 'ema_trend': 0.06,
-        'funding_contrarian': 0.05, 'rsi_divergence': 0.04, 'sniper_lite': 0.08,
-        'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
-        'oi_delta': 0.09, 'sentiment': 0.05, 'squeeze_detector': 0.05, 'order_imbalance': 0.05,
-        'crowd_positioning': 0.06, 'social_hype': 0.05, 'funding_divergence': 0.04,
-        # New modules (Phase 2)
-        'cvd': 0.06, 'vwap_deviation': 0.04, 'market_memory': 0.03, 'stablecoin_flow': 0.03, 'options_sentiment': 0.00,
-        'liquidation_cascade': 0.04,
+        'mean_reversion': 0.04, 'momentum_breakout': 0.09, 'ema_trend': 0.07,
+        'funding_composite': 0.06, 'rsi_divergence': 0.05, 'sniper_lite': 0.08,
+        'ramf_lite': 0.05,
+        'oi_delta': 0.09, 'sentiment': 0.05, 'squeeze_detector': 0.06, 'order_imbalance': 0.06,
+        'crowd_positioning': 0.06,
+        'cvd': 0.09, 'vwap_deviation': 0.06,
+        'liquidation_cascade': 0.09,
     },
 }
 ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
@@ -578,9 +571,9 @@ REGIME_VOL_LOW = 0.8
 # because breakeven locked at 1.0 ATR. Average win was $0.30 vs average loss $4.62
 # (1:15 risk/reward). Raised breakeven to 2.0 ATR to let winners run.
 ADAPTIVE_HYBRID_TRAILING_LEVELS = [
-    {'activate_atr': 2.0, 'distance_atr': None, 'breakeven': True},   # Lock breakeven at 2.0 ATR (was 1.0 — too early, 67% of wins were +0.21%)
-    {'activate_atr': 3.0, 'distance_atr': 1.5},                       # Wide trail at 3.0 ATR (was 2.0)
-    {'activate_atr': 4.0, 'distance_atr': 0.8},                       # Tight trail at 4.0 ATR (was 3.5, tighter distance for lock-in)
+    {'activate_atr': 2.5, 'distance_atr': None, 'breakeven': True},
+    {'activate_atr': 4.0, 'distance_atr': 2.0},
+    {'activate_atr': 5.5, 'distance_atr': 1.0},
 ]
 
 # --- Scale-Out Partial Take Profit (Phase 3) ---
@@ -607,12 +600,12 @@ PAPER_SLIPPAGE_V2 = {
 PAPER_TAKER_FEE_V2 = 0.00045  # HyperLiquid taker fee 0.045% (was 0.035%)
 
 # --- Adaptive Weights (Phase 3) ---
-ADAPTIVE_HYBRID_USE_BAYESIAN_WEIGHTS = True  # Enable Thompson Sampling weight adaptation
+ADAPTIVE_HYBRID_USE_BAYESIAN_WEIGHTS = False  # Disabled: use fixed weights
 ADAPTIVE_HYBRID_BAYESIAN_MIN_TRADES = 15     # Min trades before adaptive weights activate
 ADAPTIVE_HYBRID_BAYESIAN_DECAY = 0.95        # Decay factor for recency bias
 
 # --- Anomaly Filter (Phase 4) ---
-ADAPTIVE_HYBRID_USE_ANOMALY_FILTER = True    # Enable Isolation Forest anomaly detection
+ADAPTIVE_HYBRID_USE_ANOMALY_FILTER = False    # Disabled: remove anomaly filter
 ADAPTIVE_HYBRID_ANOMALY_SCORE_DIVISOR = 2    # Divide signal score by this if anomaly detected
 
 # ============================================================================
@@ -639,4 +632,66 @@ SCHEDULER_ENABLED = True                           # Use smart scheduler instead
 FULL_CHECK_COOLDOWN_S = 120                        # Min 2min between two full checks of the same token
 FULL_CHECK_BASE_INTERVAL_MIN = 10                  # Base recheck interval (no position, routine)
 FULL_CHECK_POSITION_INTERVAL_MIN = 3               # Recheck interval when token has open position
+
+# ============================================================================
+# Signal Confirmation & Trend Filter
+# ============================================================================
+
+# Signal confirmation
+ADAPTIVE_HYBRID_CONFIRMATION_BARS = 1  # Wait N bars to confirm signal
+ADAPTIVE_HYBRID_SCORE_PERSISTENCE_CYCLES = 2  # Score must be above threshold for N cycles
+
+# 4H trend filter
+ADAPTIVE_HYBRID_4H_TREND_FILTER = True
+ADAPTIVE_HYBRID_4H_TREND_PENALTY = 0.30  # 30% score reduction if 4h neutral
+ADAPTIVE_HYBRID_4H_TREND_REJECT = True  # Reject if 4h opposes 1h
+
+# ═══════════════════════════════════════════════════════════════
+# INDEPENDENT STRATEGY CONFIGS
+# ═══════════════════════════════════════════════════════════════
+
+# Strategy 1: Funding Rate Mean Reversion
+FUNDING_MR_ENABLED = True
+FUNDING_MR_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR', 'AAVE', 'ENA', 'LINK', 'DOGE', 'kPEPE', 'ADA']
+FUNDING_MR_ZSCORE_ENTRY = 2.0  # Z-score threshold (lower for alts which have more extreme funding)
+FUNDING_MR_ZSCORE_EXIT = 0.5   # Exit when funding normalizes
+FUNDING_MR_RSI_CONFIRM = True  # Require RSI divergence confirmation
+FUNDING_MR_MAX_HOLD_HOURS = 12  # Funding resets every 8h on HL
+FUNDING_MR_RISK_PCT = 0.015    # 1.5% risk per trade
+FUNDING_MR_SL_ATR_MULT = 3.0   # Stop loss in ATR multiples
+FUNDING_MR_TP_ATR_MULT = 6.0   # Take profit in ATR multiples
+FUNDING_MR_MAX_DAILY_TRADES = 4
+FUNDING_MR_MAX_DAILY_LOSS_USD = 15.0
+FUNDING_MR_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
+
+# Strategy 2: Volatility Compression Breakout
+VOL_BREAKOUT_ENABLED = True
+VOL_BREAKOUT_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR', 'AAVE', 'LINK']
+VOL_BREAKOUT_BB_PERCENTILE = 20  # BB width below Nth percentile = squeeze
+VOL_BREAKOUT_VOLUME_SPIKE = 2.0  # Volume must be Nx average for breakout confirmation
+VOL_BREAKOUT_ADX_THRESHOLD = 25  # ADX must rise above this
+VOL_BREAKOUT_RISK_PCT = 0.015
+VOL_BREAKOUT_TRAILING_ATR = 2.5  # Trailing stop distance
+VOL_BREAKOUT_MAX_HOLD_HOURS = 24
+VOL_BREAKOUT_MAX_DAILY_TRADES = 3
+VOL_BREAKOUT_MAX_DAILY_LOSS_USD = 15.0
+VOL_BREAKOUT_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
+
+# Strategy 3: Liquidation Cascade Fade
+LIQ_CASCADE_ENABLED = True
+LIQ_CASCADE_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI']  # Only liquid enough for cascade fading
+LIQ_CASCADE_SIGMA_THRESHOLD = 3.0  # Liquidation volume > Nx std dev
+LIQ_CASCADE_RISK_PCT = 0.01  # 1% risk (smaller, high WR target)
+LIQ_CASCADE_MAX_HOLD_HOURS = 4  # Quick fade, short hold
+LIQ_CASCADE_SL_ATR_MULT = 2.0
+LIQ_CASCADE_TP_ATR_MULT = 3.0
+LIQ_CASCADE_MAX_DAILY_TRADES = 2
+LIQ_CASCADE_MAX_DAILY_LOSS_USD = 10.0
+LIQ_CASCADE_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 2, 'alt': 2}
+LIQ_CASCADE_COOLDOWN_MINUTES = 30  # Min time between cascade trades
+
+# Global independent strategy settings
+INDEPENDENT_STRATEGIES_ENABLED = True
+INDEPENDENT_STRATEGIES_MAX_TOTAL_DAILY_LOSS_USD = 30.0
+INDEPENDENT_STRATEGIES_MAX_POSITIONS = 4  # Across all 3 strategies combined
 

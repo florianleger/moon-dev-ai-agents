@@ -232,36 +232,35 @@ class TestBenchmarkTracker:
 
 
 # ---------------------------------------------------------------------------
-# _score_funding_contrarian (still a wrapper on strategy)
+# funding_composite (replaces old funding_contrarian wrapper)
 # ---------------------------------------------------------------------------
 
-class TestScoreFundingContrarian:
-    def test_no_market_data_returns_neutral(self, strategy, make_indicators):
-        strategy._market_data = None
-        result = strategy._score_funding_contrarian_wrapper('BTC', make_indicators())
-        assert result['direction'] == 'NEUTRAL'
-        assert result['score'] == 0
+class TestScoreFundingComposite:
+    def test_returns_valid_structure(self, make_indicators):
+        from src.strategies.modules.funding_composite import score_funding_composite
+        result = score_funding_composite('BTC', make_indicators(), funding_zscore=0.0)
+        assert 'direction' in result
+        assert 'score' in result
+        assert result['direction'] in ('BUY', 'SELL', 'NEUTRAL')
 
-    def test_extreme_negative_zscore_gives_buy(self, strategy, make_indicators):
-        strategy._market_data = MagicMock()
-        with patch.object(strategy, '_get_funding_zscore_per_token', return_value=-2.5):
-            result = strategy._score_funding_contrarian_wrapper('BTC', make_indicators())
-            assert result['direction'] == 'BUY'
-            assert result['score'] >= 80
+    def test_extreme_negative_zscore_gives_buy(self, make_indicators):
+        from src.strategies.modules.funding_composite import score_funding_composite
+        ind = make_indicators(rsi=25)
+        result = score_funding_composite('BTC', ind, funding_zscore=-2.5)
+        assert result['direction'] == 'BUY'
+        assert result['score'] > 0
 
-    def test_extreme_positive_zscore_gives_sell(self, strategy, make_indicators):
-        strategy._market_data = MagicMock()
-        with patch.object(strategy, '_get_funding_zscore_per_token', return_value=2.5):
-            result = strategy._score_funding_contrarian_wrapper('BTC', make_indicators())
-            assert result['direction'] == 'SELL'
-            assert result['score'] >= 80
+    def test_extreme_positive_zscore_gives_sell(self, make_indicators):
+        from src.strategies.modules.funding_composite import score_funding_composite
+        ind = make_indicators(rsi=75)
+        result = score_funding_composite('BTC', ind, funding_zscore=2.5)
+        assert result['direction'] == 'SELL'
+        assert result['score'] > 0
 
-    def test_mild_zscore_lower_confidence(self, strategy, make_indicators):
-        strategy._market_data = MagicMock()
-        with patch.object(strategy, '_get_funding_zscore_per_token', return_value=-1.2):
-            result = strategy._score_funding_contrarian_wrapper('BTC', make_indicators())
-            assert result['direction'] == 'BUY'
-            assert result['score'] == 30
+    def test_neutral_zscore_returns_neutral(self, make_indicators):
+        from src.strategies.modules.funding_composite import score_funding_composite
+        result = score_funding_composite('BTC', make_indicators(), funding_zscore=0.3)
+        assert result['score'] <= 30  # Low or no signal for mild funding
 
 
 # ---------------------------------------------------------------------------

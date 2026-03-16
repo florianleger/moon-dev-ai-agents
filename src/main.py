@@ -101,6 +101,36 @@ try:
 except ImportError:
     alert_manager = None
 
+# Import independent strategies (Phase 2)
+IndependentStrategies = {}
+if getattr(sys.modules.get('config', None), 'INDEPENDENT_STRATEGIES_ENABLED', False) or True:
+    try:
+        from config import INDEPENDENT_STRATEGIES_ENABLED
+    except ImportError:
+        INDEPENDENT_STRATEGIES_ENABLED = False
+
+    if INDEPENDENT_STRATEGIES_ENABLED:
+        try:
+            from src.strategies.custom.funding_mean_reversion import FundingMeanReversionStrategy
+            IndependentStrategies['funding_mr'] = FundingMeanReversionStrategy
+            cprint("[Main] Funding Mean Reversion strategy loaded", "cyan")
+        except Exception as e:
+            cprint(f"[Main] Funding MR import failed: {e}", "yellow")
+
+        try:
+            from src.strategies.custom.volatility_breakout import VolatilityBreakoutStrategy
+            IndependentStrategies['vol_breakout'] = VolatilityBreakoutStrategy
+            cprint("[Main] Volatility Breakout strategy loaded", "cyan")
+        except Exception as e:
+            cprint(f"[Main] Vol Breakout import failed: {e}", "yellow")
+
+        try:
+            from src.strategies.custom.liquidation_cascade_fade import LiquidationCascadeFadeStrategy
+            IndependentStrategies['liq_cascade'] = LiquidationCascadeFadeStrategy
+            cprint("[Main] Liquidation Cascade Fade strategy loaded", "cyan")
+        except Exception as e:
+            cprint(f"[Main] Liq Cascade import failed: {e}", "yellow")
+
 def position_monitor_loop(strategy, interval=30):
     """Dedicated thread for monitoring SL/TP every 30 seconds."""
     while True:
@@ -109,6 +139,20 @@ def position_monitor_loop(strategy, interval=30):
         except Exception as e:
             cprint(f"[Monitor] Error: {e}", "red")
         time.sleep(interval)
+
+
+def independent_strategy_loop(strategy_instance, name, interval_seconds=300):
+    """Dedicated thread for running an independent strategy on its own cycle."""
+    cprint(f"[{name}] Strategy thread started (cycle: {interval_seconds}s)", "cyan")
+    while True:
+        try:
+            if not is_strategy_running():
+                time.sleep(30)
+                continue
+            strategy_instance.run_cycle(strategy_instance.tokens)
+        except Exception as e:
+            cprint(f"[{name}] Error in cycle: {e}", "red")
+        time.sleep(interval_seconds)
 
 
 def daily_report_loop(strategy):
@@ -174,6 +218,26 @@ def run_agents():
             )
             report_thread.start()
             cprint("[Main] Daily report thread started (9h00 daily)", "cyan")
+
+        # Start independent strategy threads (Phase 2)
+        independent_instances = {}
+        for strat_key, strat_class in IndependentStrategies.items():
+            try:
+                instance = strat_class()
+                independent_instances[strat_key] = instance
+                # Determine cycle interval based on strategy type
+                intervals = {'funding_mr': 300, 'vol_breakout': 300, 'liq_cascade': 60}
+                interval = intervals.get(strat_key, 300)
+                t = threading.Thread(
+                    target=independent_strategy_loop,
+                    args=(instance, strat_key, interval),
+                    daemon=True,
+                    name=f"Strategy_{strat_key}"
+                )
+                t.start()
+                cprint(f"[Main] Independent strategy '{strat_key}' thread started", "green")
+            except Exception as e:
+                cprint(f"[Main] Failed to start {strat_key}: {e}", "red")
 
         # Start Light Check daemon thread (spike detection every 2 minutes)
         light_check = None

@@ -45,7 +45,6 @@ from src.data.trade_memory import TradeMemory
 from src.strategies.modules.mean_reversion import score_mean_reversion
 from src.strategies.modules.momentum import score_momentum_breakout
 from src.strategies.modules.ema_trend import score_ema_trend
-from src.strategies.modules.funding import score_funding_contrarian
 from src.strategies.modules.rsi_divergence import score_rsi_divergence
 from src.strategies.modules.sniper_lite import score_sniper_lite
 from src.strategies.modules.ramf_lite import score_ramf_lite
@@ -54,8 +53,7 @@ from src.strategies.modules.sentiment import score_sentiment
 from src.strategies.modules.squeeze import score_squeeze_detector
 from src.strategies.modules.order_imbalance import score_order_imbalance
 from src.strategies.modules.crowd_positioning import score_crowd_positioning
-from src.strategies.modules.social_hype import score_social_hype
-from src.strategies.modules.funding_divergence import score_funding_divergence
+from src.strategies.modules.funding_composite import score_funding_composite
 
 # LLM-enhanced pipeline modules
 from src.strategies.modules.llm_confirmation import llm_confirm_trade
@@ -67,9 +65,6 @@ from src.strategies.modules.mtf_confluence import score_mtf_confluence
 from src.strategies.modules.liquidation_cascade import score_liquidation_cascade
 from src.strategies.modules.cvd import score_cvd
 from src.strategies.modules.vwap_deviation import score_vwap_deviation
-from src.strategies.modules.market_memory import score_market_memory
-from src.strategies.modules.stablecoin_signal import score_stablecoin_flow
-from src.strategies.modules.options_sentiment import score_options_sentiment
 from src.strategies.modules.anomaly_filter import observe as anomaly_observe, is_anomalous
 
 # ML infrastructure (Phase 3)
@@ -146,40 +141,33 @@ except ImportError:
     }
     ADAPTIVE_HYBRID_WEIGHTS = {
         'mean_reversion': 0.08, 'momentum_breakout': 0.06,
-        'ema_trend': 0.06, 'funding_contrarian': 0.06,
+        'ema_trend': 0.06, 'funding_composite': 0.08,
         'rsi_divergence': 0.06, 'sniper_lite': 0.08,
-        'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
+        'ramf_lite': 0.05,
         'oi_delta': 0.05, 'sentiment': 0.04,
         'squeeze_detector': 0.04, 'order_imbalance': 0.04,
-        'crowd_positioning': 0.06, 'social_hype': 0.04,
-        'funding_divergence': 0.04,
+        'crowd_positioning': 0.06,
         'cvd': 0.05, 'vwap_deviation': 0.05,
-        'market_memory': 0.04, 'stablecoin_flow': 0.03,
-        'options_sentiment': 0.03,
         'liquidation_cascade': 0.04,
     }
     ADAPTIVE_HYBRID_WEIGHT_PROFILES = {
         'ranging': {
             'mean_reversion': 0.11, 'momentum_breakout': 0.04, 'ema_trend': 0.05,
-            'funding_contrarian': 0.06, 'rsi_divergence': 0.06, 'sniper_lite': 0.09,
-            'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
+            'funding_composite': 0.08, 'rsi_divergence': 0.06, 'sniper_lite': 0.09,
+            'ramf_lite': 0.05,
             'oi_delta': 0.05, 'sentiment': 0.04, 'squeeze_detector': 0.04,
             'order_imbalance': 0.04, 'crowd_positioning': 0.06,
-            'social_hype': 0.04, 'funding_divergence': 0.04,
             'cvd': 0.05, 'vwap_deviation': 0.05,
-            'market_memory': 0.03, 'stablecoin_flow': 0.03,
-            'options_sentiment': 0.03, 'liquidation_cascade': 0.04,
+            'liquidation_cascade': 0.04,
         },
         'trending': {
             'mean_reversion': 0.04, 'momentum_breakout': 0.09, 'ema_trend': 0.06,
-            'funding_contrarian': 0.05, 'rsi_divergence': 0.04, 'sniper_lite': 0.08,
-            'trend_rider_lite': 0.00, 'ramf_lite': 0.05,
+            'funding_composite': 0.07, 'rsi_divergence': 0.04, 'sniper_lite': 0.08,
+            'ramf_lite': 0.05,
             'oi_delta': 0.08, 'sentiment': 0.05, 'squeeze_detector': 0.05,
             'order_imbalance': 0.05, 'crowd_positioning': 0.06,
-            'social_hype': 0.05, 'funding_divergence': 0.04,
             'cvd': 0.06, 'vwap_deviation': 0.04,
-            'market_memory': 0.02, 'stablecoin_flow': 0.03,
-            'options_sentiment': 0.02, 'liquidation_cascade': 0.04,
+            'liquidation_cascade': 0.04,
         },
     }
     ADAPTIVE_HYBRID_RANGING_TOKENS = ['BTC', 'ETH']
@@ -243,10 +231,9 @@ _MAX_LIVE_ORDER_USD = 1000
 MODULE_FAMILIES = {
     'technical': {'mean_reversion', 'momentum_breakout', 'ema_trend', 'rsi_divergence', 'mtf_confluence'},
     'volatility': {'sniper_lite', 'ramf_lite', 'squeeze_detector'},
-    'derivatives': {'funding_contrarian', 'oi_delta', 'order_imbalance', 'funding_divergence', 'liquidation_cascade'},
-    'sentiment': {'crowd_positioning', 'social_hype', 'sentiment'},
-    'structure': {'cvd', 'vwap_deviation', 'market_memory'},
-    'macro': {'stablecoin_flow', 'options_sentiment'},
+    'derivatives': {'funding_composite', 'oi_delta', 'order_imbalance', 'liquidation_cascade'},
+    'sentiment': {'crowd_positioning', 'sentiment'},
+    'structure': {'cvd', 'vwap_deviation'},
 }
 
 # Regimes where urgency-based threshold relaxation is permitted
@@ -345,6 +332,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Lock for caches accessed by ThreadPoolExecutor workers
         self._cache_lock = threading.Lock()
+
+        # Confirmation delay: pending signals awaiting bar confirmation
+        self._pending_signals = {}
+
+        # 4H trend filter cache: {symbol: {'trend': str, 'timestamp': datetime}}
+        self._4h_trend_cache = {}
 
         # BTC trend cache (15-minute TTL)
         self._btc_trend_cache = None
@@ -686,16 +679,6 @@ class AdaptiveHybridStrategy(BaseStrategy):
         except Exception:
             return 0.0
 
-    def _score_funding_contrarian_wrapper(self, symbol: str, ind: dict) -> dict:
-        """Wrapper for funding contrarian module (needs zscore from instance state)."""
-        if not self._market_data:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'No market data provider'}
-        try:
-            zscore = self._get_funding_zscore_per_token(symbol)
-        except Exception:
-            return {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Funding data unavailable'}
-        return score_funding_contrarian(zscore, ind)
-
     def _score_squeeze_detector_wrapper(self, symbol: str, ind: dict) -> dict:
         """Wrapper for squeeze module (needs zscore from instance state)."""
         if not self._market_data:
@@ -952,7 +935,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     'details': f'Only {len(winning_families)} signal family(ies) ({", ".join(winning_families)}), need 2+'}
 
         # Funding cluster cap: limit combined contribution of funding-based modules
-        FUNDING_MODULES = {'funding_contrarian', 'squeeze_detector', 'funding_divergence'}
+        FUNDING_MODULES = {'funding_composite', 'squeeze_detector'}
         try:
             from src.config import ADAPTIVE_HYBRID_FUNDING_CLUSTER_CAP
             funding_cap = ADAPTIVE_HYBRID_FUNDING_CLUSTER_CAP
@@ -980,55 +963,77 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         raw_score = active_weighted_sum / active_weight_total
 
-        # Coverage penalty: penalize signals with low directional agreement
-        # Only count directional modules (BUY/SELL), not NEUTRAL/failed ones
+        # --- Additive adjustments (replaces multiplicative penalty stacking) ---
+        adjustments = 0
+        adjustment_details = []
+
+        # Coverage adjustment: penalize signals with low directional agreement
         directional_count = len(long_modules) + len(short_modules)
         n_active = len(winning_modules)
-        # Count available modules (non-None results passed to this function)
         total_available = len(module_results)
         convergence_ratio = n_active / max(directional_count, total_available * 0.35, 1)
-        coverage_penalty = convergence_ratio ** 0.35  # Middle ground: 0.3 too lenient, 0.5 too aggressive
-        final_score = raw_score * coverage_penalty
 
-        # BTC macro filter: graduated penalty proportional to BTC trend strength and correlation
+        if convergence_ratio < 0.40:
+            adjustments -= 8
+            adjustment_details.append("coverage:-8")
+        elif convergence_ratio < 0.60:
+            adjustments -= 4
+            adjustment_details.append("coverage:-4")
+
+        # BTC macro filter: graduated additive penalty proportional to trend strength and correlation
         btc_trend = self._check_btc_trend()  # float: -1.0 (bear) to +1.0 (bull)
-        btc_penalty = 1.0
+        btc_penalty = 1.0  # kept for return dict compatibility
         details = ""
         if btc_trend is not None and symbol:
             corr = self._get_btc_correlation(symbol)
             if corr is not None:
-                # Clamp correlation to [0.33, 1.0] for penalty range
                 corr_clamped = max(0.33, min(1.0, abs(corr)))
 
-                if btc_trend < 0 and direction == 'BUY':
-                    btc_penalty_amount = abs(btc_trend) * 0.30 * corr_clamped
-                    btc_penalty = 1.0 - btc_penalty_amount
-                    final_score *= btc_penalty
-                    details = f" | BTC bearish penalty -{btc_penalty_amount:.0%} (trend={btc_trend:+.2f}, corr={corr:.2f})"
-                elif btc_trend > 0 and direction == 'SELL':
-                    btc_penalty_amount = abs(btc_trend) * 0.30 * corr_clamped
-                    btc_penalty = 1.0 - btc_penalty_amount
-                    final_score *= btc_penalty
-                    details = f" | BTC bullish penalty -{btc_penalty_amount:.0%} (trend={btc_trend:+.2f}, corr={corr:.2f})"
+                if (btc_trend < 0 and direction == 'BUY') or (btc_trend > 0 and direction == 'SELL'):
+                    btc_penalty_amount = abs(btc_trend) * corr_clamped
+                    btc_adj = -int(btc_penalty_amount * 15)  # max -15 points
+                    btc_adj = max(-15, btc_adj)
+                    if btc_adj != 0:
+                        adjustments += btc_adj
+                        btc_penalty = 1.0 + (btc_adj / 100)  # approximate for compat
+                        label = "bearish" if btc_trend < 0 else "bullish"
+                        details = f" | BTC {label} adj {btc_adj:+d} (trend={btc_trend:+.2f}, corr={corr:.2f})"
+                        adjustment_details.append(f"btc:{btc_adj:+d}")
 
         # Graduated conflict penalty (contrarians count at 50% - they oppose by design)
-        CONTRARIAN_MODULES = {'mean_reversion', 'sentiment', 'sniper_lite', 'funding_contrarian', 'funding_divergence'}
+        CONTRARIAN_MODULES = {'mean_reversion', 'sentiment', 'sniper_lite', 'funding_composite'}
         contrarian_losing_weight = sum(weights.get(m, 0) for m in losing_modules if m in CONTRARIAN_MODULES)
         non_contrarian_losing_weight = losing_weight - contrarian_losing_weight
         effective_losing_weight = non_contrarian_losing_weight + contrarian_losing_weight * 0.5
         conflict_ratio = effective_losing_weight / max(winning_weight, 0.01)
+        conflict_factor = 1.0  # kept for return dict compatibility
         if conflict_ratio > 0.15:
-            conflict_factor = max(0.60, 1.0 - conflict_ratio * 0.50)
-        else:
-            conflict_factor = 1.0
-        final_score *= conflict_factor
+            conflict_adj = -min(5, int(conflict_ratio * 10))  # max -5 points
+            adjustments += conflict_adj
+            conflict_factor = max(0.60, 1.0 - conflict_ratio * 0.50)  # compat
+            adjustment_details.append(f"conflict:{conflict_adj:+d}")
 
-        # Session filter
+        # Session filter - additive
         hour = datetime.utcnow().hour
         if hour in ADAPTIVE_HYBRID_AVOID_HOURS:
-            final_score *= 0.80
+            adjustments -= 5
+            adjustment_details.append("session:-5")
         elif hour in ADAPTIVE_HYBRID_OPTIMAL_HOURS:
-            final_score *= 1.10
+            adjustments += 3
+            adjustment_details.append("session:+3")
+
+        # High conviction bonus: 5+ modules with score >= 50 agreeing
+        winning_results = winning_modules
+        high_conviction_count = sum(1 for r in winning_results.values() if r.get('score', 0) >= 50)
+        if high_conviction_count >= 5:
+            adjustments += 8  # conviction bonus
+            adjustment_details.append("conviction:+8")
+
+        final_score = raw_score + adjustments
+        final_score = max(0, min(100, final_score))  # clamp to 0-100
+
+        if adjustment_details:
+            cprint(f"  [{symbol}] Additive adjustments: {', '.join(adjustment_details)} (raw={raw_score:.1f} -> final={final_score:.1f})", "white")
 
         # Build details string
         module_details = []
@@ -1042,6 +1047,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             'coverage': round(convergence_ratio * 100, 1),
             'conflict_factor': conflict_factor,
             'btc_penalty': btc_penalty,
+            'adjustments': adjustments,
             'active_modules': len(winning_modules),
             'total_modules_fired': len(long_modules) + len(short_modules),
             'agreement': round(convergence_ratio, 2),
@@ -1049,6 +1055,85 @@ class AdaptiveHybridStrategy(BaseStrategy):
                        + details,
             'module_scores': {n: r['score'] for n, r in module_results.items() if r['score'] > 0},
         }
+
+    # =========================================================================
+    # HELPER METHODS (neutral signal, 4H trend, pending signal cleanup)
+    # =========================================================================
+
+    def _create_neutral_signal(self, symbol, reason):
+        """Create a standardized neutral/no-trade signal."""
+        return {
+            'token': symbol,
+            'signal': 0,
+            'direction': 'NEUTRAL',
+            'metadata': {
+                'strategy': 'Adaptive Hybrid',
+                'score': 0,
+                'threshold': 0,
+                'reason': reason,
+                'current_price': 0,
+            }
+        }
+
+    def _get_4h_trend(self, symbol):
+        """Determine 4H trend using EMA alignment + ADX.
+        Returns 'BULLISH', 'BEARISH', or 'NEUTRAL'.
+        Cached for 30 minutes per symbol.
+        """
+        now = datetime.now()
+        cached = self._4h_trend_cache.get(symbol)
+        if cached and (now - cached['timestamp']).total_seconds() < 1800:
+            return cached['trend']
+
+        try:
+            ohlcv_4h = self._fetch_candles(symbol, interval='4h', candles=100)
+            if ohlcv_4h is None or len(ohlcv_4h) < 50:
+                return 'NEUTRAL'
+
+            close = ohlcv_4h['close']
+
+            # EMA 20 and 50 on 4h
+            ema20 = close.ewm(span=20).mean()
+            ema50 = close.ewm(span=50).mean()
+
+            # ADX on 4h
+            import pandas_ta as pta
+            adx_df = pta.adx(ohlcv_4h['high'], ohlcv_4h['low'], close, length=14)
+            if adx_df is not None and len(adx_df) > 0 and 'ADX_14' in adx_df.columns:
+                adx_value = float(adx_df['ADX_14'].iloc[-1])
+            else:
+                adx_value = 20
+
+            current_ema20 = float(ema20.iloc[-1])
+            current_ema50 = float(ema50.iloc[-1])
+            current_price = float(close.iloc[-1])
+
+            # Trend determination
+            if adx_value < 20:
+                trend = 'NEUTRAL'  # No trend
+            elif current_price > current_ema20 > current_ema50:
+                trend = 'BULLISH'
+            elif current_price < current_ema20 < current_ema50:
+                trend = 'BEARISH'
+            else:
+                trend = 'NEUTRAL'
+
+            self._4h_trend_cache[symbol] = {'trend': trend, 'timestamp': now}
+            cprint(f"  [4H Trend] {symbol}: {trend} (ADX={adx_value:.1f}, EMA20={current_ema20:.2f}, EMA50={current_ema50:.2f})", "cyan")
+            return trend
+        except Exception as e:
+            cprint(f"  [4H Trend] Error for {symbol}: {e}", "yellow")
+            return 'NEUTRAL'
+
+    def _cleanup_stale_pending_signals(self):
+        """Remove pending signals older than 2 hours."""
+        now = datetime.now()
+        stale_keys = [
+            k for k, v in self._pending_signals.items()
+            if (now - v['timestamp']).total_seconds() > 7200
+        ]
+        for k in stale_keys:
+            del self._pending_signals[k]
 
     # =========================================================================
     # BENCHMARK TRACKER
@@ -1324,12 +1409,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if memory_context:
             cprint(f"  [Memory] {symbol}: {memory_context[:200]}", "cyan")
 
-        # Run all 14 modules (delegated to pure functions)
+        # Run scoring modules (delegated to pure functions)
+        _funding_zscore = self._get_funding_zscore_per_token(symbol)
         module_results = {
             'mean_reversion': score_mean_reversion(df, ind),
             'momentum_breakout': score_momentum_breakout(df, ind),
             'ema_trend': score_ema_trend(ind),
-            'funding_contrarian': self._score_funding_contrarian_wrapper(symbol, ind),
+            'funding_composite': score_funding_composite(symbol, ind, funding_zscore=_funding_zscore),
             'rsi_divergence': score_rsi_divergence(ind),
             'sniper_lite': score_sniper_lite(df, ind),
             'ramf_lite': score_ramf_lite(df, ind),
@@ -1338,18 +1424,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
             'squeeze_detector': self._score_squeeze_detector_wrapper(symbol, ind),
             'order_imbalance': score_order_imbalance(symbol, ind),
             'crowd_positioning': score_crowd_positioning(symbol, ind),
-            'social_hype': score_social_hype(symbol, ind),
-            'funding_divergence': score_funding_divergence(symbol, ind),
         }
 
-        # Add new modules (Phase 2) - each wrapped for resilience
+        # Add resilient modules (Phase 2) - each wrapped for error handling
         _neutral = {'score': 0, 'direction': 'NEUTRAL', 'reason': 'Error'}
         for _name, _fn, _args in [
             ('cvd', score_cvd, (symbol, ind)),
             ('vwap_deviation', score_vwap_deviation, (df, ind)),
-            ('market_memory', score_market_memory, (df, ind)),
-            ('stablecoin_flow', score_stablecoin_flow, (symbol, ind)),
-            ('options_sentiment', score_options_sentiment, (symbol, ind)),
             ('liquidation_cascade', score_liquidation_cascade, (symbol, ind)),
         ]:
             try:
@@ -1432,38 +1513,94 @@ class AdaptiveHybridStrategy(BaseStrategy):
             silent_names = ', '.join(silent_modules.keys())
             cprint(f"  ⚠️ [{symbol}] {len(silent_modules)}/{len(available_modules)} modules returned score=0: {silent_names}", "yellow")
 
-        # Coverage penalty: reduce score when too few modules contributed
-        total_modules = len(available_modules)
-        fired_count = len(fired_modules)
-        if total_modules > 0:
-            coverage = fired_count / total_modules
-            if coverage < 0.40:
-                penalty = 0.70  # 30% penalty for very low coverage
-                aggregated['score'] *= penalty
-                cprint(f"  [{symbol}] Coverage penalty: {fired_count}/{total_modules} modules ({coverage:.0%}) -> score * {penalty}", "yellow")
-            elif coverage < 0.60:
-                penalty = 0.85  # 15% penalty for low coverage
-                aggregated['score'] *= penalty
-                cprint(f"  [{symbol}] Coverage penalty: {fired_count}/{total_modules} modules ({coverage:.0%}) -> score * {penalty}", "yellow")
+        # Coverage penalty is now handled via additive adjustments in _aggregate_scores
+
+        # Graduated volume filter (replaces binary 0.3x gate)
+        volume_ratio = ind.get('volume_ratio', 1.0)
+        try:
+            from src import config as _cfg
+            volume_min = getattr(_cfg, 'ADAPTIVE_HYBRID_VOLUME_MIN_RATIO', 0.15)
+        except (ImportError, AttributeError):
+            volume_min = 0.15
+
+        if volume_ratio < volume_min:
+            # Truly dead market - reject
+            cprint(f"  [{symbol}] REJECTED: volume ratio {volume_ratio:.2f}x < {volume_min}x minimum", "red")
+            return self._create_neutral_signal(symbol, f"Volume filter: ratio {volume_ratio:.2f}x < {volume_min}x minimum")
+        elif volume_ratio < 0.5:
+            aggregated['score'] -= 5  # Low volume penalty
+            cprint(f"  [{symbol}] Low volume penalty: -5 (ratio={volume_ratio:.2f}x)", "yellow")
+        elif volume_ratio > 2.0:
+            aggregated['score'] += 3  # Volume confirmation bonus
+            cprint(f"  [{symbol}] Volume confirmation bonus: +3 (ratio={volume_ratio:.2f}x)", "cyan")
+
+        # 4H Trend Filter (primary gate before trade decision)
+        try:
+            from src import config as _cfg
+            use_4h_filter = getattr(_cfg, 'ADAPTIVE_HYBRID_4H_TREND_FILTER', False)
+        except (ImportError, AttributeError):
+            use_4h_filter = False
+
+        if use_4h_filter and aggregated['direction'] != 'NEUTRAL':
+            direction = aggregated['direction']
+            trend_4h = self._get_4h_trend(symbol)
+
+            if trend_4h == 'NEUTRAL':
+                # 4h is neutral - reduce score
+                try:
+                    penalty_pct = getattr(_cfg, 'ADAPTIVE_HYBRID_4H_TREND_PENALTY', 0.30)
+                except (NameError, AttributeError):
+                    penalty_pct = 0.30
+                aggregated['score'] *= (1 - penalty_pct)
+                cprint(f"  [{symbol}] 4H neutral filter: score reduced by {penalty_pct*100:.0f}% to {aggregated['score']:.1f}", "yellow")
+            elif (direction == 'BUY' and trend_4h == 'BEARISH') or (direction == 'SELL' and trend_4h == 'BULLISH'):
+                # 4h opposes signal direction
+                try:
+                    reject_opposing = getattr(_cfg, 'ADAPTIVE_HYBRID_4H_TREND_REJECT', True)
+                except (NameError, AttributeError):
+                    reject_opposing = True
+                if reject_opposing:
+                    cprint(f"  [{symbol}] 4H trend REJECTS {direction} signal (4h={trend_4h})", "red")
+                    return self._create_neutral_signal(symbol, f"4H trend filter: {trend_4h} opposes {direction}")
 
         # Decision
         if aggregated['direction'] != 'NEUTRAL' and aggregated['score'] >= threshold:
-            # Volume filter: reject signals with extremely low volume
-            volume_ratio = ind.get('volume_ratio', 1.0)
-            if volume_ratio < 0.3:
-                cprint(f"  [{symbol}] REJECTED: volume ratio {volume_ratio:.2f}x too low (min 0.3x)", "red")
-                return {
-                    'token': symbol,
-                    'signal': 0,
-                    'direction': 'NEUTRAL',
-                    'metadata': {
-                        'strategy': 'Adaptive Hybrid',
-                        'score': aggregated['score'],
-                        'threshold': threshold,
-                        'reason': f"Volume filter: ratio {volume_ratio:.2f}x < 0.3x minimum",
-                        'current_price': ind['close'],
+            direction = aggregated['direction']
+            final_score = aggregated['score']
+
+            # Clean up stale pending signals
+            self._cleanup_stale_pending_signals()
+
+            # 1-Bar Confirmation Delay (Change #2)
+            try:
+                from src import config as _cfg
+                confirmation_bars = getattr(_cfg, 'ADAPTIVE_HYBRID_CONFIRMATION_BARS', 0)
+            except (ImportError, AttributeError):
+                confirmation_bars = 0
+
+            if confirmation_bars > 0:
+                pending_key = f"{symbol}_{direction}"
+                if pending_key not in self._pending_signals:
+                    # First time seeing this signal - store as pending
+                    self._pending_signals[pending_key] = {
+                        'timestamp': datetime.now(),
+                        'score': final_score,
+                        'direction': direction,
+                        'count': 1,
                     }
-                }
+                    # Clear opposite direction pending
+                    opposite = 'BUY' if direction == 'SELL' else 'SELL'
+                    self._pending_signals.pop(f"{symbol}_{opposite}", None)
+                    cprint(f"  [{symbol}] Signal pending confirmation: {direction} score={final_score:.1f}", "yellow")
+                    return self._create_neutral_signal(symbol, "Awaiting confirmation bar")
+                else:
+                    self._pending_signals[pending_key]['count'] += 1
+                    if self._pending_signals[pending_key]['count'] <= confirmation_bars:
+                        cprint(f"  [{symbol}] Signal confirmed {self._pending_signals[pending_key]['count']}/{confirmation_bars+1}: {direction}", "yellow")
+                        return self._create_neutral_signal(symbol, f"Confirmation {self._pending_signals[pending_key]['count']}/{confirmation_bars+1}")
+                    # Signal confirmed - proceed with trade
+                    cprint(f"  [{symbol}] Signal CONFIRMED after {confirmation_bars} bars: {direction} score={final_score:.1f}", "green", attrs=['bold'])
+                    del self._pending_signals[pending_key]
 
             # Map score linearly to signal strength (0.45 to 0.95)
             score = round(aggregated['score'], 1)
@@ -1809,7 +1946,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
             # Position sizing: 2% risk per trade, modulated by signal strength
             strength = signal.get('signal', 0.7)
             strength_multiplier = 0.5 + float(strength)  # Range: 0.5x to 1.5x
-            risk_amount = self.paper_balance * 0.02 * strength_multiplier
+            try:
+                from src import config as _cfg
+                risk_pct = getattr(_cfg, 'ADAPTIVE_HYBRID_RISK_PCT', 0.015)
+            except (ImportError, AttributeError):
+                risk_pct = 0.015
+            risk_amount = self.paper_balance * risk_pct * strength_multiplier
             sl_fraction = max(sl_pct / 100, 0.001)  # Guard against near-zero SL
             position_size = risk_amount / sl_fraction * leverage
             max_position_by_margin = available_margin * 0.9 * leverage
