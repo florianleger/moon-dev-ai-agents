@@ -991,8 +991,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
                 if (btc_trend < 0 and direction == 'BUY') or (btc_trend > 0 and direction == 'SELL'):
                     btc_penalty_amount = abs(btc_trend) * corr_clamped
-                    btc_adj = -int(btc_penalty_amount * 15)  # max -15 points
-                    btc_adj = max(-15, btc_adj)
+                    btc_adj = -int(btc_penalty_amount * 8)  # max -8 points
+                    btc_adj = max(-8, btc_adj)
                     if btc_adj != 0:
                         adjustments += btc_adj
                         btc_penalty = 1.0 + (btc_adj / 100)  # approximate for compat

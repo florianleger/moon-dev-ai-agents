@@ -293,7 +293,7 @@ class StrategyAgent:
                 # Auto-approve non-NEUTRAL signals (strategy has its own multi-module filtering)
                 cprint("🔄 LLM skip enabled for Adaptive Hybrid - using strategy scoring", "cyan")
                 for signal in signals:
-                    if signal['direction'] != 'NEUTRAL' and signal['signal'] >= 0.5:
+                    if signal['direction'] != 'NEUTRAL' and signal['signal'] >= 0.45:
                         cprint(f"✅ Auto-approved: {signal['strategy_name']} {signal['direction']} ({signal['signal']:.0%})", "green")
                         approved_signals.append(signal)
 

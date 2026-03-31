@@ -77,7 +77,8 @@ python -m pytest tests/test_data_providers.py           # Data providers
 The application is deployed on Coolify at:
 - **Coolify Console**: https://console.gallion.tech
 - **Application UUID**: `v4cgs8wk8gsgw04ww8c8sk0o`
-- **Dashboard URL**: `http://v4cgs8wk8gsgw04ww8c8sk0o.46.224.59.218.sslip.io/dashboard`
+- **Dashboard URL**: https://cryptobot.gallion.tech/
+- **Dashboard Credentials**: admin / `$CRYPTOBOT_DASHBOARD_PASS` (env var in .zshrc)
 
 Deployments are triggered automatically on push to `main` branch.
 

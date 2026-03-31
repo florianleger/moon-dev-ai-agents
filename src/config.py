@@ -409,7 +409,7 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 # Multi-module scoring strategy that aggregates 8 independent signal generators.
 # Target: 1-3 trades/day with 55%+ win rate.
 
-ADAPTIVE_HYBRID_BASE_THRESHOLD = 50      # Base score threshold (0-100)
+ADAPTIVE_HYBRID_BASE_THRESHOLD = 42      # Base score threshold (0-100)
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
 ADAPTIVE_HYBRID_URGENCY_FLOOR = 45       # Minimum threshold (never go below this)
 ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 6     # Max trades per day
@@ -419,7 +419,7 @@ ADAPTIVE_HYBRID_ATR_SL_MULT = 3.5       # Stop loss = 3.5x ATR (widened for fewe
 ADAPTIVE_HYBRID_ATR_TP_MULT = 7.0       # Take profit = 7.0x ATR (2:1 R:R target)
 ADAPTIVE_HYBRID_SKIP_LLM = True          # Skip LLM re-evaluation (strategy has own filters)
 ADAPTIVE_HYBRID_RISK_PCT = 0.015         # 1.5% risk per trade
-ADAPTIVE_HYBRID_VOLUME_FILTER_MIN = 0.15 # Minimum volume ratio to accept signal (was 0.3)
+ADAPTIVE_HYBRID_VOLUME_FILTER_MIN = 0.05 # Minimum volume ratio to accept signal (was 0.15)
 
 # LLM-Enhanced Pipeline Settings
 ADAPTIVE_HYBRID_LLM_CONFIRMATION = False  # Disabled: remove LLM from execution path
@@ -447,7 +447,7 @@ ADAPTIVE_HYBRID_TRAILING_DISTANCE_ATR = 2.0  # Deprecated: use TRAILING_LEVELS i
 
 # Session filter (UTC hours)
 ADAPTIVE_HYBRID_OPTIMAL_HOURS = [7, 8, 9, 13, 14, 20, 21]  # London + NY + Asia open (removed 15, 19: 18% WR, -$46 PnL)
-ADAPTIVE_HYBRID_AVOID_HOURS = [0, 1, 2, 3, 4, 5, 15]  # Low liquidity + UTC 15 (known loss hour)
+ADAPTIVE_HYBRID_AVOID_HOURS = [1, 2, 3, 4]  # Low liquidity hours (reduced from 7 to 4)
 
 # Time-based exit
 ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48  # Force close after 48h
@@ -638,13 +638,13 @@ FULL_CHECK_POSITION_INTERVAL_MIN = 3               # Recheck interval when token
 # ============================================================================
 
 # Signal confirmation
-ADAPTIVE_HYBRID_CONFIRMATION_BARS = 1  # Wait N bars to confirm signal
+ADAPTIVE_HYBRID_CONFIRMATION_BARS = 0  # Wait N bars to confirm signal
 ADAPTIVE_HYBRID_SCORE_PERSISTENCE_CYCLES = 2  # Score must be above threshold for N cycles
 
 # 4H trend filter
 ADAPTIVE_HYBRID_4H_TREND_FILTER = True
-ADAPTIVE_HYBRID_4H_TREND_PENALTY = 0.30  # 30% score reduction if 4h neutral
-ADAPTIVE_HYBRID_4H_TREND_REJECT = True  # Reject if 4h opposes 1h
+ADAPTIVE_HYBRID_4H_TREND_PENALTY = 0.10  # 10% score reduction if 4h neutral
+ADAPTIVE_HYBRID_4H_TREND_REJECT = False  # Reject if 4h opposes 1h
 
 # ═══════════════════════════════════════════════════════════════
 # INDEPENDENT STRATEGY CONFIGS
