@@ -1519,9 +1519,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
         volume_ratio = ind.get('volume_ratio', 1.0)
         try:
             from src import config as _cfg
-            volume_min = getattr(_cfg, 'ADAPTIVE_HYBRID_VOLUME_MIN_RATIO', 0.15)
+            volume_min = getattr(_cfg, 'ADAPTIVE_HYBRID_VOLUME_FILTER_MIN', 0.05)
         except (ImportError, AttributeError):
-            volume_min = 0.15
+            volume_min = 0.05
 
         if volume_ratio < volume_min:
             # Truly dead market - reject

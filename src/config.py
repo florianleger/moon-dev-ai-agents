@@ -411,7 +411,7 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 
 ADAPTIVE_HYBRID_BASE_THRESHOLD = 42      # Base score threshold (0-100)
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
-ADAPTIVE_HYBRID_URGENCY_FLOOR = 45       # Minimum threshold (never go below this)
+ADAPTIVE_HYBRID_URGENCY_FLOOR = 38       # Minimum threshold (never go below this)
 ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 6     # Max trades per day
 ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30  # Daily loss limit in USD
 ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
