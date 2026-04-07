@@ -17,7 +17,10 @@ import datetime
 try:
     import pandas_ta as ta
 except ImportError:
-    ta = None  # pandas_ta not available, some features disabled
+    try:
+        import pandas_ta_classic as ta
+    except ImportError:
+        ta = None  # pandas_ta not available, some features disabled
 from datetime import datetime, timedelta
 from termcolor import colored, cprint
 import solders

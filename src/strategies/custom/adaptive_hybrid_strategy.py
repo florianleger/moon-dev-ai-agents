@@ -1097,7 +1097,10 @@ class AdaptiveHybridStrategy(BaseStrategy):
             ema50 = close.ewm(span=50).mean()
 
             # ADX on 4h
-            import pandas_ta as pta
+            try:
+                import pandas_ta as pta
+            except ImportError:
+                import pandas_ta_classic as pta
             adx_df = pta.adx(ohlcv_4h['high'], ohlcv_4h['low'], close, length=14)
             if adx_df is not None and len(adx_df) > 0 and 'ADX_14' in adx_df.columns:
                 adx_value = float(adx_df['ADX_14'].iloc[-1])
