@@ -58,6 +58,55 @@ MAX_RETRIES = 3
 MAX_ROWS = 5000
 BASE_URL = 'https://api.hyperliquid.xyz/info'
 
+# ----------------------------------------------------------------------------
+# Short-lived candle cache (60s TTL) to mitigate HyperLiquid 429 rate limits
+# when several agents/modules request the same (symbol, timeframe, bars) within
+# the same analysis cycle. Order book / live execution paths are NOT cached.
+# ----------------------------------------------------------------------------
+_HL_CANDLE_CACHE = {}  # {cache_key: (timestamp, dataframe_copy)}
+_HL_CANDLE_CACHE_TTL = 60  # seconds
+
+
+def _candle_cache_get(key):
+    entry = _HL_CANDLE_CACHE.get(key)
+    if not entry:
+        return None
+    ts, df = entry
+    if (time.time() - ts) >= _HL_CANDLE_CACHE_TTL:
+        return None
+    # Return a copy so callers can mutate freely without poisoning the cache
+    try:
+        return df.copy()
+    except Exception:
+        return df
+
+
+def _candle_cache_set(key, df):
+    try:
+        _HL_CANDLE_CACHE[key] = (time.time(), df.copy())
+    except Exception:
+        _HL_CANDLE_CACHE[key] = (time.time(), df)
+
+
+# Generic 60s cache for non-DataFrame HyperLiquid responses
+# (funding/OI/mark price bulk payloads, allMids, etc.). Order book is excluded.
+_HL_GENERIC_CACHE = {}  # {cache_key: (timestamp, value)}
+_HL_GENERIC_CACHE_TTL = 60  # seconds
+
+
+def _generic_cache_get(key):
+    entry = _HL_GENERIC_CACHE.get(key)
+    if not entry:
+        return None
+    ts, val = entry
+    if (time.time() - ts) >= _HL_GENERIC_CACHE_TTL:
+        return None
+    return val
+
+
+def _generic_cache_set(key, value):
+    _HL_GENERIC_CACHE[key] = (time.time(), value)
+
 # Global variable to store timestamp offset
 timestamp_offset = None
 
@@ -682,6 +731,14 @@ def get_data(symbol, timeframe='15m', bars=100, add_indicators=True):
     # Ensure we don't exceed max rows
     bars = min(bars, MAX_ROWS)
 
+    # Short-lived cache (60s) to absorb duplicate requests within a cycle
+    # and mitigate HyperLiquid 429 rate limit errors (kPEPE/DOGE/LINK).
+    cache_key = f"candles::{symbol}::{timeframe}::{bars}::{bool(add_indicators)}"
+    cached_df = _candle_cache_get(cache_key)
+    if cached_df is not None and not cached_df.empty:
+        cprint(f"♻️  Cache hit for {symbol} {timeframe} ({len(cached_df)} bars, TTL {_HL_CANDLE_CACHE_TTL}s)", "cyan")
+        return cached_df
+
     # Calculate time window
     end_time = datetime.datetime.utcnow()
     # Add extra time to ensure we get enough bars
@@ -709,6 +766,9 @@ def get_data(symbol, timeframe='15m', bars=100, add_indicators=True):
         print(f"📅 Range: {df['timestamp'].min()} to {df['timestamp'].max()}")
         print("✨ Thanks for using Moon Dev's Data Fetcher! ✨")
 
+        # Populate the short-lived cache (60s) for subsequent duplicate fetches
+        _candle_cache_set(cache_key, df)
+
     return df
 
 # ============================================================================
@@ -716,7 +776,10 @@ def get_data(symbol, timeframe='15m', bars=100, add_indicators=True):
 # ============================================================================
 
 def get_market_info():
-    """Get current market info for all coins on Hyperliquid"""
+    """Get current market info for all coins on Hyperliquid (60s cache)."""
+    cached = _generic_cache_get("allMids")
+    if cached is not None:
+        return cached
     try:
         print("\n🔄 Sending request to Hyperliquid API...")
         response = requests.post(
@@ -731,6 +794,7 @@ def get_market_info():
         if response.status_code == 200:
             data = response.json()
             print(f"📦 Raw response data: {data}")
+            _generic_cache_set("allMids", data)
             return data
         print(f"❌ Bad status code: {response.status_code}")
         print(f"📄 Response text: {response.text}")
@@ -782,7 +846,10 @@ def test_market_info():
 
 def get_funding_rates(symbol):
     """
-    Get current funding rate for a specific coin on Hyperliquid
+    Get current funding rate for a specific coin on Hyperliquid.
+
+    Uses a 60s shared cache on the bulk metaAndAssetCtxs payload so multiple
+    per-symbol calls in the same cycle issue at most one HTTP request.
 
     Args:
         symbol (str): Trading pair symbol (e.g., 'BTC', 'ETH', 'FARTCOIN')
@@ -791,41 +858,45 @@ def get_funding_rates(symbol):
         dict: Funding data including rate, mark price, and open interest
     """
     try:
-        print(f"\n🔄 Fetching funding rate for {symbol}...")
-        response = requests.post(
-            BASE_URL,
-            headers={'Content-Type': 'application/json'},
-            json={"type": "metaAndAssetCtxs"},
-            timeout=15
-        )
-
-        if response.status_code == 200:
+        # Try cached bulk payload first
+        data = _generic_cache_get("metaAndAssetCtxs")
+        if data is None:
+            print(f"\n🔄 Fetching funding rate for {symbol}...")
+            response = requests.post(
+                BASE_URL,
+                headers={'Content-Type': 'application/json'},
+                json={"type": "metaAndAssetCtxs"},
+                timeout=15
+            )
+            if response.status_code != 200:
+                print(f"❌ Bad status code: {response.status_code}")
+                return None
             data = response.json()
-            if len(data) >= 2 and isinstance(data[0], dict) and isinstance(data[1], list):
-                # Get universe (symbols) from first element
-                universe = {coin['name']: i for i, coin in enumerate(data[0]['universe'])}
+            _generic_cache_set("metaAndAssetCtxs", data)
 
-                # Check if symbol exists
-                if symbol not in universe:
-                    print(f"❌ Symbol {symbol} not found in Hyperliquid universe")
-                    print(f"📝 Available symbols: {', '.join(universe.keys())}")
-                    return None
+        if len(data) >= 2 and isinstance(data[0], dict) and isinstance(data[1], list):
+            # Get universe (symbols) from first element
+            universe = {coin['name']: i for i, coin in enumerate(data[0]['universe'])}
 
-                # Get funding data from second element
-                funding_data = data[1]
-                idx = universe[symbol]
+            # Check if symbol exists
+            if symbol not in universe:
+                print(f"❌ Symbol {symbol} not found in Hyperliquid universe")
+                print(f"📝 Available symbols: {', '.join(universe.keys())}")
+                return None
 
-                if idx < len(funding_data):
-                    asset_data = funding_data[idx]
-                    return {
-                        'funding_rate': float(asset_data['funding']),
-                        'mark_price': float(asset_data['markPx']),
-                        'open_interest': float(asset_data['openInterest'])
-                    }
+            # Get funding data from second element
+            funding_data = data[1]
+            idx = universe[symbol]
 
-            print("❌ Unexpected response format")
-            return None
-        print(f"❌ Bad status code: {response.status_code}")
+            if idx < len(funding_data):
+                asset_data = funding_data[idx]
+                return {
+                    'funding_rate': float(asset_data['funding']),
+                    'mark_price': float(asset_data['markPx']),
+                    'open_interest': float(asset_data['openInterest'])
+                }
+
+        print("❌ Unexpected response format")
         return None
     except Exception as e:
         print(f"❌ Error getting funding rate for {symbol}: {str(e)}")

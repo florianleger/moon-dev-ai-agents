@@ -44,7 +44,7 @@ class MarketDataProvider:
         self._hl_cache_time = {}
         self._all_prices_cache = {}  # Cache for all prices from single API call
         self._all_prices_cache_time = 0
-        self._cache_ttl = 30  # Cache HyperLiquid data for 30 seconds
+        self._cache_ttl = 60  # Cache HyperLiquid data for 60 seconds (rate-limit mitigation)
 
         if start_liquidation_stream:
             self._init_liquidation_stream()

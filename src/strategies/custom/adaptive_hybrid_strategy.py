@@ -487,13 +487,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         cache_key = (symbol, interval)
 
-        # Check cache first
+        # Check cache first (only if cached frame has enough rows for this request)
         with self._cache_lock:
             cached = self._candle_cache.get(cache_key)
             if cached:
                 df_cached, cached_at = cached
                 age = (datetime.now() - cached_at).total_seconds()
-                if age < self._candle_cache_ttl:
+                if age < self._candle_cache_ttl and len(df_cached) >= candles:
                     return df_cached.copy()
 
         try:
@@ -1826,6 +1826,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         cprint(f"[AdaptiveHybrid] _prepare_trade START: {direction} {symbol}", "cyan")
 
         if not symbol or direction == 'NEUTRAL':
+            cprint(f"❌ [{symbol or 'UNKNOWN'}] REJECTED: invalid signal (symbol='{symbol}', direction='{direction}')", "red")
             return None
 
         # Check for ANY existing position on same symbol (block opposite-direction too)
@@ -1836,6 +1837,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             num_positions = len(self.paper_positions)
         if existing:
             cprint(f"[AdaptiveHybrid] {symbol} already has open position ({existing[0]['direction']}), skipping", "yellow")
+            cprint(f"❌ [{symbol}] REJECTED: duplicate position already open ({existing[0]['direction']})", "red")
             return None
 
         # Max simultaneous positions check
@@ -1845,6 +1847,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
             _risk_max_pos = 4
         if num_positions >= _risk_max_pos:
             cprint(f"[AdaptiveHybrid] Max positions reached ({_risk_max_pos}), skipping", "yellow")
+            cprint(f"❌ [{symbol}] REJECTED: max positions reached ({num_positions}/{_risk_max_pos})", "red")
             return None
 
         # HWM Drawdown check (mark-to-market: includes unrealized PnL)
@@ -1857,6 +1860,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         hwm_drawdown_pct = (self.peak_balance - mark_to_market_equity) / self.peak_balance * 100
         if hwm_drawdown_pct >= RISK_MAX_DRAWDOWN_PCT:
             cprint(f"[AdaptiveHybrid] HWM DRAWDOWN BREAKER: {hwm_drawdown_pct:.1f}% from peak ${self.peak_balance:,.2f}", "red", attrs=['bold'])
+            cprint(f"❌ [{symbol}] REJECTED: HWM drawdown {hwm_drawdown_pct:.1f}% >= {RISK_MAX_DRAWDOWN_PCT}% (peak ${self.peak_balance:,.2f}, equity ${mark_to_market_equity:,.2f})", "red")
             return None
 
         # Correlation-aware position check
@@ -1870,6 +1874,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
                     avg_corr = sum(abs(self._get_btc_correlation(p['symbol']) or 0) for p in same_direction_positions) / len(same_direction_positions)
                     if avg_corr > 0.6:
                         cprint(f"[AdaptiveHybrid] CORRELATION LIMIT: {len(same_direction_positions)} correlated {direction} positions (avg corr={avg_corr:.2f})", "yellow")
+                        cprint(f"❌ [{symbol}] REJECTED: correlation block ({len(same_direction_positions)} {direction} positions, avg_corr={avg_corr:.2f}, new_corr={new_corr:.2f})", "red")
                         return None
 
         # Total notional exposure cap
@@ -1883,6 +1888,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
         max_notional = self.paper_balance * ADAPTIVE_HYBRID_MAX_NOTIONAL_PCT / 100
         if current_notional >= max_notional:
             cprint(f"[AdaptiveHybrid] NOTIONAL CAP: ${current_notional:.0f} >= ${max_notional:.0f} ({ADAPTIVE_HYBRID_MAX_NOTIONAL_PCT}% of balance)", "yellow")
+            cprint(f"❌ [{symbol}] REJECTED: notional cap reached (${current_notional:.0f} >= ${max_notional:.0f}, {ADAPTIVE_HYBRID_MAX_NOTIONAL_PCT}% of balance)", "red")
             return None
 
         metadata = signal.get('metadata', {})
@@ -1897,6 +1903,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         if price <= 0:
             cprint(f"[AdaptiveHybrid] Cannot execute trade with price={price}", "red")
+            cprint(f"❌ [{symbol}] REJECTED: invalid price ({price}) - failed to fetch from metadata or candles", "red")
             return None
 
         sl_pct = metadata.get('stop_loss_pct', 1.5)
@@ -2030,7 +2037,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
                                 # Only reduce, never increase beyond base
                                 base_risk_pct = ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100
                                 if kelly_size_pct < base_risk_pct:
-                                    reduction = kelly_size_pct / base_risk_pct
+                                    reduction = max(0.25, kelly_size_pct / base_risk_pct)  # Floor 25% to avoid deadlock
                                     position_size *= reduction
                                     cprint(f"  [{symbol}] Kelly adjustment: {kelly:.1%} optimal, using {kelly_size_pct:.1%} (half-Kelly), size *= {reduction:.2f}", "cyan")
             except Exception as e:
@@ -2038,6 +2045,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
             if position_size < ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD:
                 cprint(f"[AdaptiveHybrid] Insufficient margin (${position_size:.0f} < ${ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD})", "red")
+                cprint(f"❌ [{symbol}] REJECTED: position_size ${position_size:.2f} < min ${ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD:.2f} (avail_margin=${available_margin:.2f}, risk_amt=${risk_amount:.2f}, lev={leverage}x - check Kelly/recovery/vol caps)", "red")
                 return None
 
             # Use V2 fees (more realistic)

@@ -25,6 +25,15 @@ faulthandler.register(_signal.SIGUSR1)
 import socket
 socket.setdefaulttimeout(30)
 
+# Add project root to Python path BEFORE any 'src.*' imports so that when this
+# file is executed as `python src/main.py` (script dir = src/), the top-level
+# `src` package is still resolvable. Previously SmartScheduler and LightCheck
+# imports silently failed with "No module named 'src'", forcing the legacy
+# fixed-cycle loop instead of the adaptive scheduler.
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 # Import Light Check for spike detection
 try:
     from src.scheduling.light_check import LightCheck
@@ -51,10 +60,6 @@ except ImportError:
         return True  # Default to running if web state not available
     def ensure_state_initialized():
         return {"running": True}
-
-# Add project root to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(project_root)
 
 # Load environment variables
 load_dotenv()
