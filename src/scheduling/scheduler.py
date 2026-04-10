@@ -4,6 +4,9 @@ Smart Scheduler: priority-queue based token analysis scheduler.
 Replaces the fixed "analyze all tokens every N minutes" cycle with intelligent
 per-token scheduling based on positions, score proximity, regime, and spikes.
 State is persisted to disk to survive restarts.
+
+Fairness: a per-token scan counter prevents any single token from exceeding
+MAX_SCAN_RATIO times the average scan count across all tokens.
 """
 
 import heapq
@@ -11,6 +14,7 @@ import json
 import os
 import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -54,6 +58,13 @@ class SmartScheduler:
     # Regimes that warrant more frequent checks
     _ACTIVE_REGIMES = {'MARKUP', 'MARKDOWN', 'CAPITULATION', 'EUPHORIA'}
 
+    # Fairness: max scans for one token = MAX_SCAN_RATIO * average scans across all tokens
+    MAX_SCAN_RATIO = 2.5
+
+    # Minimum recheck interval (minutes) regardless of volatility/regime multipliers.
+    # This prevents volatile tokens from being scanned every 3 min while others wait 10+.
+    MIN_RECHECK_INTERVAL_MIN = 5
+
     _STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'adaptive_hybrid')
     _STATE_FILE = os.path.join(_STATE_DIR, 'scheduler_state.json')
 
@@ -64,6 +75,8 @@ class SmartScheduler:
         self._lock = threading.Lock()
         self._cooldown_s = FULL_CHECK_COOLDOWN_S
         self._scheduled_symbols: set[str] = set()   # symbols currently in the queue
+        self._scan_count: dict[str, int] = defaultdict(int)  # {symbol: count} for fairness tracking
+        self._all_symbols: list[str] = []            # all monitored symbols (set at enqueue_all_routine)
 
     def schedule_recheck(self, symbol: str, result: dict, has_position: bool):
         """After a full check, compute and enqueue the next recheckAt."""
@@ -89,18 +102,22 @@ class SmartScheduler:
         """Enqueue a token detected by the light check (highest priority).
 
         Respects cooldown: if the token was checked very recently, skip.
+        Also respects fairness: if the token is already over-represented, skip.
         """
         now = time.time()
         with self._lock:
             last = self._last_check.get(symbol, 0)
             if now - last < self._cooldown_s:
                 return  # Too soon, skip
+            if self._is_over_represented(symbol):
+                return  # Fairness: this token has had enough scans
             self._enqueue_locked(symbol, now, self.PRIORITY_SPIKE, reason)
 
     def enqueue_all_routine(self, symbols: list):
         """Seed the queue with all tokens at startup (staggered by 2s each)."""
         now = time.time()
         with self._lock:
+            self._all_symbols = list(symbols)
             for i, symbol in enumerate(symbols):
                 scheduled_at = now + i * 2  # Stagger to avoid burst
                 self._enqueue_locked(symbol, scheduled_at, self.PRIORITY_ROUTINE, "initial")
@@ -148,10 +165,11 @@ class SmartScheduler:
         return due
 
     def record_result(self, symbol: str, result: dict):
-        """Record the result of a full check (updates timestamp and last result)."""
+        """Record the result of a full check (updates timestamp, last result, and scan count)."""
         with self._lock:
             self._last_check[symbol] = time.time()
             self._last_result[symbol] = result
+            self._scan_count[symbol] += 1
         self.save_state()
 
     def get_last_result(self, symbol: str) -> dict:
@@ -164,6 +182,11 @@ class SmartScheduler:
         with self._lock:
             return len(self._queue)
 
+    def get_scan_distribution(self) -> dict:
+        """Return scan counts for monitoring (thread-safe)."""
+        with self._lock:
+            return dict(self._scan_count)
+
     def save_state(self):
         """Persist scheduler state to disk (atomic write via tmp+rename)."""
         try:
@@ -171,6 +194,7 @@ class SmartScheduler:
                 state = {
                     'last_check': dict(self._last_check),
                     'last_result': dict(self._last_result),
+                    'scan_count': dict(self._scan_count),
                     'queue': [{'scheduled_at': r.scheduled_at, 'priority': r.priority,
                                'symbol': r.symbol, 'reason': r.reason} for r in self._queue],
                 }
@@ -193,6 +217,9 @@ class SmartScheduler:
             with self._lock:
                 self._last_check = state.get('last_check', {})
                 self._last_result = state.get('last_result', {})
+                # Restore scan counts (reset if absent — fresh start)
+                for k, v in state.get('scan_count', {}).items():
+                    self._scan_count[k] = v
                 expired_count = 0
                 for item in state.get('queue', []):
                     if item['scheduled_at'] < now:
@@ -205,6 +232,23 @@ class SmartScheduler:
                    f"{len(state.get('queue', []))} queued items", "cyan")
         except Exception as e:
             cprint(f"[Scheduler] load_state error (starting fresh): {e}", "yellow")
+
+    def _is_over_represented(self, symbol: str) -> bool:
+        """Check if a token has been scanned too many times relative to others.
+
+        Returns True if the token's scan count exceeds MAX_SCAN_RATIO * average.
+        Must be called with self._lock held.
+        """
+        if not self._all_symbols or len(self._all_symbols) < 2:
+            return False
+        my_count = self._scan_count.get(symbol, 0)
+        if my_count < 3:
+            return False  # Don't throttle tokens that have barely been scanned
+        total = sum(self._scan_count.get(s, 0) for s in self._all_symbols)
+        avg = total / len(self._all_symbols)
+        if avg < 1:
+            return False  # Not enough data yet
+        return my_count > self.MAX_SCAN_RATIO * avg
 
     def _compute_interval_minutes(self, symbol: str, result: dict, has_position: bool) -> int:
         """Compute the recheck interval in minutes based on market context."""
@@ -225,17 +269,22 @@ class SmartScheduler:
         # Regime actif -> plus frequent
         regime = result.get('regime', '')
         if regime in self._ACTIVE_REGIMES:
-            base *= 0.6
+            base *= 0.7  # Was 0.6 — reduced discount to limit concentration bias
 
         # High ATR % of price -> volatile, check more often
         atr_pct = result.get('atr_pct', 0)
         if atr_pct > 0.02:  # ATR > 2% of price
-            base *= 0.5
+            base *= 0.7  # Was 0.5 — reduced discount to limit concentration bias
 
         # Heures creuses UTC 0-5 -> espacer
         hour = datetime.now(timezone.utc).hour
         if 0 <= hour < 6:
             base *= 2.0
+
+        # Fairness floor: don't let volatile tokens dominate the scanner.
+        # Positions still get the tighter interval (3 min) since they need monitoring.
+        if not has_position:
+            base = max(base, self.MIN_RECHECK_INTERVAL_MIN)
 
         return max(3, min(30, int(base)))
 
@@ -248,14 +297,17 @@ class SmartScheduler:
         """Enqueue without acquiring lock (caller must hold self._lock).
 
         If the symbol is already queued, only replace if the new priority
-        is higher (lower number).
+        is higher (lower number). Rebuilds the heap to avoid orphan duplicates.
         """
         if symbol in self._scheduled_symbols:
-            # Check if existing entry has lower priority (higher number)
-            # For simplicity, always allow spike priority to override
             if priority >= self.PRIORITY_SPIKE + 1:
                 return  # Already scheduled, don't duplicate for non-spike
-            # For spike: we allow a duplicate; get_due_symbols deduplicates
+
+            # For spike: remove the existing entry first, then re-add with spike priority.
+            # This avoids orphan duplicates that cause extra scans.
+            self._queue = [r for r in self._queue if r.symbol != symbol]
+            heapq.heapify(self._queue)
+            self._scheduled_symbols.discard(symbol)
 
         req = FullCheckRequest(
             scheduled_at=scheduled_at,
