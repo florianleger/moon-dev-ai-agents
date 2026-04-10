@@ -71,6 +71,12 @@ from src.strategies.modules.anomaly_filter import observe as anomaly_observe, is
 from src.strategies.modules.adaptive_weights import BayesianWeightOptimizer
 from src.strategies.modules.quantitative_feedback import QuantitativeFeedback
 
+# Auto-calibration overlay (reads calibration_overrides.json if available)
+try:
+    from src.utils.calibration import get_calibrated_value
+except ImportError:
+    def get_calibrated_value(name, default): return default
+
 # Import config with defaults
 try:
     from src.config import (
@@ -1015,7 +1021,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Session filter - additive
         hour = datetime.utcnow().hour
-        if hour in ADAPTIVE_HYBRID_AVOID_HOURS:
+        avoid_hours = get_calibrated_value('ADAPTIVE_HYBRID_AVOID_HOURS', ADAPTIVE_HYBRID_AVOID_HOURS)
+        if hour in avoid_hours:
             adjustments -= 5
             adjustment_details.append("session:-5")
         elif hour in ADAPTIVE_HYBRID_OPTIMAL_HOURS:
@@ -1231,7 +1238,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
     def _get_effective_threshold(self, symbol: str = None, ind: dict = None, direction: str = None) -> float:
         """Get current threshold adjusted by urgency, regime, direction, choppiness, transitions, and feedback."""
-        base = ADAPTIVE_HYBRID_BASE_THRESHOLD
+        base = get_calibrated_value('ADAPTIVE_HYBRID_BASE_THRESHOLD', ADAPTIVE_HYBRID_BASE_THRESHOLD)
 
         # Regime-based threshold adjustment (direction-aware)
         regime = (self._current_regime or '').upper()
@@ -1323,7 +1330,8 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
     def _get_atr_profile(self, symbol: str) -> tuple:
         """Get (sl_mult, tp_mult) for this token's class."""
-        for profile in ADAPTIVE_HYBRID_ATR_PROFILES.values():
+        profiles = get_calibrated_value('ADAPTIVE_HYBRID_ATR_PROFILES', ADAPTIVE_HYBRID_ATR_PROFILES)
+        for profile in profiles.values():
             if symbol in profile['tokens']:
                 return profile['sl_mult'], profile['tp_mult']
         # Default to global config
@@ -1520,11 +1528,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
         # Graduated volume filter (replaces binary 0.3x gate)
         volume_ratio = ind.get('volume_ratio', 1.0)
-        try:
-            from src import config as _cfg
-            volume_min = getattr(_cfg, 'ADAPTIVE_HYBRID_VOLUME_FILTER_MIN', 0.05)
-        except (ImportError, AttributeError):
-            volume_min = 0.05
+        volume_min = get_calibrated_value('ADAPTIVE_HYBRID_VOLUME_FILTER_MIN', 0.05)
 
         if volume_ratio < volume_min:
             # Truly dead market - reject
@@ -1550,10 +1554,7 @@ class AdaptiveHybridStrategy(BaseStrategy):
 
             if trend_4h == 'NEUTRAL':
                 # 4h is neutral - reduce score
-                try:
-                    penalty_pct = getattr(_cfg, 'ADAPTIVE_HYBRID_4H_TREND_PENALTY', 0.30)
-                except (NameError, AttributeError):
-                    penalty_pct = 0.30
+                penalty_pct = get_calibrated_value('ADAPTIVE_HYBRID_4H_TREND_PENALTY', 0.10)
                 aggregated['score'] *= (1 - penalty_pct)
                 cprint(f"  [{symbol}] 4H neutral filter: score reduced by {penalty_pct*100:.0f}% to {aggregated['score']:.1f}", "yellow")
             elif (direction == 'BUY' and trend_4h == 'BEARISH') or (direction == 'SELL' and trend_4h == 'BULLISH'):

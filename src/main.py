@@ -74,6 +74,7 @@ ACTIVE_AGENTS = {
     'strategy': True,   # RAMF Strategy only
     'copybot': False,   # CopyBot agent (disabled)
     'sentiment': False, # Sentiment agent (disabled)
+    'calibration': True, # Auto-calibration agent (24h cycle + trigger file)
 }
 
 # Safety: Force risk agent ON when live trading
@@ -105,6 +106,14 @@ try:
     alert_manager = AlertManager()
 except ImportError:
     alert_manager = None
+
+# Import CalibrationAgent (auto-calibration daemon)
+try:
+    from src.agents.calibration_agent import CalibrationAgent
+    CALIBRATION_AVAILABLE = True
+except Exception as e:
+    cprint(f"[Main] CalibrationAgent import failed: {e}", "yellow")
+    CALIBRATION_AVAILABLE = False
 
 # Import independent strategies (Phase 2)
 IndependentStrategies = {}
@@ -158,6 +167,59 @@ def independent_strategy_loop(strategy_instance, name, interval_seconds=300):
         except Exception as e:
             cprint(f"[{name}] Error in cycle: {e}", "red")
         time.sleep(interval_seconds)
+
+
+def calibration_loop(calibration_agent, interval_hours=24):
+    """Daemon thread: runs calibration every 24h and on trigger file."""
+    trigger_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'calibration_trigger.json')
+    while True:
+        try:
+            # Check trigger file (written after N closed trades)
+            triggered = False
+            if os.path.exists(trigger_path):
+                try:
+                    with open(trigger_path, 'r') as f:
+                        trigger = json.load(f)
+                    if trigger.get('run', False):
+                        cprint("[Calibration] Trigger file detected, running calibration...", "cyan")
+                        triggered = True
+                        # Clear trigger
+                        with open(trigger_path, 'w') as f:
+                            json.dump({'run': False, 'cleared_at': datetime.now().isoformat()}, f)
+                except Exception as e:
+                    cprint(f"[Calibration] Error reading trigger file: {e}", "yellow")
+
+            if triggered:
+                calibration_agent.run()
+        except Exception as e:
+            cprint(f"[Calibration] Error in trigger check: {e}", "red")
+
+        # Sleep for the full interval, checking trigger every 5 minutes
+        sleep_total = interval_hours * 3600
+        elapsed = 0
+        check_interval = 300  # Check trigger file every 5 minutes
+        while elapsed < sleep_total:
+            time.sleep(min(check_interval, sleep_total - elapsed))
+            elapsed += check_interval
+            # Check trigger during wait
+            try:
+                if os.path.exists(trigger_path):
+                    with open(trigger_path, 'r') as f:
+                        trigger = json.load(f)
+                    if trigger.get('run', False):
+                        cprint("[Calibration] Trigger file detected mid-cycle, running calibration...", "cyan")
+                        with open(trigger_path, 'w') as f:
+                            json.dump({'run': False, 'cleared_at': datetime.now().isoformat()}, f)
+                        calibration_agent.run()
+            except Exception:
+                pass
+
+        # Scheduled 24h run
+        try:
+            cprint("[Calibration] Scheduled 24h calibration run...", "cyan")
+            calibration_agent.run()
+        except Exception as e:
+            cprint(f"[Calibration] Error in scheduled run: {e}", "red")
 
 
 def daily_report_loop(strategy):
@@ -223,6 +285,21 @@ def run_agents():
             )
             report_thread.start()
             cprint("[Main] Daily report thread started (9h00 daily)", "cyan")
+
+        # Start CalibrationAgent daemon thread (24h cycle + trigger file)
+        if CALIBRATION_AVAILABLE and ACTIVE_AGENTS.get('calibration', False):
+            try:
+                cal_agent = CalibrationAgent()
+                cal_thread = threading.Thread(
+                    target=calibration_loop,
+                    args=(cal_agent, 24),
+                    daemon=True,
+                    name="Calibration_Agent"
+                )
+                cal_thread.start()
+                cprint("[Main] Calibration agent thread started (24h cycle + trigger file)", "cyan")
+            except Exception as e:
+                cprint(f"[Main] Failed to start CalibrationAgent: {e}", "red")
 
         # Start independent strategy threads (Phase 2)
         independent_instances = {}
