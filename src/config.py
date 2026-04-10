@@ -409,21 +409,21 @@ HYBRID_SNIPER_MIN_SCORE_PRIORITY = 7.0     # Sniper needs 7.0+ to take priority
 # Multi-module scoring strategy that aggregates 8 independent signal generators.
 # Target: 1-3 trades/day with 55%+ win rate.
 
-ADAPTIVE_HYBRID_BASE_THRESHOLD = 42      # Base score threshold (0-100)
+ADAPTIVE_HYBRID_BASE_THRESHOLD = 52      # Base score threshold (0-100) — raised from 42 to filter weak signals
 ADAPTIVE_HYBRID_URGENCY_START_HOURS = 4  # Start relaxing threshold after N hours without trade
-ADAPTIVE_HYBRID_URGENCY_FLOOR = 38       # Minimum threshold (never go below this)
+ADAPTIVE_HYBRID_URGENCY_FLOOR = 45       # Minimum threshold (never go below this)
 ADAPTIVE_HYBRID_MAX_DAILY_TRADES = 6     # Max trades per day
 ADAPTIVE_HYBRID_MAX_DAILY_LOSS_USD = 30  # Daily loss limit in USD
 ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
 ADAPTIVE_HYBRID_ATR_SL_MULT = 3.5       # Stop loss = 3.5x ATR (widened for fewer premature exits)
-ADAPTIVE_HYBRID_ATR_TP_MULT = 7.0       # Take profit = 7.0x ATR (2:1 R:R target)
+ADAPTIVE_HYBRID_ATR_TP_MULT = 4.5       # Take profit = 4.5x ATR (reduced from 7.0 — TP was never reached)
 ADAPTIVE_HYBRID_SKIP_LLM = True          # Skip LLM re-evaluation (strategy has own filters)
 ADAPTIVE_HYBRID_RISK_PCT = 0.015         # 1.5% risk per trade
 ADAPTIVE_HYBRID_VOLUME_FILTER_MIN = 0.05 # Minimum volume ratio to accept signal (was 0.15)
 
 # LLM-Enhanced Pipeline Settings
-ADAPTIVE_HYBRID_LLM_CONFIRMATION = False  # Disabled: remove LLM from execution path
-ADAPTIVE_HYBRID_LLM_REGIME = False        # Disabled: regime detection without LLM
+ADAPTIVE_HYBRID_LLM_CONFIRMATION = True   # Enabled: LLM filters low-quality trades before execution
+ADAPTIVE_HYBRID_LLM_REGIME = True         # Enabled: regime detection to avoid counter-trend trades
 ADAPTIVE_HYBRID_LLM_LEARNER = True       # Enable post-trade LLM learning
 ADAPTIVE_HYBRID_MTF_CONFLUENCE = True    # Enable multi-timeframe confluence scoring
 ADAPTIVE_HYBRID_LLM_PROVIDER = 'anthropic'  # LLM provider — switched from groq (qwen3-32b rate-limited, 100% failures)
@@ -434,10 +434,10 @@ ADAPTIVE_HYBRID_MIN_RR_RATIO = 2.0       # Minimum reward:risk ratio
 
 # ATR SL/TP profiles by token class
 ADAPTIVE_HYBRID_ATR_PROFILES = {
-    'btc':    {'sl_mult': 3.5, 'tp_mult': 7.0, 'tokens': ['BTC']},
-    'eth':    {'sl_mult': 4.0, 'tp_mult': 8.0, 'tokens': ['ETH']},
-    'mid':    {'sl_mult': 3.5, 'tp_mult': 7.0, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
-    'alt':    {'sl_mult': 3.0, 'tp_mult': 6.0, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
+    'btc':    {'sl_mult': 2.8, 'tp_mult': 4.2, 'tokens': ['BTC']},
+    'eth':    {'sl_mult': 3.0, 'tp_mult': 5.0, 'tokens': ['ETH']},
+    'mid':    {'sl_mult': 2.5, 'tp_mult': 4.5, 'tokens': ['SOL', 'XRP', 'AVAX', 'LINK', 'ADA', 'AAVE', 'NEAR', 'SUI', 'TAO']},
+    'alt':    {'sl_mult': 2.2, 'tp_mult': 4.0, 'tokens': ['DOGE', 'kPEPE', 'ENA']},
 }
 ADAPTIVE_HYBRID_RESET_PAPER = False       # One-shot flag: reset paper trading state on next startup
 
