@@ -49,7 +49,7 @@ class CalibrationAgent(BaseAgent):
     """Self-calibrating agent that adjusts strategy parameters based on recent performance."""
 
     # Minimum trades required before any calibration
-    MIN_TRADES = 8
+    MIN_TRADES = 5  # Lowered from 8: faster activation during initial calibration phase
 
     def __init__(self):
         super().__init__('calibration')

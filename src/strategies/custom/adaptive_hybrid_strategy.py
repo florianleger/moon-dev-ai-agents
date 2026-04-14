@@ -339,6 +339,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Lock for caches accessed by ThreadPoolExecutor workers
         self._cache_lock = threading.Lock()
 
+        # LLM fallback: bypass LLM after consecutive failures
+        self._llm_fail_count = 0
+        self._llm_fail_window_start = None
+        self._llm_bypass_until = None
+
         # Confirmation delay: pending signals awaiting bar confirmation
         self._pending_signals = {}
 
@@ -1626,11 +1631,16 @@ class AdaptiveHybridStrategy(BaseStrategy):
             if tp_pct < sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO:
                 tp_pct = sl_pct * ADAPTIVE_HYBRID_MIN_RR_RATIO
 
-            # LLM Trade Confirmation (final gate before signal emission)
+            # LLM Trade Confirmation (soft filter — penalty instead of hard reject)
             llm_decision = None
+            # Check LLM bypass (auto-recovery after consecutive failures)
+            llm_bypassed = False
+            if self._llm_bypass_until and datetime.now() < self._llm_bypass_until:
+                llm_bypassed = True
+                cprint(f"  [{symbol}] LLM bypassed: fallback mode (3 consecutive failures)", "yellow")
             if score >= 80:
                 cprint(f"  [{symbol}] LLM bypassed: score {score:.1f} >= 80 (auto-confirmed)", "green")
-            elif ADAPTIVE_HYBRID_LLM_CONFIRMATION:
+            elif ADAPTIVE_HYBRID_LLM_CONFIRMATION and not llm_bypassed:
                 try:
                     signal_metadata = {
                         'score': score,
@@ -1651,20 +1661,29 @@ class AdaptiveHybridStrategy(BaseStrategy):
                         bypass=not ADAPTIVE_HYBRID_LLM_CONFIRMATION,
                     )
                     if llm_decision['decision'] == 'REJECT':
-                        cprint(f"  [{symbol}] LLM REJECTED: {llm_decision['reasoning']}", "red")
-                        return {
-                            'token': symbol,
-                            'signal': 0,
-                            'direction': 'NEUTRAL',
-                            'metadata': {
-                                'strategy': 'Adaptive Hybrid',
-                                'score': score,
-                                'threshold': threshold,
-                                'reason': f"LLM rejected: {llm_decision['reasoning']}",
-                                'llm_decision': llm_decision,
-                                'current_price': ind['close'],
+                        # Soft filter: apply -8 penalty instead of hard reject
+                        old_score = score
+                        score = max(0, score - 8)
+                        aggregated['score'] = score
+                        cprint(f"  [{symbol}] LLM soft-reject: score {old_score:.1f} -> {score:.1f} (-8 penalty). Reason: {llm_decision['reasoning']}", "yellow")
+                        # Recalculate strength after penalty
+                        strength = 0.45 + (score - threshold) / score_range * 0.50
+                        strength = max(0.45, min(0.95, strength))
+                        if score < threshold:
+                            cprint(f"  [{symbol}] Score {score:.1f} < threshold {threshold:.0f} after LLM penalty, skipping", "red")
+                            return {
+                                'token': symbol,
+                                'signal': 0,
+                                'direction': 'NEUTRAL',
+                                'metadata': {
+                                    'strategy': 'Adaptive Hybrid',
+                                    'score': score,
+                                    'threshold': threshold,
+                                    'reason': f"LLM penalty: {llm_decision['reasoning']} (score {old_score:.1f} -> {score:.1f})",
+                                    'llm_decision': llm_decision,
+                                    'current_price': ind['close'],
+                                }
                             }
-                        }
                     elif llm_decision['decision'] == 'ADJUST':
                         if llm_decision.get('adjusted_score') is not None:
                             old_score = score
@@ -1695,8 +1714,21 @@ class AdaptiveHybridStrategy(BaseStrategy):
                                     'current_price': ind['close'],
                                 }
                             }
+                    # LLM call succeeded — reset failure counter
+                    self._llm_fail_count = 0
+                    self._llm_fail_window_start = None
                 except Exception as e:
                     cprint(f"  [LLM Confirm] Error: {e}, proceeding with signal", "yellow")
+                    # Track consecutive LLM failures for fallback bypass
+                    now = datetime.now()
+                    if self._llm_fail_window_start is None or (now - self._llm_fail_window_start).total_seconds() > 900:
+                        self._llm_fail_count = 1
+                        self._llm_fail_window_start = now
+                    else:
+                        self._llm_fail_count += 1
+                    if self._llm_fail_count >= 3:
+                        self._llm_bypass_until = now + timedelta(hours=1)
+                        cprint(f"  [LLM Confirm] 3 consecutive failures in 15min — bypassing LLM for 1 hour", "red", attrs=['bold'])
 
             cprint(f"  [{symbol}] SIGNAL: {aggregated['direction']} (score={score:.1f}, "
                    f"threshold={threshold:.0f}, strength={strength:.0%})", "green", attrs=['bold'])
