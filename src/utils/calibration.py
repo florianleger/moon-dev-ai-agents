@@ -11,8 +11,10 @@ _CACHE_TTL = 60  # seconds
 _lock = threading.RLock()
 
 # Hard guardrails: absolute min/max and max per-adjustment delta
+# NOTE: ADAPTIVE_HYBRID_BASE_THRESHOLD drift is additionally capped at +10% of the
+# manually configured value inside _get_effective_threshold (adaptive_hybrid_strategy.py).
 GUARDRAILS = {
-    'ADAPTIVE_HYBRID_BASE_THRESHOLD': {'min': 35, 'max': 65, 'max_delta_pct': 0.20},
+    'ADAPTIVE_HYBRID_BASE_THRESHOLD': {'min': 35, 'max': 65, 'max_delta_pct': 0.10},
     'ADAPTIVE_HYBRID_VOLUME_FILTER_MIN': {'min': 0.02, 'max': 0.40, 'max_delta_abs': 0.05},
     'ADAPTIVE_HYBRID_4H_TREND_PENALTY': {'min': 0.05, 'max': 0.50, 'max_delta_abs': 0.05},
     # ATR profiles are handled specially inside the agent

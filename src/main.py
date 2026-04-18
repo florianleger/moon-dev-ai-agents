@@ -145,6 +145,13 @@ if getattr(sys.modules.get('config', None), 'INDEPENDENT_STRATEGIES_ENABLED', Fa
         except Exception as e:
             cprint(f"[Main] Liq Cascade import failed: {e}", "yellow")
 
+        try:
+            from src.strategies.custom.ote_scalper_strategy import OteScalperStrategy
+            IndependentStrategies['ote_scalp'] = OteScalperStrategy
+            cprint("[Main] OTE Scalper strategy loaded", "cyan")
+        except Exception as e:
+            cprint(f"[Main] OTE Scalper import failed: {e}", "yellow")
+
 def position_monitor_loop(strategy, interval=30):
     """Dedicated thread for monitoring SL/TP every 30 seconds."""
     while True:
@@ -308,7 +315,7 @@ def run_agents():
                 instance = strat_class()
                 independent_instances[strat_key] = instance
                 # Determine cycle interval based on strategy type
-                intervals = {'funding_mr': 300, 'vol_breakout': 300, 'liq_cascade': 60}
+                intervals = {'funding_mr': 300, 'vol_breakout': 300, 'liq_cascade': 60, 'ote_scalp': 60}
                 interval = intervals.get(strat_key, 300)
                 t = threading.Thread(
                     target=independent_strategy_loop,

@@ -65,6 +65,17 @@ class SmartScheduler:
     # This prevents volatile tokens from being scanned every 3 min while others wait 10+.
     MIN_RECHECK_INTERVAL_MIN = 5
 
+    # Hard safety floor: a token cannot be rescheduled to run within this window
+    # of its last scan. Protects against any code path (routine, position, spike)
+    # monopolising the queue. Positions still need monitoring but even they can
+    # wait this long between full LLM-backed analyses.
+    MIN_TOKEN_INTERVAL_S = 90
+
+    # Fairness penalty: if a token is over-represented, delay its next routine/position
+    # recheck by this many seconds. Lets other tokens catch up instead of being blocked
+    # entirely (which would lead to them being dropped from the rotation).
+    OVER_REPRESENTED_DELAY_S = 300
+
     _STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'adaptive_hybrid')
     _STATE_FILE = os.path.join(_STATE_DIR, 'scheduler_state.json')
 
@@ -79,9 +90,26 @@ class SmartScheduler:
         self._all_symbols: list[str] = []            # all monitored symbols (set at enqueue_all_routine)
 
     def schedule_recheck(self, symbol: str, result: dict, has_position: bool):
-        """After a full check, compute and enqueue the next recheckAt."""
+        """After a full check, compute and enqueue the next recheckAt.
+
+        Fairness: if this token is over-represented in recent scans, its next
+        check is pushed back by OVER_REPRESENTED_DELAY_S so other tokens can
+        catch up in the rotation. Also enforces MIN_TOKEN_INTERVAL_S as a hard
+        safety floor so no token can monopolise the scheduler.
+        """
         interval_min = self._compute_interval_minutes(symbol, result, has_position)
         delay_s = interval_min * 60
+
+        # Hard safety floor — a token cannot be rescheduled sooner than this.
+        delay_s = max(delay_s, self.MIN_TOKEN_INTERVAL_S)
+
+        # Fairness: delay over-represented tokens to break monopoly loops.
+        with self._lock:
+            over = self._is_over_represented(symbol)
+        if over:
+            delay_s += self.OVER_REPRESENTED_DELAY_S
+            cprint(f"  [Scheduler] {symbol} over-represented, delaying recheck +{self.OVER_REPRESENTED_DELAY_S}s", "yellow")
+
         scheduled_at = time.time() + delay_s
 
         if has_position:
@@ -95,7 +123,7 @@ class SmartScheduler:
             else:
                 priority = self.PRIORITY_ROUTINE
 
-        reason = f"recheck ({self._PRIORITY_LABELS[priority]}, {interval_min}min)"
+        reason = f"recheck ({self._PRIORITY_LABELS[priority]}, {int(delay_s/60)}min)"
         self._enqueue(symbol, scheduled_at, priority, reason)
 
     def enqueue_spike(self, symbol: str, reason: str):
@@ -114,12 +142,28 @@ class SmartScheduler:
             self._enqueue_locked(symbol, now, self.PRIORITY_SPIKE, reason)
 
     def enqueue_all_routine(self, symbols: list):
-        """Seed the queue with all tokens at startup (staggered by 2s each)."""
+        """Seed the queue with all tokens at startup (staggered by 2s each).
+
+        Fairness: guarantees that EVERY monitored symbol has a queue entry scheduled
+        within the next ~2 * len(symbols) seconds, even if previous state on disk had
+        a symbol scheduled far in the future (or missed entirely). This prevents a
+        single token from monopolising the rotation after a restart.
+        """
         now = time.time()
         with self._lock:
             self._all_symbols = list(symbols)
             for i, symbol in enumerate(symbols):
                 scheduled_at = now + i * 2  # Stagger to avoid burst
+
+                # Force-remove any existing stale entry for this symbol, then
+                # insert a fresh "initial" entry. Without this, a restored queue
+                # entry scheduled far in the future would be kept and the token
+                # would never fire on startup.
+                if symbol in self._scheduled_symbols:
+                    self._queue = [r for r in self._queue if r.symbol != symbol]
+                    heapq.heapify(self._queue)
+                    self._scheduled_symbols.discard(symbol)
+
                 self._enqueue_locked(symbol, scheduled_at, self.PRIORITY_ROUTINE, "initial")
 
     def get_due_symbols(self) -> list[FullCheckRequest]:
@@ -236,19 +280,24 @@ class SmartScheduler:
     def _is_over_represented(self, symbol: str) -> bool:
         """Check if a token has been scanned too many times relative to others.
 
-        Returns True if the token's scan count exceeds MAX_SCAN_RATIO * average.
+        Returns True if the token's scan count exceeds MAX_SCAN_RATIO * median.
+        Using median instead of average makes the guard robust to a runaway
+        token whose own count inflates the average (self-dilution bug).
+
         Must be called with self._lock held.
         """
         if not self._all_symbols or len(self._all_symbols) < 2:
             return False
         my_count = self._scan_count.get(symbol, 0)
-        if my_count < 3:
+        if my_count < 5:
             return False  # Don't throttle tokens that have barely been scanned
-        total = sum(self._scan_count.get(s, 0) for s in self._all_symbols)
-        avg = total / len(self._all_symbols)
-        if avg < 1:
+
+        counts = sorted(self._scan_count.get(s, 0) for s in self._all_symbols)
+        n = len(counts)
+        median = counts[n // 2] if n % 2 == 1 else (counts[n // 2 - 1] + counts[n // 2]) / 2
+        if median < 1:
             return False  # Not enough data yet
-        return my_count > self.MAX_SCAN_RATIO * avg
+        return my_count > self.MAX_SCAN_RATIO * median
 
     def _compute_interval_minutes(self, symbol: str, result: dict, has_position: bool) -> int:
         """Compute the recheck interval in minutes based on market context."""

@@ -690,8 +690,38 @@ LIQ_CASCADE_MAX_DAILY_LOSS_USD = 10.0
 LIQ_CASCADE_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 2, 'alt': 2}
 LIQ_CASCADE_COOLDOWN_MINUTES = 30  # Min time between cascade trades
 
+# Strategy 4: Fibonacci OTE Scalping (new — inspired by Casper's scalping strategy)
+OTE_SCALP_ENABLED = True
+OTE_SCALP_TOKENS = ['BTC', 'ETH', 'SOL']  # Start with most liquid only (tight spreads critical for scalping)
+OTE_SCALP_TREND_TIMEFRAME = '1h'       # H1 for trend direction
+OTE_SCALP_ENTRY_TIMEFRAME = '5m'       # M5 for entry execution
+OTE_SCALP_TREND_EMA_FAST = 20
+OTE_SCALP_TREND_EMA_SLOW = 50
+OTE_SCALP_TREND_EMA_FILTER = 200
+OTE_SCALP_ADX_MIN = 20                  # Minimum ADX on H1 for trend confirmation
+OTE_SCALP_SWING_LOOKBACK = 24           # M5 candles (~2h of price action)
+OTE_SCALP_SWING_MIN_RANGE_PCT = 0.004  # 0.4% minimum impulse range
+OTE_SCALP_OTE_LOW = 0.618
+OTE_SCALP_OTE_HIGH = 0.786
+OTE_SCALP_RR_RATIO = 2.0                # 1:2 risk/reward
+OTE_SCALP_SL_BUFFER_ATR = 0.2           # Extra ATR beyond swing for SL
+OTE_SCALP_RISK_PCT = 0.005              # 0.5% risk per trade (scalping = high freq)
+OTE_SCALP_MAX_HOLD_MINUTES = 60         # Time stop — scalping shouldn't hold longer
+OTE_SCALP_MAX_DAILY_TRADES = 10
+OTE_SCALP_MAX_DAILY_LOSS_USD = 20.0     # Kill-switch
+OTE_SCALP_MAX_POSITIONS = 2
+OTE_SCALP_COOLDOWN_MINUTES = 15         # Between trades on same token
+OTE_SCALP_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
+OTE_SCALP_VOLUME_MIN = 0.15             # Dead market filter
+OTE_SCALP_AVOID_HOURS_UTC = [1, 2, 3]   # Asia night low liquidity
+OTE_SCALP_FUNDING_AVOID_WINDOW_MIN = 5  # Minutes before/after funding settlement to avoid
+OTE_SCALP_BOS_BUFFER_PCT = 0.001        # 0.1% buffer past entry for BE after BOS
+OTE_SCALP_CONFIRMATION_BARS = 0         # No confirmation delay (scalping needs speed)
+OTE_SCALP_USE_LIMIT_ORDERS = False      # Market orders for paper; limit orders for live
+OTE_SCALP_MAX_POSITION_PCT = 25         # Max 25% of balance per position
+
 # Global independent strategy settings
 INDEPENDENT_STRATEGIES_ENABLED = True
-INDEPENDENT_STRATEGIES_MAX_TOTAL_DAILY_LOSS_USD = 30.0
-INDEPENDENT_STRATEGIES_MAX_POSITIONS = 4  # Across all 3 strategies combined
+INDEPENDENT_STRATEGIES_MAX_TOTAL_DAILY_LOSS_USD = 50.0  # Was 30, accommodates 4th strategy (-$20 ote_scalp)
+INDEPENDENT_STRATEGIES_MAX_POSITIONS = 6  # Across all 4 strategies combined (was 4)
 

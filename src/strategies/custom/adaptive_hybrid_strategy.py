@@ -1242,8 +1242,28 @@ class AdaptiveHybridStrategy(BaseStrategy):
         return max(0.90, 1.0 - reduction)
 
     def _get_effective_threshold(self, symbol: str = None, ind: dict = None, direction: str = None) -> float:
-        """Get current threshold adjusted by urgency, regime, direction, choppiness, transitions, and feedback."""
-        base = get_calibrated_value('ADAPTIVE_HYBRID_BASE_THRESHOLD', ADAPTIVE_HYBRID_BASE_THRESHOLD)
+        """Get current threshold adjusted by urgency, regime, direction, choppiness, transitions, and feedback.
+
+        The CALIBRATED BASE (= config + CalibrationAgent override) is clamped so
+        it cannot exceed the manually configured value by more than 10%. Per-scan
+        adjustments (regime, choppiness, transitions, feedback) are still applied
+        on top, but the auto-tuned starting point cannot silently drift away from
+        what the operator sees on the dashboard.
+        """
+        configured_base = ADAPTIVE_HYBRID_BASE_THRESHOLD  # manual value from config.py
+        calibrated_base = get_calibrated_value('ADAPTIVE_HYBRID_BASE_THRESHOLD', ADAPTIVE_HYBRID_BASE_THRESHOLD)
+
+        # Guardrail on calibration drift: the auto-tuned base cannot exceed the
+        # manually configured value by more than 10%. This prevents the
+        # CalibrationAgent from silently pushing the threshold well above what
+        # the UI reports (the dashboard shows `configured_base`, not the override).
+        max_calibrated = configured_base * 1.10
+        if calibrated_base > max_calibrated:
+            cprint(f"    [Calibration Cap] Override {calibrated_base:.1f} clamped to {max_calibrated:.1f} "
+                   f"(configured={configured_base}, max drift +10%)", "yellow")
+            calibrated_base = max_calibrated
+
+        base = calibrated_base
 
         # Regime-based threshold adjustment (direction-aware)
         regime = (self._current_regime or '').upper()
@@ -1275,11 +1295,17 @@ class AdaptiveHybridStrategy(BaseStrategy):
         effective = base * urgency
         threshold = max(effective, ADAPTIVE_HYBRID_URGENCY_FLOOR)
 
-        # Adaptive threshold from quantitative feedback
+        # Adaptive threshold from quantitative feedback (bounded: max +3 from here)
         if hasattr(self, '_feedback'):
+            pre_feedback = threshold
             threshold = self._feedback.suggest_threshold_adjustment(threshold)
+            # Cap feedback contribution to max +3 so PF-based adjustments don't
+            # compound over time and push the threshold far from configured values.
+            if threshold > pre_feedback + 3:
+                cprint(f"    [Feedback Cap] Limited {threshold:.1f} -> {pre_feedback + 3:.1f} (max +3 from feedback)", "yellow")
+                threshold = pre_feedback + 3
 
-        threshold = max(35, min(75, threshold))  # Prevent extreme thresholds
+        threshold = max(35, min(75, threshold))  # Absolute safety bounds
         return threshold
 
     def _detect_regime_transition(self, symbol: str, current_regime: str) -> float:
@@ -1759,7 +1785,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 }
             }
 
-        # NEUTRAL signal with diagnostic info
+        # NEUTRAL signal with diagnostic info — include LLM/coverage metadata
+        # so the dashboard and downstream consumers see the full pipeline state
+        # (previously these fields were only emitted on BUY/SELL signals, which
+        # made llm_regime/coverage/active_modules appear null for every record
+        # since most scans are NEUTRAL).
         return {
             'token': symbol,
             'signal': 0,
@@ -1772,6 +1802,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 'reason': f"Score {aggregated['score']:.1f} < threshold {threshold:.0f}",
                 'diagnostic': aggregated.get('details', ''),
                 'module_scores': aggregated.get('module_scores', {}),
+                'active_modules': aggregated.get('active_modules'),
+                'total_fired': aggregated.get('total_modules_fired'),
+                'coverage': aggregated.get('coverage', 0),
+                'llm_regime': self._llm_regime_cache.get(symbol),
+                'mtf_confluence': aggregated.get('mtf_confluence'),
                 'current_price': ind['close'],
             }
         }
