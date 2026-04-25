@@ -71,10 +71,12 @@ class SmartScheduler:
     # wait this long between full LLM-backed analyses.
     MIN_TOKEN_INTERVAL_S = 90
 
-    # Fairness penalty: if a token is over-represented, delay its next routine/position
-    # recheck by this many seconds. Lets other tokens catch up instead of being blocked
-    # entirely (which would lead to them being dropped from the rotation).
-    OVER_REPRESENTED_DELAY_S = 300
+    # Fairness penalty: if a token is over-represented, FULLY skip its recheck (do not
+    # re-enqueue it). The token will get a fresh entry on the next natural cycle via
+    # enqueue_all_routine(). Previously this was a soft +5min delay, but that allowed
+    # the over-represented token to come right back and re-monopolise the queue
+    # (concentration loop). Full-skip is the only way to break the loop.
+    OVER_REPRESENTED_DELAY_S = 300  # kept for backward compat / metrics; unused for skip
 
     _STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'adaptive_hybrid')
     _STATE_FILE = os.path.join(_STATE_DIR, 'scheduler_state.json')
@@ -92,23 +94,28 @@ class SmartScheduler:
     def schedule_recheck(self, symbol: str, result: dict, has_position: bool):
         """After a full check, compute and enqueue the next recheckAt.
 
-        Fairness: if this token is over-represented in recent scans, its next
-        check is pushed back by OVER_REPRESENTED_DELAY_S so other tokens can
-        catch up in the rotation. Also enforces MIN_TOKEN_INTERVAL_S as a hard
-        safety floor so no token can monopolise the scheduler.
+        Fairness: if this token is over-represented in recent scans, the recheck
+        is FULLY SKIPPED (no re-enqueue). The token will re-enter the queue on
+        the next enqueue_all_routine() cycle, ensuring all monitored symbols get
+        a turn. Otherwise, MIN_TOKEN_INTERVAL_S is enforced as a hard safety
+        floor on the recheck delay.
         """
-        interval_min = self._compute_interval_minutes(symbol, result, has_position)
-        delay_s = interval_min * 60
-
-        # Hard safety floor — a token cannot be rescheduled sooner than this.
-        delay_s = max(delay_s, self.MIN_TOKEN_INTERVAL_S)
-
-        # Fairness: delay over-represented tokens to break monopoly loops.
+        # Fairness FIRST: if this token is over-represented, FULL-SKIP — do not
+        # re-enqueue at all. The token will be picked up again on the next
+        # enqueue_all_routine() cycle. Previously we just delayed by +5min which
+        # let the same token come back and re-monopolise the queue (the bug).
         with self._lock:
             over = self._is_over_represented(symbol)
         if over:
-            delay_s += self.OVER_REPRESENTED_DELAY_S
-            cprint(f"  [Scheduler] {symbol} over-represented, delaying recheck +{self.OVER_REPRESENTED_DELAY_S}s", "yellow")
+            cprint(f"  [Scheduler] {symbol} over-represented, SKIPPING recheck (will re-enter on next routine cycle)", "yellow")
+            return
+
+        interval_min = self._compute_interval_minutes(symbol, result, has_position)
+        delay_s = interval_min * 60
+
+        # Hard safety floor applied AFTER the over-rep decision so it can never
+        # override a fairness skip.
+        delay_s = max(delay_s, self.MIN_TOKEN_INTERVAL_S)
 
         scheduled_at = time.time() + delay_s
 

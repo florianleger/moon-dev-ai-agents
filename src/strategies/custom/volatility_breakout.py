@@ -166,8 +166,10 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         adx = ta.adx(high, low, close, length=14)
         if adx is None or adx.empty:
             return None
-        adx_val, adx_prev = adx['ADX_14'].iloc[-1], adx['ADX_14'].iloc[-2]
-        if adx_val < VOL_BREAKOUT_ADX_ENTRY or adx_val <= adx_prev:
+        adx_val = adx['ADX_14'].iloc[-1]
+        # Trend-strength gate (ADX > 25). The "ADX rising" check was rejecting
+        # ~50% of valid squeezes intra-bar and has been dropped.
+        if adx_val < VOL_BREAKOUT_ADX_ENTRY:
             return None
 
         df4 = self._fetch_candles(symbol, '4h', 30)

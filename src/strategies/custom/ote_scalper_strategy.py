@@ -31,7 +31,7 @@ except ImportError:
         ta = None
 
 from src.strategies.base_strategy import BaseStrategy
-from src.strategies.modules.swing_detector import detect_swings
+from src.strategies.modules.swing_detector import detect_swings, detect_swings_fractal
 from src.strategies.modules.fib_ote import compute_fib_levels, is_price_in_ote
 from src.strategies.modules.bos_detector import detect_bos
 
@@ -81,62 +81,57 @@ class OteScalperStrategy(BaseStrategy):
     # --- Initialisation ---
     def __init__(self):
         super().__init__("OTE Scalper")
+        g = lambda k, d: getattr(config, k, d)  # noqa: E731
 
-        # -- Config (loaded via getattr w/ safe defaults) --
-        self.tokens = list(getattr(config, 'OTE_SCALP_TOKENS', ['BTC', 'ETH', 'SOL']))
-        self.assets = self.tokens  # compatibility alias
+        # Config (safe getattr w/ defaults)
+        self.tokens = list(g('OTE_SCALP_TOKENS', ['BTC', 'ETH', 'SOL']))
+        self.assets = self.tokens
+        self.trend_tf = g('OTE_SCALP_TREND_TIMEFRAME', '1h')
+        self.entry_tf = g('OTE_SCALP_ENTRY_TIMEFRAME', '5m')
+        self.ema_fast = g('OTE_SCALP_TREND_EMA_FAST', 20)
+        self.ema_slow = g('OTE_SCALP_TREND_EMA_SLOW', 50)
+        self.ema_filter = g('OTE_SCALP_TREND_EMA_FILTER', 200)
+        self.adx_min = g('OTE_SCALP_ADX_MIN', 20)
+        self.swing_lookback = g('OTE_SCALP_SWING_LOOKBACK', 24)
+        self.swing_min_range_pct = g('OTE_SCALP_SWING_MIN_RANGE_PCT', 0.004)
+        self.rr_ratio = g('OTE_SCALP_RR_RATIO', 2.0)
+        self.sl_buffer_atr = g('OTE_SCALP_SL_BUFFER_ATR', 0.2)
+        self.risk_pct = g('OTE_SCALP_RISK_PCT', 0.005)
+        self.max_hold_minutes = g('OTE_SCALP_MAX_HOLD_MINUTES', 60)
+        self.max_daily_trades = g('OTE_SCALP_MAX_DAILY_TRADES', 10)
+        self.max_daily_loss_usd = g('OTE_SCALP_MAX_DAILY_LOSS_USD', 20.0)
+        self.max_positions = g('OTE_SCALP_MAX_POSITIONS', 2)
+        self.cooldown_minutes = g('OTE_SCALP_COOLDOWN_MINUTES', 15)
+        self.leverage_map = g('OTE_SCALP_LEVERAGE', {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2})
+        self.volume_min = g('OTE_SCALP_VOLUME_MIN', 0.15)
+        self.avoid_hours = set(g('OTE_SCALP_AVOID_HOURS_UTC', [1, 2, 3]))
+        self.funding_window_min = g('OTE_SCALP_FUNDING_AVOID_WINDOW_MIN', 5)
+        self.bos_buffer_pct = g('OTE_SCALP_BOS_BUFFER_PCT', 0.001)
+        self.max_position_pct = g('OTE_SCALP_MAX_POSITION_PCT', 25) / 100.0
+        self.paper_balance_initial = g('PAPER_TRADING_BALANCE', 500.0)
+        self.slippage_map = g('PAPER_SLIPPAGE_V2',
+                              {'btc': 0.0003, 'eth': 0.0005, 'mid': 0.0012, 'alt': 0.003})
+        self.taker_fee = g('PAPER_TAKER_FEE_V2', 0.00045)
 
-        self.trend_tf = getattr(config, 'OTE_SCALP_TREND_TIMEFRAME', '1h')
-        self.entry_tf = getattr(config, 'OTE_SCALP_ENTRY_TIMEFRAME', '5m')
-        self.ema_fast = getattr(config, 'OTE_SCALP_TREND_EMA_FAST', 20)
-        self.ema_slow = getattr(config, 'OTE_SCALP_TREND_EMA_SLOW', 50)
-        self.ema_filter = getattr(config, 'OTE_SCALP_TREND_EMA_FILTER', 200)
-        self.adx_min = getattr(config, 'OTE_SCALP_ADX_MIN', 20)
-        self.swing_lookback = getattr(config, 'OTE_SCALP_SWING_LOOKBACK', 24)
-        self.swing_min_range_pct = getattr(config, 'OTE_SCALP_SWING_MIN_RANGE_PCT', 0.004)
-        self.rr_ratio = getattr(config, 'OTE_SCALP_RR_RATIO', 2.0)
-        self.sl_buffer_atr = getattr(config, 'OTE_SCALP_SL_BUFFER_ATR', 0.2)
-        self.risk_pct = getattr(config, 'OTE_SCALP_RISK_PCT', 0.005)
-        self.max_hold_minutes = getattr(config, 'OTE_SCALP_MAX_HOLD_MINUTES', 60)
-        self.max_daily_trades = getattr(config, 'OTE_SCALP_MAX_DAILY_TRADES', 10)
-        self.max_daily_loss_usd = getattr(config, 'OTE_SCALP_MAX_DAILY_LOSS_USD', 20.0)
-        self.max_positions = getattr(config, 'OTE_SCALP_MAX_POSITIONS', 2)
-        self.cooldown_minutes = getattr(config, 'OTE_SCALP_COOLDOWN_MINUTES', 15)
-        self.leverage_map = getattr(config, 'OTE_SCALP_LEVERAGE',
-                                    {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2})
-        self.volume_min = getattr(config, 'OTE_SCALP_VOLUME_MIN', 0.15)
-        self.avoid_hours = set(getattr(config, 'OTE_SCALP_AVOID_HOURS_UTC', [1, 2, 3]))
-        self.funding_window_min = getattr(config, 'OTE_SCALP_FUNDING_AVOID_WINDOW_MIN', 5)
-        self.bos_buffer_pct = getattr(config, 'OTE_SCALP_BOS_BUFFER_PCT', 0.001)
-        self.max_position_pct = getattr(config, 'OTE_SCALP_MAX_POSITION_PCT', 25) / 100.0
-
-        self.paper_balance_initial = getattr(config, 'PAPER_TRADING_BALANCE', 500.0)
-        self.slippage_map = getattr(config, 'PAPER_SLIPPAGE_V2',
-                                    {'btc': 0.0003, 'eth': 0.0005, 'mid': 0.0012, 'alt': 0.003})
-        self.taker_fee = getattr(config, 'PAPER_TAKER_FEE_V2', 0.00045)
-
-        # -- Runtime state --
+        # Runtime state
         self.paper_balance = self.paper_balance_initial
-        self.positions = {}           # active positions keyed by position_id
+        self.positions = {}
         self.closed_positions = []
         self._position_counter = 0
         self._lock = threading.RLock()
-
         self.daily_trades = 0
         self.daily_pnl = 0.0
         self.last_reset_date = datetime.utcnow().date()
+        self._last_close_time = {}  # symbol -> last exit datetime (cooldowns)
+        self._trend_cache = {}      # symbol -> (trend, cache_datetime) 15min TTL
 
-        self._last_close_time = {}    # symbol -> datetime of last exit (cooldowns)
-        self._trend_cache = {}        # symbol -> (trend, datetime) cached 15min
-
-        # Data providers / trade memory
+        # Providers / trade memory
         self._market_data = None
         if MarketDataProvider is not None:
             try:
                 self._market_data = MarketDataProvider(start_liquidation_stream=False)
             except Exception as e:
                 cprint(f"[OteScalp] MarketDataProvider init failed: {e}", "yellow")
-
         self._trade_memory = None
         if TradeMemory is not None:
             try:
@@ -144,12 +139,10 @@ class OteScalperStrategy(BaseStrategy):
             except Exception:
                 pass
 
-        # Persistence directory
         self.data_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             'data', 'ote_scalp')
         os.makedirs(self.data_dir, exist_ok=True)
-
         self._load_state()
 
         cprint(f"[OteScalp] Init | ${self.paper_balance:,.2f} | "
@@ -237,20 +230,21 @@ class OteScalperStrategy(BaseStrategy):
         trend = self._detect_trend_h1(symbol)
         if trend == 'NEUTRAL':
             return None
-
         m5 = self._fetch_candles(symbol, self.entry_tf, 60)
         if m5 is None or len(m5) < max(self.swing_lookback + 5, 25):
             return None
-
-        swings = detect_swings(m5, lookback=self.swing_lookback,
-                               min_range_pct=self.swing_min_range_pct)
-        if not swings.get('valid'):
+        # Fractal/pivot detection finds true reversal points (vs. simple lookback
+        # extrema which always pin the high/low to the most recent candle in a
+        # trend, making the OTE retracement zone unreachable).
+        swings = detect_swings_fractal(m5, left=3, right=3)
+        if not swings or not swings.get('valid'):
             return None
-
+        # Enforce a minimum impulse range to avoid trading micro-pivots.
+        if swings.get('range_pct', 0.0) < self.swing_min_range_pct:
+            return None
         swing_dir = swings['direction']
-        if trend == 'BULLISH' and swing_dir != 'UP':
-            return None
-        if trend == 'BEARISH' and swing_dir != 'DOWN':
+        if (trend == 'BULLISH' and swing_dir != 'UP') or \
+           (trend == 'BEARISH' and swing_dir != 'DOWN'):
             return None
 
         fib = compute_fib_levels(swings['swing_low'], swings['swing_high'],
@@ -262,7 +256,6 @@ class OteScalperStrategy(BaseStrategy):
         if not is_price_in_ote(current_price, fib):
             return None
 
-        # Volume filter: last bar vs 20-period avg
         vol = float(m5['volume'].iloc[-1])
         vol_avg = float(m5['volume'].iloc[-20:].mean()) if len(m5) >= 20 else 0.0
         vol_ratio = (vol / vol_avg) if vol_avg > 0 else 0.0
@@ -274,38 +267,25 @@ class OteScalperStrategy(BaseStrategy):
             return None
 
         direction = 'BUY' if trend == 'BULLISH' else 'SELL'
-
-        # SL/TP compute
         if direction == 'BUY':
             sl = swings['swing_low'] - (atr * self.sl_buffer_atr)
             risk_dist = current_price - sl
+            tp = current_price + risk_dist * self.rr_ratio
         else:
             sl = swings['swing_high'] + (atr * self.sl_buffer_atr)
             risk_dist = sl - current_price
+            tp = current_price - risk_dist * self.rr_ratio
 
         if risk_dist <= 0:
             return None
 
-        tp = current_price + risk_dist * self.rr_ratio if direction == 'BUY' \
-            else current_price - risk_dist * self.rr_ratio
-
-        leverage = self._get_leverage(symbol)
-
         return {
-            'symbol': symbol,
-            'direction': direction,
-            'entry_price': current_price,
-            'swing_low': swings['swing_low'],
-            'swing_high': swings['swing_high'],
-            'ote_mid': fib['ote_mid'],
-            'atr': atr,
-            'stop_loss': sl,
-            'take_profit': tp,
-            'risk_dist': risk_dist,
-            'leverage': leverage,
-            'trend': trend,
-            'vol_ratio': vol_ratio,
-            'range_pct': swings.get('range_pct', 0.0),
+            'symbol': symbol, 'direction': direction, 'entry_price': current_price,
+            'swing_low': swings['swing_low'], 'swing_high': swings['swing_high'],
+            'ote_mid': fib['ote_mid'], 'atr': atr,
+            'stop_loss': sl, 'take_profit': tp, 'risk_dist': risk_dist,
+            'leverage': self._get_leverage(symbol), 'trend': trend,
+            'vol_ratio': vol_ratio, 'range_pct': swings.get('range_pct', 0.0),
         }
 
     # --- Trend detection (H1) ---
@@ -387,9 +367,7 @@ class OteScalperStrategy(BaseStrategy):
         except Exception:
             return 0.0
 
-    # ------------------------------------------------------------------
-    # Session filters
-    # ------------------------------------------------------------------
+    # --- Session filters ---
     def _is_avoid_hour(self):
         return datetime.utcnow().hour in self.avoid_hours
 
@@ -403,46 +381,35 @@ class OteScalperStrategy(BaseStrategy):
                 return True
         return False
 
-    # ------------------------------------------------------------------
-    # Position management
-    # ------------------------------------------------------------------
+    # --- Position management ---
     def _manage_positions(self):
         to_close = []
         with self._lock:
             for pid, pos in list(self.positions.items()):
-                sym = pos['symbol']
+                sym, d = pos['symbol'], pos['direction']
                 price = self._get_price(sym)
                 if price is None:
                     continue
-
-                d = pos['direction']
-                # SL / TP hit?
+                sl, tp = pos['stop_loss'], pos['take_profit']
                 if d == 'BUY':
-                    if price <= pos['stop_loss']:
-                        to_close.append((pid, pos['stop_loss'], 'STOP_LOSS'))
-                        continue
-                    if price >= pos['take_profit']:
-                        to_close.append((pid, pos['take_profit'], 'TAKE_PROFIT'))
-                        continue
-                else:  # SELL
-                    if price >= pos['stop_loss']:
-                        to_close.append((pid, pos['stop_loss'], 'STOP_LOSS'))
-                        continue
-                    if price <= pos['take_profit']:
-                        to_close.append((pid, pos['take_profit'], 'TAKE_PROFIT'))
-                        continue
+                    if price <= sl:
+                        to_close.append((pid, sl, 'STOP_LOSS')); continue
+                    if price >= tp:
+                        to_close.append((pid, tp, 'TAKE_PROFIT')); continue
+                else:
+                    if price >= sl:
+                        to_close.append((pid, sl, 'STOP_LOSS')); continue
+                    if price <= tp:
+                        to_close.append((pid, tp, 'TAKE_PROFIT')); continue
 
-                # Time stop?
                 try:
                     et = datetime.fromisoformat(pos['entry_time'])
                     elapsed_min = (datetime.utcnow() - et).total_seconds() / 60.0
                 except Exception:
                     elapsed_min = 0.0
                 if elapsed_min >= self.max_hold_minutes:
-                    to_close.append((pid, price, 'TIME_STOP'))
-                    continue
+                    to_close.append((pid, price, 'TIME_STOP')); continue
 
-                # BOS -> move SL to breakeven (once)
                 if not pos.get('bos_triggered'):
                     self._check_bos_and_move_sl(pos)
 
@@ -451,78 +418,56 @@ class OteScalperStrategy(BaseStrategy):
 
     def _check_bos_and_move_sl(self, position):
         """If price breaks structure past the impulse reference, move SL to breakeven."""
-        sym = position['symbol']
+        sym, d = position['symbol'], position['direction']
         df = self._fetch_candles(sym, self.entry_tf, 20)
         if df is None or len(df) < 5:
             return
-
-        d = position['direction']
-        ref_high = position.get('swing_high', 0.0)
-        ref_low = position.get('swing_low', 0.0)
-        bos = detect_bos(df, reference_high=ref_high, reference_low=ref_low,
-                        direction=d, lookback=10)
+        bos = detect_bos(df, reference_high=position.get('swing_high', 0.0),
+                         reference_low=position.get('swing_low', 0.0),
+                         direction=d, lookback=10)
         if not bos.get('bos_detected'):
             return
 
         entry = position['entry_price']
         buf = entry * self.bos_buffer_pct
         new_sl = entry + buf if d == 'BUY' else entry - buf
-
-        # Only ratchet SL in a favourable direction
         with self._lock:
             cur_sl = position.get('stop_loss')
-            if d == 'BUY' and new_sl > cur_sl:
+            favourable = (d == 'BUY' and new_sl > cur_sl) or (d == 'SELL' and new_sl < cur_sl)
+            if favourable:
                 position['stop_loss'] = new_sl
                 position['bos_triggered'] = True
-                cprint(f"[OteScalp] BOS {sym} BUY — SL -> BE ${new_sl:,.{_price_dec(new_sl)}f}",
-                       "cyan")
-            elif d == 'SELL' and new_sl < cur_sl:
-                position['stop_loss'] = new_sl
-                position['bos_triggered'] = True
-                cprint(f"[OteScalp] BOS {sym} SELL — SL -> BE ${new_sl:,.{_price_dec(new_sl)}f}",
-                       "cyan")
+                cprint(f"[OteScalp] BOS {sym} {d} — SL -> BE "
+                       f"${new_sl:,.{_price_dec(new_sl)}f}", "cyan")
 
     def _close_position(self, position_id, exit_price, reason):
         with self._lock:
             pos = self.positions.get(position_id)
             if not pos:
                 return
-            sym = pos['symbol']
-            d = pos['direction']
-            entry = pos['entry_price']
-            size = pos['position_size']
-            tc = self._get_token_class(sym)
-            slip = self.slippage_map.get(tc, 0.0012)
-
+            sym, d = pos['symbol'], pos['direction']
+            entry, size = pos['entry_price'], pos['position_size']
+            slip = self.slippage_map.get(self._get_token_class(sym), 0.0012)
             eff_exit = exit_price * (1 - slip) if d == 'BUY' else exit_price * (1 + slip)
             pnl_pct = (eff_exit - entry) / entry if d == 'BUY' else (entry - eff_exit) / entry
-            pnl_gross = pnl_pct * size
             exit_fee = size * self.taker_fee
-            pnl_net = pnl_gross - exit_fee
-
-            # Sanity clamp (cannot lose more than the notional)
-            if abs(pnl_net) > size * 1.5:
+            pnl_net = pnl_pct * size - exit_fee
+            if abs(pnl_net) > size * 1.5:  # sanity clamp
                 pnl_net = max(-size, min(size, pnl_net))
-
             self.paper_balance += pnl_net
             self.daily_pnl += pnl_net
             self._last_close_time[sym] = datetime.utcnow()
-
             try:
                 et = datetime.fromisoformat(pos['entry_time'])
                 hold_min = (datetime.utcnow() - et).total_seconds() / 60.0
             except Exception:
                 hold_min = 0.0
-
             pos.update({
-                'status': 'CLOSED',
-                'exit_price': exit_price,
+                'status': 'CLOSED', 'exit_price': exit_price,
                 'effective_exit_price': round(eff_exit, 6),
                 'exit_time': datetime.utcnow().isoformat(),
-                'pnl': round(pnl_net, 4),
-                'pnl_pct': round(pnl_pct * 100, 2),
-                'close_reason': reason,
-                'hold_minutes': round(hold_min, 1),
+                'pnl': round(pnl_net, 4), 'pnl_pct': round(pnl_pct * 100, 2),
+                'close_reason': reason, 'hold_minutes': round(hold_min, 1),
                 'exit_fee': round(exit_fee, 6),
             })
             closed = pos.copy()
@@ -536,35 +481,22 @@ class OteScalperStrategy(BaseStrategy):
                f"PnL ${pnl_net:+,.2f} ({pnl_pct*100:+.2f}%) | "
                f"{hold_min:.0f}m | Bal ${self.paper_balance:,.2f}",
                col, attrs=['bold'])
-
         self._log_closed_trade(closed)
         self._update_open_csv(position_id, closed)
-
         if self._trade_memory and 'memory_decision_id' in closed:
             try:
                 self._trade_memory.update_outcome(
-                    int(closed['memory_decision_id']),
-                    pnl=pnl_net,
-                    hold_duration_hours=hold_min / 60.0,
-                    close_reason=reason,
-                )
+                    int(closed['memory_decision_id']), pnl=pnl_net,
+                    hold_duration_hours=hold_min / 60.0, close_reason=reason)
             except Exception:
                 pass
 
-    # ------------------------------------------------------------------
-    # Execution
-    # ------------------------------------------------------------------
+    # --- Execution ---
     def _execute_trade(self, signal):
-        sym = signal['symbol']
-        d = signal['direction']
-        px = signal['entry_price']
-        atr = signal['atr']
-        sl = signal['stop_loss']
-        tp = signal['take_profit']
-        lev = signal['leverage']
-
-        tc = self._get_token_class(sym)
-        slip = self.slippage_map.get(tc, 0.0012)
+        sym, d = signal['symbol'], signal['direction']
+        px, atr = signal['entry_price'], signal['atr']
+        sl, tp, lev = signal['stop_loss'], signal['take_profit'], signal['leverage']
+        slip = self.slippage_map.get(self._get_token_class(sym), 0.0012)
         fill_price = px * (1 + slip) if d == 'BUY' else px * (1 - slip)
 
         size = self._calculate_position_size(signal)
@@ -579,28 +511,18 @@ class OteScalperStrategy(BaseStrategy):
                 return
             self._position_counter += 1
             pid = f"ote_{sym}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{self._position_counter}"
-
+            now_iso = datetime.utcnow().isoformat()
             trade = {
-                'position_id': pid,
-                'timestamp': datetime.utcnow().isoformat(),
-                'entry_time': datetime.utcnow().isoformat(),
-                'symbol': sym,
-                'direction': d,
-                'entry_price': fill_price,
-                'position_size': round(size, 2),
-                'leverage': lev,
-                'stop_loss': sl,
-                'take_profit': tp,
-                'atr': atr,
-                'swing_high': signal['swing_high'],
-                'swing_low': signal['swing_low'],
-                'ote_mid': signal['ote_mid'],
-                'trend': signal['trend'],
+                'position_id': pid, 'timestamp': now_iso, 'entry_time': now_iso,
+                'symbol': sym, 'direction': d, 'entry_price': fill_price,
+                'position_size': round(size, 2), 'leverage': lev,
+                'stop_loss': sl, 'take_profit': tp, 'atr': atr,
+                'swing_high': signal['swing_high'], 'swing_low': signal['swing_low'],
+                'ote_mid': signal['ote_mid'], 'trend': signal['trend'],
                 'vol_ratio': round(signal['vol_ratio'], 2),
                 'range_pct': round(signal['range_pct'] * 100, 2),
                 'entry_fee': round(entry_fee, 6),
-                'status': 'OPEN',
-                'bos_triggered': False,
+                'status': 'OPEN', 'bos_triggered': False,
             }
             self.positions[pid] = trade
             self.paper_balance -= entry_fee
@@ -613,7 +535,6 @@ class OteScalperStrategy(BaseStrategy):
         cprint(f"  SL ${sl:,.{pd_}f} | TP ${tp:,.{pd_}f} | ATR {atr:.4f} | "
                f"Vol {signal['vol_ratio']:.1f}x | Range {signal['range_pct']*100:.2f}%",
                "white")
-
         self._log_open_trade(trade)
 
         if self._trade_memory:
@@ -622,13 +543,11 @@ class OteScalperStrategy(BaseStrategy):
                     symbol=sym, direction=d,
                     confidence=min(100, 50 + signal['vol_ratio'] * 20),
                     source='ote_scalp',
-                    reasoning=(f"OTE {d} | {signal['trend']} H1 trend | "
-                               f"ATR {atr:.4f} | Vol {signal['vol_ratio']:.1f}x | "
+                    reasoning=(f"OTE {d} | {signal['trend']} H1 | ATR {atr:.4f} | "
+                               f"Vol {signal['vol_ratio']:.1f}x | "
                                f"Range {signal['range_pct']*100:.2f}%"),
-                    key_indicators={
-                        'atr': atr, 'vol_ratio': signal['vol_ratio'],
-                        'range_pct': signal['range_pct'],
-                    })
+                    key_indicators={'atr': atr, 'vol_ratio': signal['vol_ratio'],
+                                    'range_pct': signal['range_pct']})
                 with self._lock:
                     if pid in self.positions:
                         self.positions[pid]['memory_decision_id'] = did
@@ -654,9 +573,7 @@ class OteScalperStrategy(BaseStrategy):
     def _get_leverage(self, symbol):
         return self.leverage_map.get(self._get_token_class(symbol), 3)
 
-    # ------------------------------------------------------------------
-    # Data fetching
-    # ------------------------------------------------------------------
+    # --- Data fetching ---
     def _fetch_candles(self, symbol, timeframe, limit):
         """Fetch OHLCV from HyperLiquid (same pattern as sibling strategies)."""
         try:
@@ -715,9 +632,7 @@ class OteScalperStrategy(BaseStrategy):
             return float(df['close'].iloc[-1])
         return None
 
-    # ------------------------------------------------------------------
-    # BaseStrategy hook
-    # ------------------------------------------------------------------
+    # --- BaseStrategy hook ---
     def generate_signals(self) -> dict:
         self.run_cycle()
         return {
@@ -727,9 +642,7 @@ class OteScalperStrategy(BaseStrategy):
             'metadata': self.get_status(),
         }
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
+    # --- Persistence ---
     def _log_open_trade(self, trade):
         try:
             f = os.path.join(self.data_dir, 'paper_trades.csv')
@@ -771,46 +684,42 @@ class OteScalperStrategy(BaseStrategy):
     def _load_state(self):
         pf = os.path.join(self.data_dir, 'paper_trades.csv')
         cf = os.path.join(self.data_dir, 'closed_trades.csv')
+        flt = lambda x, default=0: float(x or 0) if x is not None else default  # noqa: E731
 
         if os.path.exists(pf):
             try:
                 df = pd.read_csv(pf)
                 if not df.empty and 'status' in df.columns:
-                    open_rows = df[df['status'] == 'OPEN']
-                    for _, r in open_rows.iterrows():
+                    for _, r in df[df['status'] == 'OPEN'].iterrows():
                         pid = r.get('position_id', '')
                         if not pid:
                             continue
                         self.positions[pid] = {
-                            'position_id': pid,
-                            'timestamp': r.get('timestamp', ''),
+                            'position_id': pid, 'timestamp': r.get('timestamp', ''),
                             'entry_time': r.get('entry_time',
-                                                 r.get('timestamp',
-                                                       datetime.utcnow().isoformat())),
-                            'symbol': r.get('symbol', ''),
-                            'direction': r.get('direction', 'BUY'),
-                            'entry_price': float(r.get('entry_price', 0) or 0),
-                            'position_size': float(r.get('position_size', 0) or 0),
-                            'leverage': float(r.get('leverage', 3) or 3),
-                            'stop_loss': float(r.get('stop_loss', 0) or 0),
-                            'take_profit': float(r.get('take_profit', 0) or 0),
-                            'atr': float(r.get('atr', 0) or 0),
-                            'swing_high': float(r.get('swing_high', 0) or 0),
-                            'swing_low': float(r.get('swing_low', 0) or 0),
-                            'ote_mid': float(r.get('ote_mid', 0) or 0),
+                                                r.get('timestamp', datetime.utcnow().isoformat())),
+                            'symbol': r.get('symbol', ''), 'direction': r.get('direction', 'BUY'),
+                            'entry_price': flt(r.get('entry_price')),
+                            'position_size': flt(r.get('position_size')),
+                            'leverage': flt(r.get('leverage'), 3) or 3,
+                            'stop_loss': flt(r.get('stop_loss')),
+                            'take_profit': flt(r.get('take_profit')),
+                            'atr': flt(r.get('atr')),
+                            'swing_high': flt(r.get('swing_high')),
+                            'swing_low': flt(r.get('swing_low')),
+                            'ote_mid': flt(r.get('ote_mid')),
                             'trend': r.get('trend', 'NEUTRAL'),
-                            'vol_ratio': float(r.get('vol_ratio', 0) or 0),
-                            'range_pct': float(r.get('range_pct', 0) or 0),
-                            'entry_fee': float(r.get('entry_fee', 0) or 0),
+                            'vol_ratio': flt(r.get('vol_ratio')),
+                            'range_pct': flt(r.get('range_pct')),
+                            'entry_fee': flt(r.get('entry_fee')),
                             'status': 'OPEN',
                             'bos_triggered': bool(r.get('bos_triggered', False)),
                         }
                     if self.positions:
                         mx = 0
                         for pid in self.positions:
-                            parts = str(pid).split('_')
                             try:
-                                mx = max(mx, int(parts[-1]))
+                                mx = max(mx, int(str(pid).split('_')[-1]))
                             except (ValueError, IndexError):
                                 pass
                         self._position_counter = mx
@@ -832,18 +741,14 @@ class OteScalperStrategy(BaseStrategy):
 
         open_fees = sum(t.get('entry_fee', 0) for t in self.positions.values())
         self.paper_balance = self.paper_balance_initial + realized - cfees - open_fees
-
         today_str = datetime.utcnow().date().isoformat()
         self.daily_trades = sum(
             1 for p in list(self.positions.values()) + self.closed_positions
             if str(p.get('timestamp', ''))[:10] == today_str)
-        self.daily_pnl = sum(
-            p.get('pnl', 0) for p in self.closed_positions
-            if str(p.get('exit_time', ''))[:10] == today_str)
+        self.daily_pnl = sum(p.get('pnl', 0) for p in self.closed_positions
+                             if str(p.get('exit_time', ''))[:10] == today_str)
 
-    # ------------------------------------------------------------------
-    # Status (dashboard)
-    # ------------------------------------------------------------------
+    # --- Status (dashboard) ---
     def get_status(self):
         with self._lock:
             return {
@@ -859,9 +764,7 @@ class OteScalperStrategy(BaseStrategy):
             }
 
 
-# ----------------------------------------------------------------------
-# Standalone entry point
-# ----------------------------------------------------------------------
+# --- Standalone entry point ---
 if __name__ == '__main__':
     import signal
     import sys

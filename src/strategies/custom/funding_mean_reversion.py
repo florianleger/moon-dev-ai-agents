@@ -35,9 +35,14 @@ TOKEN_CLASS = {
 LEVERAGE = {'major': 3, 'mid': 3, 'alt': 2}
 ATR_SL_MULT = {'major': 3.0, 'mid': 2.5, 'alt': 2.5}
 RISK_PER_TRADE_PCT = 1.5
-MAX_DAILY_TRADES = 4
+# Concurrent open positions cap (was conflated with the daily-trade cap).
+MAX_CONCURRENT_POSITIONS = 3
+# Number of new entries allowed per UTC day.
+MAX_DAILY_TRADES = 6
 MAX_DAILY_LOSS_USD = 15.0
 MAX_HOLD_HOURS = 12
+# Minimum time a position must be held before the funding-normalization exit can fire.
+MIN_HOLD_HOURS_FOR_FUNDING_EXIT = 1.0
 TRAILING_ACTIVATE_ATR = 1.5
 TRAILING_DISTANCE_ATR = 1.0
 FUNDING_EXIT_ZSCORE = 0.5
@@ -146,14 +151,19 @@ class FundingMeanReversionStrategy(BaseStrategy):
             if not reason:
                 if (d == 'BUY' and price >= pos['take_profit']) or (d == 'SELL' and price <= pos['take_profit']):
                     reason = 'take_profit'
-            # Funding normalization
-            if not reason and abs(self._get_funding_zscore(pos['symbol'])) <= FUNDING_EXIT_ZSCORE:
+            # Compute hold duration once (used by both funding-norm and time-stop checks).
+            try:
+                hrs_held = (datetime.utcnow() - datetime.fromisoformat(pos['entry_time'])).total_seconds() / 3600
+            except Exception:
+                hrs_held = 0.0
+            # Funding normalization (guard against premature exit via min-hold).
+            if (not reason
+                    and hrs_held >= MIN_HOLD_HOURS_FOR_FUNDING_EXIT
+                    and abs(self._get_funding_zscore(pos['symbol'])) <= FUNDING_EXIT_ZSCORE):
                 reason = 'funding_normalized'
             # Time stop
-            if not reason:
-                hrs = (datetime.utcnow() - datetime.fromisoformat(pos['entry_time'])).total_seconds() / 3600
-                if hrs >= MAX_HOLD_HOURS:
-                    reason = 'time_stop'
+            if not reason and hrs_held >= MAX_HOLD_HOURS:
+                reason = 'time_stop'
             # Trailing stop
             if not reason and atr > 0:
                 ts = self._trailing.get(pid, {'best_price': entry})
@@ -226,12 +236,14 @@ class FundingMeanReversionStrategy(BaseStrategy):
         if self.daily_pnl <= -MAX_DAILY_LOSS_USD:
             cprint(f"[FundingMR] Daily loss limit hit (${self.daily_pnl:+.2f})", "red")
             return
-        if len(self.paper_positions) >= MAX_DAILY_TRADES:
+        if len(self.paper_positions) >= MAX_CONCURRENT_POSITIONS:
             return
         open_syms = {p['symbol'] for p in self.paper_positions.values()}
         for sym in self.assets:
             if sym in open_syms or self.daily_trades >= MAX_DAILY_TRADES:
                 continue
+            if len(self.paper_positions) >= MAX_CONCURRENT_POSITIONS:
+                break
             sig = self._evaluate_entry(sym)
             if sig:
                 self._open_position(sig)
@@ -381,12 +393,12 @@ class FundingMeanReversionStrategy(BaseStrategy):
                     self.paper_positions[pid] = {
                         'position_id': pid, 'timestamp': r.get('timestamp', ''),
                         'symbol': r.get('symbol', ''), 'direction': r.get('direction', 'BUY'),
-                        'entry_price': float(r.get('entry_price', 0)),
-                        'position_size': float(r.get('position_size', 0)),
-                        'leverage': float(r.get('leverage', 3)),
-                        'stop_loss': float(r.get('stop_loss', 0)),
-                        'take_profit': float(r.get('take_profit', 0)),
-                        'sl_pct': float(r.get('sl_pct', 1.5)),
+                        'entry_price': float(r.get('entry_price', 0) or 0),
+                        'position_size': float(r.get('position_size', 0) or 0),
+                        'leverage': float(r.get('leverage', 3) or 3),
+                        'stop_loss': float(r.get('stop_loss', 0) or 0),
+                        'take_profit': float(r.get('take_profit', 0) or 0),
+                        'sl_pct': float(r.get('sl_pct', 1.5) or 1.5),
                         'atr': float(r.get('atr', 0) or 0),
                         'entry_fee': float(r.get('entry_fee', 0) or 0),
                         'status': 'OPEN',

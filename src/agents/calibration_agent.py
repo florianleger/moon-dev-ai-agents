@@ -20,7 +20,7 @@ import pandas as pd
 from termcolor import cprint
 
 from src.agents.base_agent import BaseAgent
-from src.utils.calibration import apply_guardrail, GUARDRAILS
+from src.utils.calibration import apply_guardrail
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -49,7 +49,9 @@ class CalibrationAgent(BaseAgent):
     """Self-calibrating agent that adjusts strategy parameters based on recent performance."""
 
     # Minimum trades required before any calibration
-    MIN_TRADES = 5  # Lowered from 8: faster activation during initial calibration phase
+    MIN_TRADES = 15  # Raised from 5: reduce noise (3 SL streak no longer triggers adjustment)
+    # Minimum history span (days) required before any calibration -- guards against early bursts of trades
+    MIN_HISTORY_DAYS = 7
 
     def __init__(self):
         super().__init__('calibration')
@@ -323,7 +325,7 @@ class CalibrationAgent(BaseAgent):
         # --- WR_DECLINING: raise threshold by 5 ---
         if 'WR_DECLINING' in problem_types:
             new_val = current_threshold + 5
-            new_val, clamped = apply_guardrail(
+            new_val, _ = apply_guardrail(
                 'ADAPTIVE_HYBRID_BASE_THRESHOLD', new_val, current_threshold,
                 ADAPTIVE_HYBRID_BASE_THRESHOLD)
             adjustments['ADAPTIVE_HYBRID_BASE_THRESHOLD'] = {
@@ -560,6 +562,21 @@ class CalibrationAgent(BaseAgent):
             self._state['last_action'] = 'SKIP_INSUFFICIENT_DATA'
             self._save_state()
             return
+
+        # Guard: require at least MIN_HISTORY_DAYS of trade history span
+        try:
+            raw_trades = metrics.get('raw_trades', [])
+            exit_times = [pd.to_datetime(t['exit_time']) for t in raw_trades if t.get('exit_time')]
+            if exit_times:
+                history_span_days = (max(exit_times) - min(exit_times)).total_seconds() / 86400
+                if history_span_days < self.MIN_HISTORY_DAYS:
+                    cprint(f"[CalibrationAgent] History span too short ({history_span_days:.1f}d/{self.MIN_HISTORY_DAYS}d), skipping", "yellow")
+                    self._state['last_run'] = datetime.now().isoformat()
+                    self._state['last_action'] = 'SKIP_INSUFFICIENT_HISTORY_SPAN'
+                    self._save_state()
+                    return
+        except Exception as e:
+            cprint(f"[CalibrationAgent] Could not compute history span: {e}", "yellow")
 
         # Log key metrics
         cprint(f"  Win rate: {metrics.get('win_rate', 0):.1%} | PF: {metrics.get('profit_factor', 0):.2f} | "
