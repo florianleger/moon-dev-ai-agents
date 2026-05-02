@@ -60,12 +60,12 @@ class TestFundingMeanReversion:
         assert callable(s.run_cycle)
 
     def test_zscore_threshold_by_token_class(self):
-        """BTC/ETH use 2.0, mid-caps 1.8, alts 1.5."""
+        """BTC/ETH use 1.5, mid-caps 1.3, alts 1.0 (loosened from 2.0/1.8/1.5)."""
         from src.strategies.custom.funding_mean_reversion import ZSCORE_THRESHOLDS, TOKEN_CLASS
 
-        assert ZSCORE_THRESHOLDS['major'] == 2.0
-        assert ZSCORE_THRESHOLDS['mid'] == 1.8
-        assert ZSCORE_THRESHOLDS['alt'] == 1.5
+        assert ZSCORE_THRESHOLDS['major'] == 1.5
+        assert ZSCORE_THRESHOLDS['mid'] == 1.3
+        assert ZSCORE_THRESHOLDS['alt'] == 1.0
 
         # BTC and ETH should be classified as 'major'
         assert TOKEN_CLASS.get('BTC') == 'major'

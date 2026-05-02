@@ -2750,14 +2750,21 @@ class AdaptiveHybridStrategy(BaseStrategy):
                         ts['trailing_active'] = True
                         # Ratchet SL: never move SL in unfavorable direction
                         if direction == 'BUY':
-                            best_trailing_sl = max(best_trailing_sl, ts.get('locked_sl', 0))
+                            # BUY: SL ratchets UP (higher = tighter for longs)
+                            prev_locked = ts.get('locked_sl')
+                            if prev_locked is None:
+                                prev_locked = float('-inf')
+                            best_trailing_sl = max(best_trailing_sl, prev_locked)
                             ts['locked_sl'] = best_trailing_sl
                             if best_trailing_sl > stop_loss and candle_low <= best_trailing_sl:
                                 close_reason = 'TRAILING_STOP'
                                 close_price = best_trailing_sl
                         else:
-                            # SELL: ratchet SL upward (tighter) — higher SL = more protective for shorts
-                            best_trailing_sl = max(best_trailing_sl, ts.get('locked_sl', 0))
+                            # SELL: SL ratchets DOWN (lower = tighter for shorts)
+                            prev_locked = ts.get('locked_sl')
+                            if prev_locked is None:
+                                prev_locked = float('inf')
+                            best_trailing_sl = min(best_trailing_sl, prev_locked)
                             ts['locked_sl'] = best_trailing_sl
                             if best_trailing_sl < stop_loss and candle_high >= best_trailing_sl:
                                 close_reason = 'TRAILING_STOP'

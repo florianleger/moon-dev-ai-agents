@@ -89,6 +89,24 @@ async def health_check():
     return {"status": "healthy", "service": "moon-dev-trading-dashboard"}
 
 
+@app.get("/api/health")
+async def api_health():
+    """Rich health snapshot for monitoring + alerting integrations.
+
+    No auth required so external uptime checks (UptimeRobot, etc.) can hit it.
+    Returns scheduler freshness + active strategy count + uptime so we can
+    detect frozen-bot scenarios externally.
+    """
+    try:
+        from src.utils.scheduler_healthcheck import get_health_snapshot
+        return get_health_snapshot()
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": str(e)[:200]},
+        )
+
+
 # Helper to set session cookie on page responses
 def _set_session_cookie(response, username: str):
     """Set a signed session cookie so fetch()/EventSource can authenticate."""

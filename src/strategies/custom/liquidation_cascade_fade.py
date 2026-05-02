@@ -51,10 +51,11 @@ except ImportError:
     PAPER_TAKER_FEE_V2 = 0.00045
 
 # Absolute volume thresholds (USD) for cascade detection per token class
+# Loosened by 50% (was BTC 5M / ETH 2M / mid 500k) to detect smaller cascades in current low-vol regime.
 CASCADE_VOLUME_THRESHOLDS = {
-    'BTC': 5_000_000,
-    'ETH': 2_000_000,
-    'SOL': 500_000, 'XRP': 500_000, 'AVAX': 500_000, 'SUI': 500_000,
+    'BTC': 2_500_000,
+    'ETH': 1_000_000,
+    'SOL': 250_000, 'XRP': 250_000, 'AVAX': 250_000, 'SUI': 250_000,
 }
 
 

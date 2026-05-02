@@ -116,14 +116,16 @@ except Exception as e:
     CALIBRATION_AVAILABLE = False
 
 # Import independent strategies (Phase 2)
+# Previous version had an `if ... or True:` outer guard which was always-true
+# dead code. The actual gating happens via INDEPENDENT_STRATEGIES_ENABLED below.
 IndependentStrategies = {}
-if getattr(sys.modules.get('config', None), 'INDEPENDENT_STRATEGIES_ENABLED', False) or True:
-    try:
-        from config import INDEPENDENT_STRATEGIES_ENABLED
-    except ImportError:
-        INDEPENDENT_STRATEGIES_ENABLED = False
+try:
+    from config import INDEPENDENT_STRATEGIES_ENABLED
+except ImportError:
+    INDEPENDENT_STRATEGIES_ENABLED = False
 
-    if INDEPENDENT_STRATEGIES_ENABLED:
+if INDEPENDENT_STRATEGIES_ENABLED:
+    if True:  # preserves indentation of the import block below
         try:
             from src.strategies.custom.funding_mean_reversion import FundingMeanReversionStrategy
             IndependentStrategies['funding_mr'] = FundingMeanReversionStrategy
@@ -333,6 +335,17 @@ def run_agents():
         if LIGHT_CHECK_AVAILABLE and LIGHT_CHECK_ENABLED:
             light_check = LightCheck()
             light_check.start()
+
+        # Start Scheduler Healthcheck daemon thread (detects scheduler freezes)
+        # Polls scheduler_state.json every 5 minutes; alerts to Discord if
+        # min(last_check_ago_s) > 30 minutes (1h cooldown to avoid spam).
+        try:
+            from src.utils.scheduler_healthcheck import start_healthcheck_thread
+            start_healthcheck_thread()
+            cprint("[Main] Scheduler healthcheck thread started (5min interval, "
+                   "30min freeze threshold, 1h alert cooldown)", "cyan")
+        except Exception as e:
+            cprint(f"[Main] Failed to start scheduler healthcheck: {e}", "yellow")
 
         # Initialize Smart Scheduler (Phase 2)
         use_scheduler = (SMART_SCHEDULER_AVAILABLE and SCHEDULER_ENABLED

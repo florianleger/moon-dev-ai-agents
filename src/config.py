@@ -570,10 +570,13 @@ REGIME_VOL_LOW = 0.8
 # Production data (Mar 12, 2026): 88.6% of exits were trailing stops at +0.21%
 # because breakeven locked at 1.0 ATR. Average win was $0.30 vs average loss $4.62
 # (1:15 risk/reward). Raised breakeven to 2.0 ATR to let winners run.
+# BUGFIX (May 2026): activate_atr levels 2/3 (4.0/5.5) were unreachable before TP
+# (BTC TP=3.5, mid TP=3.8, alt TP=3.5). Lowered to 1.5/3.0/4.5 so progressive
+# trailing actually activates and locks profit before TP fires.
 ADAPTIVE_HYBRID_TRAILING_LEVELS = [
-    {'activate_atr': 2.5, 'distance_atr': None, 'breakeven': True},
-    {'activate_atr': 4.0, 'distance_atr': 2.0},
-    {'activate_atr': 5.5, 'distance_atr': 1.0},
+    {'activate_atr': 1.5, 'distance_atr': None, 'breakeven': True},
+    {'activate_atr': 3.0, 'distance_atr': 1.5},
+    {'activate_atr': 4.5, 'distance_atr': 0.8},
 ]
 
 # --- Scale-Out Partial Take Profit (Phase 3) ---
@@ -643,7 +646,7 @@ ADAPTIVE_HYBRID_SCORE_PERSISTENCE_CYCLES = 2  # Score must be above threshold fo
 
 # 4H trend filter
 ADAPTIVE_HYBRID_4H_TREND_FILTER = True
-ADAPTIVE_HYBRID_4H_TREND_PENALTY = 0.10  # 10% score reduction if 4h neutral
+ADAPTIVE_HYBRID_4H_TREND_PENALTY = 0.05  # 5% score reduction if 4h neutral (loosened from 0.10 to allow more BUY signals in bear bias)
 ADAPTIVE_HYBRID_4H_TREND_REJECT = False  # Reject if 4h opposes 1h
 
 # ═══════════════════════════════════════════════════════════════
@@ -680,7 +683,7 @@ VOL_BREAKOUT_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
 # Strategy 3: Liquidation Cascade Fade
 LIQ_CASCADE_ENABLED = True
 LIQ_CASCADE_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI']  # Only liquid enough for cascade fading
-LIQ_CASCADE_SIGMA_THRESHOLD = 3.0  # Liquidation volume > Nx std dev
+LIQ_CASCADE_SIGMA_THRESHOLD = 2.0  # Liquidation volume > Nx std dev (loosened from 3.0 to detect smaller cascades)
 LIQ_CASCADE_RISK_PCT = 0.01  # 1% risk (smaller, high WR target)
 LIQ_CASCADE_MAX_HOLD_HOURS = 4  # Quick fade, short hold
 LIQ_CASCADE_SL_ATR_MULT = 2.0
@@ -698,9 +701,9 @@ OTE_SCALP_ENTRY_TIMEFRAME = '5m'       # M5 for entry execution
 OTE_SCALP_TREND_EMA_FAST = 20
 OTE_SCALP_TREND_EMA_SLOW = 50
 OTE_SCALP_TREND_EMA_FILTER = 200
-OTE_SCALP_ADX_MIN = 20                  # Minimum ADX on H1 for trend confirmation
+OTE_SCALP_ADX_MIN = 15                  # Minimum ADX on H1 for trend confirmation (loosened from 20 to allow more setups)
 OTE_SCALP_SWING_LOOKBACK = 24           # M5 candles (~2h of price action)
-OTE_SCALP_SWING_MIN_RANGE_PCT = 0.004  # 0.4% minimum impulse range
+OTE_SCALP_SWING_MIN_RANGE_PCT = 0.003  # 0.3% minimum impulse range (loosened from 0.004 to allow more setups)
 OTE_SCALP_OTE_LOW = 0.618
 OTE_SCALP_OTE_HIGH = 0.786
 OTE_SCALP_RR_RATIO = 2.0                # 1:2 risk/reward

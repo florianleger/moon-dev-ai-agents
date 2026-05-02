@@ -25,7 +25,7 @@ from src.config import PAPER_TRADING_BALANCE, SNIPER_ASSETS, PAPER_TAKER_FEE_V2,
 from src.strategies.base_strategy import BaseStrategy
 
 # --- Config ---
-ZSCORE_THRESHOLDS = {'major': 2.0, 'mid': 1.8, 'alt': 1.5}
+ZSCORE_THRESHOLDS = {'major': 1.5, 'mid': 1.3, 'alt': 1.0}  # Loosened (was 2.0/1.8/1.5) to permit more signals in low-volatility funding regimes
 TOKEN_CLASS = {
     'BTC': 'major', 'ETH': 'major',
     'SOL': 'mid', 'XRP': 'mid', 'AVAX': 'mid', 'SUI': 'mid',

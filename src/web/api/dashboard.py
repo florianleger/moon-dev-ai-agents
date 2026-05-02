@@ -165,6 +165,105 @@ def _get_stats_from_csv() -> Dict:
     return stats
 
 
+def _aggregate_strategy_stats(strategy_key: str) -> Dict:
+    """Compute basic stats for an independent strategy from its CSVs.
+
+    Each independent strategy persists to:
+        src/data/<strategy_key>/paper_trades.csv  (open trades)
+        src/data/<strategy_key>/closed_trades.csv (closed trades)
+    """
+    folder = os.path.join(DATA_BASE_PATH, strategy_key)
+    paper_csv = os.path.join(folder, 'paper_trades.csv')
+    closed_csv = os.path.join(folder, 'closed_trades.csv')
+
+    stats = {
+        "key": strategy_key,
+        "open_positions": 0,
+        "closed_trades": 0,
+        "total_pnl": 0.0,
+        "daily_pnl": 0.0,
+        "win_rate": 0.0,
+        "last_trade_at": None,
+        "data_dir_exists": os.path.isdir(folder),
+    }
+
+    today_str = datetime.now().strftime('%Y-%m-%d')
+
+    # Open positions
+    if os.path.exists(paper_csv):
+        try:
+            df = pd.read_csv(paper_csv)
+            if not df.empty and 'status' in df.columns:
+                stats["open_positions"] = int((df['status'] == 'OPEN').sum())
+        except Exception:
+            pass
+
+    # Closed trades
+    if os.path.exists(closed_csv):
+        try:
+            df = pd.read_csv(closed_csv)
+            if not df.empty:
+                stats["closed_trades"] = int(len(df))
+                if 'pnl' in df.columns:
+                    stats["total_pnl"] = round(float(df['pnl'].sum()), 2)
+                    wins = int((df['pnl'] > 0).sum())
+                    stats["win_rate"] = round(wins / len(df) * 100, 1)
+                time_col = 'exit_time' if 'exit_time' in df.columns else (
+                    'close_timestamp' if 'close_timestamp' in df.columns else None
+                )
+                if time_col:
+                    today_df = df[df[time_col].astype(str).str.startswith(today_str, na=False)]
+                    if not today_df.empty and 'pnl' in today_df.columns:
+                        stats["daily_pnl"] = round(float(today_df['pnl'].sum()), 2)
+                    last_ts = df[time_col].astype(str).max()
+                    stats["last_trade_at"] = last_ts if last_ts else None
+        except Exception:
+            pass
+
+    return stats
+
+
+# Names + display labels for all known strategies.
+# Independent strategies match folder names in src/data/.
+_KNOWN_STRATEGIES = [
+    ("adaptive_hybrid", "Adaptive Hybrid"),
+    ("ote_scalp", "OTE Scalper"),
+    ("funding_mr", "Funding Mean Reversion"),
+    ("vol_breakout", "Volatility Breakout"),
+    ("liq_cascade", "Liquidation Cascade Fade"),
+]
+
+
+@router.get("/strategies")
+async def get_strategies(username: str = Depends(verify_credentials)) -> Dict:
+    """Aggregate stats per active strategy (Adaptive Hybrid + independents).
+
+    Fixes the prior bug where the dashboard only ever showed
+    `{Adaptive Hybrid: 100}` and never reported the OTE Scalper, FundingMR,
+    VolBreakout, LiqCascade strategies.
+    """
+    strategies = []
+    for key, label in _KNOWN_STRATEGIES:
+        s = _aggregate_strategy_stats(key)
+        s["label"] = label
+        strategies.append(s)
+
+    total_pnl = round(sum(s["total_pnl"] for s in strategies), 2)
+    total_open = sum(s["open_positions"] for s in strategies)
+    total_closed = sum(s["closed_trades"] for s in strategies)
+
+    return {
+        "strategies": strategies,
+        "summary": {
+            "total_pnl": total_pnl,
+            "total_open_positions": total_open,
+            "total_closed_trades": total_closed,
+            "active_count": sum(1 for s in strategies
+                                if s["closed_trades"] > 0 or s["open_positions"] > 0),
+        },
+    }
+
+
 @router.get("/stats")
 async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
     """Get dashboard statistics."""
@@ -207,6 +306,27 @@ async def get_stats(username: str = Depends(verify_credentials)) -> Dict:
                 stats['daily_trades'] = int(closed_df[closed_df[time_col].str.startswith(today_str, na=False)].shape[0])
         except Exception:
             pass
+
+    # Multi-strategy breakdown (Adaptive Hybrid + independents)
+    # Previously the dashboard only showed `{Adaptive Hybrid: 100}` and ignored
+    # the independent strategies that write to their own CSV folders.
+    try:
+        per_strat = {}
+        for key, label in _KNOWN_STRATEGIES:
+            s = _aggregate_strategy_stats(key)
+            if s["closed_trades"] > 0 or s["open_positions"] > 0:
+                per_strat[label] = {
+                    "key": key,
+                    "open": s["open_positions"],
+                    "closed": s["closed_trades"],
+                    "pnl": s["total_pnl"],
+                    "daily_pnl": s["daily_pnl"],
+                    "win_rate": s["win_rate"],
+                }
+        if per_strat:
+            stats["strategies"] = per_strat
+    except Exception as e:
+        print(f"[Dashboard API] Error aggregating strategies: {e}")
 
     # If CSV has data, return it
     if stats["total_pnl"] != 0 or stats["open_positions"] > 0:

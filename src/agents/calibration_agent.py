@@ -51,7 +51,7 @@ class CalibrationAgent(BaseAgent):
     # Minimum trades required before any calibration
     MIN_TRADES = 15  # Raised from 5: reduce noise (3 SL streak no longer triggers adjustment)
     # Minimum history span (days) required before any calibration -- guards against early bursts of trades
-    MIN_HISTORY_DAYS = 7
+    MIN_HISTORY_DAYS = 3  # Lowered from 7 to allow earlier convergence given low trade frequency in prod
 
     def __init__(self):
         super().__init__('calibration')
