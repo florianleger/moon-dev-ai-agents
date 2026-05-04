@@ -1584,10 +1584,12 @@ class AdaptiveHybridStrategy(BaseStrategy):
             trend_4h = self._get_4h_trend(symbol)
 
             if trend_4h == 'NEUTRAL':
-                # 4h is neutral - reduce score
-                penalty_pct = get_calibrated_value('ADAPTIVE_HYBRID_4H_TREND_PENALTY', 0.10)
-                aggregated['score'] *= (1 - penalty_pct)
-                cprint(f"  [{symbol}] 4H neutral filter: score reduced by {penalty_pct*100:.0f}% to {aggregated['score']:.1f}", "yellow")
+                # 4h is neutral - additive coverage penalty (lines 987-992) already accounts for low directional
+                # agreement. Removing the multiplicative penalty here: it was redundant and pushed max final
+                # score below 48 (max observed 47.3 vs threshold 48-53), preventing AH signals from ever firing.
+                # penalty_pct = get_calibrated_value('ADAPTIVE_HYBRID_4H_TREND_PENALTY', 0.10)
+                # aggregated['score'] *= (1 - penalty_pct)
+                cprint(f"  [{symbol}] 4H neutral (no extra penalty applied; coverage adjustment handles it)", "yellow")
             elif (direction == 'BUY' and trend_4h == 'BEARISH') or (direction == 'SELL' and trend_4h == 'BULLISH'):
                 # 4h opposes signal direction
                 try:
