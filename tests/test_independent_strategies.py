@@ -134,9 +134,9 @@ class TestVolatilityBreakout:
         assert 0.5 > VOL_BREAKOUT_VOLUME_MIN
 
     def test_adx_entry_threshold(self):
-        """ADX entry threshold should be 25."""
+        """ADX entry threshold should be 22 (loosened from 25 for more setups)."""
         from src.strategies.custom.volatility_breakout import VOL_BREAKOUT_ADX_ENTRY
-        assert VOL_BREAKOUT_ADX_ENTRY == 25
+        assert VOL_BREAKOUT_ADX_ENTRY == 22
 
     def test_trailing_stop_multiplier(self):
         """Trailing ATR multiplier should be 2.5."""

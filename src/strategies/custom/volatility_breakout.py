@@ -49,7 +49,7 @@ VOL_BREAKOUT_MAX_DAILY_LOSS = 15.0
 VOL_BREAKOUT_SQUEEZE_PERCENTILE = 0.20
 VOL_BREAKOUT_VOLUME_MULT = 2.0
 VOL_BREAKOUT_VOLUME_MIN = 0.15
-VOL_BREAKOUT_ADX_ENTRY = 25
+VOL_BREAKOUT_ADX_ENTRY = 22
 VOL_BREAKOUT_ADX_EXIT = 20
 
 
@@ -140,9 +140,9 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         bbu, bbl, bbm = bb['BBU_20_2.0'], bb['BBL_20_2.0'], bb['BBM_20_2.0']
         bb_width = (bbu - bbl) / bbm.replace(0, 1)
 
-        # Previous bar must have been in squeeze
+        # At least one of the 2 last pre-breakout bars must have been in squeeze
         sq_thresh = bb_width.iloc[-100:].quantile(VOL_BREAKOUT_SQUEEZE_PERCENTILE)
-        if len(bb_width) < 2 or bb_width.iloc[-2] > sq_thresh:
+        if len(bb_width) < 3 or bb_width.iloc[-3:-1].min() > sq_thresh:
             return None
 
         vol_avg = volume.rolling(20).mean()
@@ -233,11 +233,22 @@ class VolatilityBreakoutStrategy(BaseStrategy):
                         reason = 'TIME_STOP'
 
                 if not reason:
-                    df = self._fetch_candles(sym, '1h', 30)
-                    if df is not None and len(df) >= 14:
-                        adx = ta.adx(df['high'], df['low'], df['close'], length=14)
-                        if adx is not None and not adx.empty and adx['ADX_14'].iloc[-1] < VOL_BREAKOUT_ADX_EXIT:
-                            reason = 'ADX_EXHAUSTION'
+                    et = trade.get('entry_time')
+                    if isinstance(et, str):
+                        try: et = datetime.fromisoformat(et)
+                        except (ValueError, TypeError): et = None
+                    held_secs = (datetime.now() - et).total_seconds() if et else float('inf')
+                    # Min hold 1h before allowing ADX-based exit (avoid false exits on
+                    # mechanical ADX decay right after breakout pic).
+                    if held_secs >= 3600:
+                        df = self._fetch_candles(sym, '1h', 30)
+                        if df is not None and len(df) >= 17:
+                            adx = ta.adx(df['high'], df['low'], df['close'], length=14)
+                            # Multi-bar confirmation: 3 last 1H bars all sub-18.
+                            if (adx is not None and not adx.empty
+                                    and len(adx['ADX_14'].dropna()) >= 3
+                                    and adx['ADX_14'].iloc[-3:].max() < 18):
+                                reason = 'ADX_EXHAUSTION'
 
                 if reason:
                     to_close.append((pid, cl_px, reason))

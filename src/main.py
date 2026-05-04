@@ -394,6 +394,36 @@ def run_agents():
                 cprint(f"Error analyzing {token}: {e}", "red")
                 return None
 
+        # Watchdog executor for scheduler loop: enforces a hard timeout on
+        # _analyze_token calls so a hung LLM SDK request (TCP/TLS zombie) cannot
+        # freeze the main scheduler thread for hours. max_workers=1 preserves
+        # sequential execution order (trade execution path is not thread-safe).
+        # Created once at module-level scope (not per-iteration) to avoid the
+        # cost of spawning a new thread on every scheduler tick.
+        _watchdog_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scheduler-watchdog")
+        _ANALYZE_TOKEN_TIMEOUT_S = 120  # 30s LLM timeout * 2 retries + overhead
+
+        def _analyze_token_with_watchdog(token):
+            """Run _analyze_token in a worker thread with a hard timeout.
+
+            Returns (signal, timed_out: bool). On timeout, logs a warning and
+            returns (None, True) so the caller can record a fail result and
+            keep last_check fresh for the healthcheck.
+            """
+            from concurrent.futures import TimeoutError as FuturesTimeoutError
+            future = _watchdog_executor.submit(_analyze_token, token)
+            try:
+                return future.result(timeout=_ANALYZE_TOKEN_TIMEOUT_S), False
+            except FuturesTimeoutError:
+                cprint(
+                    f"  [Watchdog] scheduler watchdog timeout for token {token} "
+                    f"(exceeded {_ANALYZE_TOKEN_TIMEOUT_S}s) - skipping, will retry next cycle",
+                    "yellow",
+                )
+                # Note: we cannot cancel the running future (Python limitation),
+                # but the LLM SDK timeouts (30s + retries) will eventually free it.
+                return None, True
+
         def _extract_result(token, signal):
             """Extract scheduler-relevant fields from a generate_signals result."""
             if signal and signal.get('metadata'):
@@ -483,10 +513,16 @@ def run_agents():
                                 break
 
                             cprint(f"  [Scheduler] Analyzing {req.symbol} ({req.reason})", "cyan")
-                            signal = _analyze_token(req.symbol)
+                            signal, timed_out = _analyze_token_with_watchdog(req.symbol)
 
-                            # Record result and schedule next check
+                            # Always record_result (even on timeout) so last_check stays
+                            # fresh and the healthcheck reflects scheduler liveness.
                             result = _extract_result(req.symbol, signal)
+                            if timed_out:
+                                # Mark fail so calling code can distinguish a timeout
+                                # from a normal "no signal" result if needed.
+                                result['status'] = 'fail'
+                                result['fail_reason'] = 'watchdog_timeout'
                             scheduler.record_result(req.symbol, result)
                             scheduler.schedule_recheck(req.symbol, result, _has_position(req.symbol))
 

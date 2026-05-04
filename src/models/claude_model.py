@@ -29,7 +29,9 @@ class ClaudeModel(BaseModel):
     def initialize_client(self, **kwargs) -> None:
         """Initialize the Anthropic client"""
         try:
-            self.client = Anthropic(api_key=self.api_key)
+            # timeout=30.0 + max_retries=2 prevent indefinite hang on TCP/TLS zombie
+            # connections that froze the scheduler main thread (root cause of 33-50h freezes).
+            self.client = Anthropic(api_key=self.api_key, timeout=30.0, max_retries=2)
             cprint(f"✨ Initialized Claude model: {self.model_name}", "green")
         except Exception as e:
             cprint(f"❌ Failed to initialize Claude model: {str(e)}", "red")

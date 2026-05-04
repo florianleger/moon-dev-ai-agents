@@ -22,6 +22,7 @@ from ta.momentum import RSIIndicator
 from ..base_strategy import BaseStrategy
 from src.data.trade_memory import TradeMemory
 from src.strategies.modules.liquidation_cascade import SYMBOL_MAP
+from src.utils.logger import setup_logger
 
 # Config imports with defaults
 try:
@@ -51,11 +52,11 @@ except ImportError:
     PAPER_TAKER_FEE_V2 = 0.00045
 
 # Absolute volume thresholds (USD) for cascade detection per token class
-# Loosened by 50% (was BTC 5M / ETH 2M / mid 500k) to detect smaller cascades in current low-vol regime.
+# Loosened further (was BTC 2.5M / ETH 1M / mid 250k) to detect smaller cascades in current low-vol regime.
 CASCADE_VOLUME_THRESHOLDS = {
-    'BTC': 2_500_000,
-    'ETH': 1_000_000,
-    'SOL': 250_000, 'XRP': 250_000, 'AVAX': 250_000, 'SUI': 250_000,
+    'BTC': 1_000_000,
+    'ETH': 400_000,
+    'SOL': 100_000, 'XRP': 100_000, 'AVAX': 100_000, 'SUI': 100_000,
 }
 
 
@@ -72,6 +73,9 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
 
     def __init__(self):
         super().__init__("Liquidation Cascade Fade")
+
+        # Structured logger (debug for low-noise events, info for production-relevant events)
+        self.logger = setup_logger("liq_cascade_fade")
 
         self.assets = list(LIQ_CASCADE_TOKENS)
         self.tokens = self.assets
@@ -201,43 +205,82 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         Returns cascade info dict or None if no cascade detected.
         """
         if not self._liq_stream:
+            self.logger.debug(f"LiqCascade: liq_stream unavailable for {symbol}")
             return None
 
         binance_symbol = SYMBOL_MAP.get(symbol.upper(), f'{symbol.upper()}USDT')
+        if symbol.upper() not in SYMBOL_MAP:
+            self.logger.debug(f"LiqCascade: no Binance symbol mapping for {symbol} (fallback={binance_symbol})")
 
         try:
             df = self._liq_stream.get_recent_liquidations(minutes=lookback_minutes)
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"LiqCascade: get_recent_liquidations exception for {symbol}: {e}")
             return None
 
         if df is None or df.empty:
+            self.logger.debug(
+                f"LiqCascade: no recent liquidations in deque (period={lookback_minutes}m, df_len=0) for {symbol}"
+            )
             return None
 
         # Filter for this symbol
         symbol_df = df[df['symbol'] == binance_symbol]
         if symbol_df.empty:
+            self.logger.debug(
+                f"LiqCascade: deque has {len(df)} liqs but none match {binance_symbol} "
+                f"(period={lookback_minutes}m)"
+            )
             return None
 
         recent_liq_volume = float(symbol_df['usd_value'].sum())
 
-        # Method 1: Z-score against 24h rolling baseline
+        # Method 1: Z-score against 24h rolling baseline (deque + CSV fallback after restart)
         zscore = 0.0
+        window_volumes = np.array([])
         try:
             baseline_df = self._liq_stream.get_recent_liquidations(minutes=1440)
+            baseline_frames = []
             if baseline_df is not None and not baseline_df.empty:
-                baseline_symbol = baseline_df[baseline_df['symbol'] == binance_symbol]
-                if not baseline_symbol.empty and 'timestamp' in baseline_symbol.columns:
-                    # Compute 15-min window volumes over 24h
-                    baseline_symbol = baseline_symbol.copy()
-                    baseline_symbol['window'] = baseline_symbol['timestamp'].dt.floor(f'{lookback_minutes}min')
-                    window_volumes = baseline_symbol.groupby('window')['usd_value'].sum().values
-                    if len(window_volumes) >= 3:
-                        mean_vol = np.mean(window_volumes)
-                        std_vol = np.std(window_volumes)
-                        if std_vol > 0:
-                            zscore = (recent_liq_volume - mean_vol) / std_vol
-        except Exception:
-            pass
+                baseline_frames.append(baseline_df)
+
+            # Fallback: also pull historical liquidations from CSV (survives restart).
+            # Combined to repopulate baseline immediately after container restart.
+            try:
+                hist_df = self._liq_stream.get_historical_liquidations(hours=24)
+                if hist_df is not None and not hist_df.empty:
+                    baseline_frames.append(hist_df)
+            except Exception as e:
+                self.logger.debug(f"LiqCascade: get_historical_liquidations failed for {symbol}: {e}")
+
+            if baseline_frames:
+                combined = pd.concat(baseline_frames, ignore_index=True)
+                if 'timestamp' in combined.columns:
+                    # Dedup by (timestamp, symbol, side, price, usd_value) to merge deque + CSV without double-counting
+                    dedup_cols = [c for c in ('timestamp', 'symbol', 'side', 'price', 'usd_value') if c in combined.columns]
+                    combined = combined.drop_duplicates(subset=dedup_cols)
+                    baseline_symbol = combined[combined['symbol'] == binance_symbol]
+                    if not baseline_symbol.empty:
+                        baseline_symbol = baseline_symbol.copy()
+                        baseline_symbol['timestamp'] = pd.to_datetime(baseline_symbol['timestamp'], errors='coerce')
+                        baseline_symbol = baseline_symbol.dropna(subset=['timestamp'])
+                        if not baseline_symbol.empty:
+                            baseline_symbol['window'] = baseline_symbol['timestamp'].dt.floor(f'{lookback_minutes}min')
+                            window_volumes = baseline_symbol.groupby('window')['usd_value'].sum().values
+                            if len(window_volumes) >= 3:
+                                mean_vol = np.mean(window_volumes)
+                                std_vol = np.std(window_volumes)
+                                if std_vol > 0:
+                                    zscore = (recent_liq_volume - mean_vol) / std_vol
+        except Exception as e:
+            self.logger.debug(f"LiqCascade: baseline computation error for {symbol}: {e}")
+
+        if len(window_volumes) < 3:
+            self.logger.warning(
+                f"LiqCascade: baseline not yet populated for {symbol} "
+                f"(window_volumes={len(window_volumes)}<3, deque+CSV insufficient) "
+                f"-> only absolute trigger active"
+            )
 
         # Method 2: Absolute volume threshold
         abs_threshold = CASCADE_VOLUME_THRESHOLDS.get(symbol, 500_000)
@@ -245,6 +288,11 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
 
         threshold = LIQ_CASCADE_SIGMA_THRESHOLD
         if zscore < threshold and not absolute_trigger:
+            self.logger.info(
+                f"LiqCascade: {symbol} below trigger | "
+                f"recent_vol=${recent_liq_volume:,.0f} | zscore={zscore:.2f} (need>={threshold}) | "
+                f"abs_threshold=${abs_threshold:,.0f} | window_volumes={len(window_volumes)}"
+            )
             return None
 
         # Determine cascade direction
@@ -253,6 +301,10 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         short_liqs = float(symbol_df[symbol_df['side'] == 'BUY']['usd_value'].sum())
 
         if long_liqs + short_liqs == 0:
+            self.logger.info(
+                f"LiqCascade: {symbol} trigger met (vol=${recent_liq_volume:,.0f}, z={zscore:.2f}) "
+                f"but long_liqs+short_liqs==0 (no side classification) -> skipping"
+            )
             return None
 
         cascade_side = 'LONG_LIQUIDATED' if long_liqs > short_liqs else 'SHORT_LIQUIDATED'

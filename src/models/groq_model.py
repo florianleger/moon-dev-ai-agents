@@ -90,7 +90,9 @@ class GroqModel(BaseModel):
     
     def initialize_client(self, **kwargs) -> None:
         """Initialize the Groq client"""
-        self.client = Groq(api_key=self.api_key)
+        # timeout=30.0 + max_retries=2 prevent indefinite hang on TCP/TLS zombie
+        # connections that froze the scheduler main thread (root cause of 33-50h freezes).
+        self.client = Groq(api_key=self.api_key, timeout=30.0, max_retries=2)
 
         # Get list of available models
         available_models = self.client.models.list()

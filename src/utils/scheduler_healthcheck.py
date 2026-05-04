@@ -17,10 +17,16 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from datetime import datetime
 from typing import Dict, List, Optional
+
+try:
+    import psutil  # type: ignore
+except Exception:  # pragma: no cover — defensive
+    psutil = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Module-level config
@@ -42,8 +48,41 @@ DEFAULT_HEARTBEAT_FILE = os.path.join(
     _PROJECT_ROOT, 'src', 'data', 'bot_heartbeat.json'
 )
 
-# Process start time for uptime calc
-_PROCESS_START_TS = time.time()
+# Process start time for uptime calc.
+# We avoid capturing time.time() at import (which would yield 0 uptime when this
+# module is lazily imported inside the /api/health handler in the web process —
+# a different process from the bot itself). Instead, we read the actual PID
+# create_time on demand via psutil, with a /proc fallback for environments
+# where psutil is unavailable.
+
+def _get_process_start_ts() -> float:
+    """Return the current process's start timestamp (epoch seconds)."""
+    if psutil is not None:
+        try:
+            return psutil.Process(os.getpid()).create_time()
+        except Exception:
+            pass
+    # Linux fallback: parse /proc/<pid>/stat field 22 (starttime in clock ticks
+    # since boot) and combine with /proc/stat 'btime' (boot time epoch).
+    # Account for comm field (field 2) which may contain spaces by finding
+    # the last ')' to reliably split it off.
+    try:
+        with open(f"/proc/{os.getpid()}/stat", 'r') as f:
+            data = f.read()
+        rparen = data.rfind(')')
+        rest = data[rparen + 2:].split()
+        # rest[0] is state (field 3); starttime is field 22 → rest index 19
+        starttime_ticks = int(rest[19])
+        clk_tck = os.sysconf('SC_CLK_TCK')
+        with open('/proc/stat', 'r') as f:
+            for line in f:
+                if line.startswith('btime '):
+                    btime = int(line.split()[1])
+                    return btime + (starttime_ticks / clk_tck)
+    except Exception:
+        pass
+    # Last-resort fallback: now (uptime will read 0 — better than crashing).
+    return time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +207,9 @@ def get_health_snapshot() -> Dict:
     """
     # Read DEFAULT_SCHEDULER_STATE dynamically so monkeypatch / env override works
     snap = compute_scheduler_freshness(path=DEFAULT_SCHEDULER_STATE)
-    uptime = int(time.time() - _PROCESS_START_TS)
+    uptime = int(time.time() - _get_process_start_ts())
+    if uptime < 0:
+        uptime = 0
 
     if not snap['available']:
         status = 'unknown'
@@ -333,7 +374,28 @@ class SchedulerHealthcheck:
             except Exception:
                 am = None
         if am is None or not getattr(am, 'is_enabled', False):
-            self._log_info("Alert webhook not configured — skipping Discord notification.")
+            # Loud-fail: a frozen scheduler with no webhook means we are flying
+            # blind. Log at ERROR level AND print to stderr so it shows up in
+            # `docker logs` even if the structured logger is misconfigured.
+            # 'recovery' alerts (level='info') are expected to be silent — we
+            # only escalate when the underlying event was an error.
+            if level == 'error':
+                msg = (
+                    f"[CRITICAL] Healthcheck wanted to send alert '{title}' "
+                    f"but no webhook is configured (DISCORD_WEBHOOK_URL / "
+                    f"TELEGRAM_BOT_TOKEN+CHAT_ID). The bot is flying blind: "
+                    f"any future scheduler freeze will go undetected. "
+                    f"Configure alerting now."
+                )
+                self._log_error(msg)
+                try:
+                    print(msg, file=sys.stderr, flush=True)
+                except Exception:
+                    pass
+            else:
+                self._log_info(
+                    f"Alert webhook not configured — skipping '{title}' notification."
+                )
             return
         try:
             am.alert(title, body, level=level)
@@ -397,6 +459,33 @@ def start_healthcheck_thread(
         check_interval_s=check_interval_s,
         alert_cooldown_s=alert_cooldown_s,
     )
+
+    # Surface alerting state at boot so we know immediately whether a freeze
+    # would be reported (vs. discovering it silently failed days later).
+    try:
+        from src.utils.alerting import get_alert_manager
+        am = get_alert_manager()
+        if am is not None and getattr(am, 'is_enabled', False):
+            print(
+                f"[Healthcheck] Alerting ENABLED — scheduler freezes will be "
+                f"reported (frozen_threshold={frozen_threshold_s}s, "
+                f"check_interval={check_interval_s}s).",
+                flush=True,
+            )
+        else:
+            warn = (
+                f"[Healthcheck][WARN] Alerting DISABLED — DISCORD_WEBHOOK_URL "
+                f"and TELEGRAM_BOT_TOKEN/CHAT_ID are not configured. Scheduler "
+                f"freezes will be logged but NOT sent anywhere."
+            )
+            print(warn, flush=True)
+            try:
+                print(warn, file=sys.stderr, flush=True)
+            except Exception:
+                pass
+    except Exception as e:  # pragma: no cover — defensive
+        print(f"[Healthcheck] Could not probe alerting state at boot: {e}", flush=True)
+
     t = threading.Thread(
         target=instance.run_forever,
         daemon=True,
