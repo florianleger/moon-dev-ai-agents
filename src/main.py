@@ -311,6 +311,10 @@ def run_agents():
                 cprint(f"[Main] Failed to start CalibrationAgent: {e}", "red")
 
         # Start independent strategy threads (Phase 2)
+        # Each strategy is wrapped in its own try/except so a single failure
+        # (e.g. constructor exception) does not silently kill the launch loop
+        # and prevent siblings from starting. We log the full traceback to make
+        # diagnosis trivial in production logs.
         independent_instances = {}
         for strat_key, strat_class in IndependentStrategies.items():
             try:
@@ -326,9 +330,15 @@ def run_agents():
                     name=f"Strategy_{strat_key}"
                 )
                 t.start()
-                cprint(f"[Main] Independent strategy '{strat_key}' thread started", "green")
+                cprint(
+                    f"[Main] Independent strategy '{strat_key}' thread started "
+                    f"(interval={interval}s, thread={t.name})",
+                    "green",
+                )
             except Exception as e:
-                cprint(f"[Main] Failed to start {strat_key}: {e}", "red")
+                cprint(f"[Main][ERROR] Failed to start {strat_key}: {e}", "red")
+                import traceback
+                traceback.print_exc()
 
         # Start Light Check daemon thread (spike detection every 2 minutes)
         light_check = None
@@ -469,6 +479,46 @@ def run_agents():
             last_risk_run = 0
             RISK_INTERVAL_S = 5 * 60  # Risk agent every 5 minutes
 
+            # ---- Scheduler self-heal state (root-cause fix for prod freeze) -
+            # If get_due_symbols() returns empty AND the queue is empty for too
+            # many consecutive ticks, OR no record_result has succeeded in too
+            # long, we re-seed the queue with all monitored symbols. Defense-
+            # in-depth against the over-represented full-skip drain that left
+            # 6 tokens orphaned (priority=null, next_recheck=null) in prod.
+            empty_due_streak = 0
+            EMPTY_DUE_STREAK_HEAL_THRESHOLD = 3   # 3 ticks * 30s = 90s starved
+            last_record_result_ts = time.time()
+            RECORD_RESULT_STALE_S = 600           # 10 min without any record_result
+
+            cprint(
+                f"[Scheduler] Loop started, watchdog active "
+                f"(timeout={_ANALYZE_TOKEN_TIMEOUT_S}s), "
+                f"self-heal armed (empty_streak={EMPTY_DUE_STREAK_HEAL_THRESHOLD} ticks, "
+                f"record_stale={RECORD_RESULT_STALE_S}s), "
+                f"queue size={scheduler.queue_size()}",
+                "green",
+            )
+
+            def _self_heal_reseed(reason: str):
+                """Re-seed the scheduler queue with all monitored symbols."""
+                try:
+                    symbols = scheduler.get_all_symbols()
+                    if not symbols:
+                        symbols = [t for t in get_active_tokens() if t not in EXCLUDED_TOKENS]
+                    cprint(
+                        f"[Scheduler] SELF-HEAL: {reason} — re-enqueueing "
+                        f"{len(symbols)} symbols (was queue size {scheduler.queue_size()})",
+                        "yellow",
+                        attrs=['bold'],
+                    )
+                    scheduler.enqueue_all_routine(symbols, reason_label="self_heal")
+                    cprint(
+                        f"[Scheduler] SELF-HEAL complete — new queue size {scheduler.queue_size()}",
+                        "green",
+                    )
+                except Exception as _e:
+                    cprint(f"[Scheduler] SELF-HEAL failed: {_e}", "red")
+
             while True:
                 try:
                     iter_start = time.time()
@@ -501,6 +551,28 @@ def run_agents():
                     # --- Get due tokens from scheduler ---
                     due = scheduler.get_due_symbols()
 
+                    # --- Self-heal: empty-queue streak watchdog ---------------
+                    # Tokens disappear from the queue when schedule_recheck()
+                    # returns without re-enqueueing (e.g. silent exception, or
+                    # the over-represented full-skip path that orphaned 6
+                    # tokens in prod). We re-seed if we observe an empty due-list
+                    # AND an empty queue for too many consecutive ticks.
+                    if not due:
+                        empty_due_streak += 1
+                        if empty_due_streak >= EMPTY_DUE_STREAK_HEAL_THRESHOLD:
+                            qsize = scheduler.queue_size()
+                            # Only re-seed if queue is genuinely starved.
+                            # Non-empty queue with no due means tokens are
+                            # scheduled in the future — that's the normal idle
+                            # state.
+                            if qsize == 0:
+                                _self_heal_reseed(
+                                    f"queue empty for {empty_due_streak} consecutive ticks (~{empty_due_streak*30}s)"
+                                )
+                            empty_due_streak = 0
+                    else:
+                        empty_due_streak = 0
+
                     if due:
                         cprint(f"\n  [Scheduler] {len(due)} token(s) due (queue: {scheduler.queue_size()} remaining)", "cyan")
 
@@ -524,9 +596,21 @@ def run_agents():
                                 result['status'] = 'fail'
                                 result['fail_reason'] = 'watchdog_timeout'
                             scheduler.record_result(req.symbol, result)
+                            last_record_result_ts = time.time()
                             scheduler.schedule_recheck(req.symbol, result, _has_position(req.symbol))
 
                         _write_heartbeat(iter_start)
+
+                    # --- Self-heal: record_result-stale watchdog --------------
+                    # Catches the case where the queue holds items but dispatch
+                    # is stuck somewhere upstream of record_result (unlikely
+                    # given the per-token watchdog; defense-in-depth).
+                    if time.time() - last_record_result_ts > RECORD_RESULT_STALE_S:
+                        _self_heal_reseed(
+                            f"no record_result in {int(time.time() - last_record_result_ts)}s "
+                            f"(threshold {RECORD_RESULT_STALE_S}s)"
+                        )
+                        last_record_result_ts = time.time()  # avoid re-trigger every tick
 
                     # --- CopyBot / Sentiment (run after risk agent, same cadence) ---
                     risk_just_ran = (time.time() - last_risk_run < RISK_INTERVAL_S + 30)
@@ -540,6 +624,11 @@ def run_agents():
 
                 except Exception as e:
                     cprint(f"\n  Error in scheduler loop: {str(e)}", "red")
+                    try:
+                        import traceback as _tb
+                        _tb.print_exc()
+                    except Exception:
+                        pass
                     cprint("  Continuing to next iteration...", "yellow")
                     time.sleep(30)
 

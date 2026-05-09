@@ -25,7 +25,11 @@ from src.config import PAPER_TRADING_BALANCE, SNIPER_ASSETS, PAPER_TAKER_FEE_V2,
 from src.strategies.base_strategy import BaseStrategy
 
 # --- Config ---
-ZSCORE_THRESHOLDS = {'major': 1.5, 'mid': 1.3, 'alt': 1.0}  # Loosened (was 2.0/1.8/1.5) to permit more signals in low-volatility funding regimes
+ZSCORE_THRESHOLDS = {'major': 1.7, 'mid': 1.5, 'alt': 1.2}  # Re-tightened from 1.5/1.3/1.0 (post 5d -$7.70/30 trades regression) — keeps frequency gain vs pre-deploy 2.0/1.8/1.5 but cuts noise in ranging markets
+# Soft regime filter: when LLM has cached a ranging regime (ACCUMULATION/DISTRIBUTION),
+# require an additional Z-score margin to avoid over-trading the chop.
+RANGING_REGIME_ZSCORE_BUMP = 0.3
+RANGING_REGIMES = ('ACCUMULATION', 'DISTRIBUTION')
 TOKEN_CLASS = {
     'BTC': 'major', 'ETH': 'major',
     'SOL': 'mid', 'XRP': 'mid', 'AVAX': 'mid', 'SUI': 'mid',
@@ -252,6 +256,18 @@ class FundingMeanReversionStrategy(BaseStrategy):
         """Evaluate a single symbol for entry. Returns signal dict or None."""
         z = self._get_funding_zscore(symbol)
         thr = ZSCORE_THRESHOLDS.get(self._cls(symbol), 1.8)
+        # Soft regime filter: opportunistically read the shared LLM regime cache
+        # populated by AdaptiveHybridStrategy. If symbol is in a ranging regime,
+        # tighten the Z-score requirement instead of skipping outright.
+        try:
+            from src.strategies.modules.llm_regime import _regime_cache
+            cached = _regime_cache.get(symbol)
+            if cached:
+                _ts, regime_result = cached
+                if regime_result.get('regime') in RANGING_REGIMES:
+                    thr += RANGING_REGIME_ZSCORE_BUMP
+        except Exception:
+            pass
         if abs(z) < thr:
             return None
         direction = 'SELL' if z > 0 else 'BUY'

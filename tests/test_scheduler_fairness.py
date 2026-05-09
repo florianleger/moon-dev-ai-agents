@@ -1,11 +1,14 @@
 """Tests for SmartScheduler fairness guarantees.
 
-Specifically: an over-represented token must be FULL-SKIPPED on schedule_recheck
-(not just delayed), and MIN_TOKEN_INTERVAL_S must NOT override the over-rep skip.
+Contract: an over-represented token must be DELAYED (re-enqueued at
++OVER_REPRESENTED_DELAY_S) — NOT full-skipped. A full skip without periodic
+re-seeding leaks tokens out of the queue forever (the freeze observed in prod
+where 6/14 tokens ended up with priority=null/next_recheck=null after 5 days).
 
-Regression test for the production bug where 12/14 tokens were not checked for
-6+ days because AAVE monopolised the scan queue (introduced when 21c3c06
-partially undid the fairness fix from 42f28c3).
+The fairness mechanism still works because:
+  1. The runaway is pushed 5 minutes into the future (back of the queue).
+  2. The MIN_TOKEN_INTERVAL_S floor still applies for non-runaways.
+  3. The main loop has a self-heal that re-seeds if the queue ever empties.
 """
 
 import time
@@ -32,11 +35,18 @@ def _seed_symbols(s: SmartScheduler, symbols, runaway: str, runaway_count: int, 
     s._scan_count[runaway] = runaway_count
 
 
-def test_over_represented_token_is_full_skipped_not_re_enqueued(scheduler):
-    """An over-represented token's recheck must NOT land in the queue at all.
+def test_over_represented_token_is_delayed_not_dropped(scheduler):
+    """An over-represented token's recheck must be DELAYED (still queued).
 
-    Previously the code delayed it by OVER_REPRESENTED_DELAY_S=300s and re-enqueued,
-    which let the same token monopolise the queue in a 5-minute loop.
+    The previous version of this code FULL-SKIPPED the recheck (returned
+    without re-enqueueing) under the assumption that enqueue_all_routine()
+    would periodically re-seed. It doesn't — enqueue_all_routine is only
+    called once at boot. As a result, in prod 6/14 tokens disappeared from
+    the queue and were never scanned for 5 days.
+
+    The new contract: delay by OVER_REPRESENTED_DELAY_S (5 min) so the token
+    falls to the back of the queue but never leaves it. Other tokens scan
+    naturally during that window so the runaway re-equilibrates.
     """
     symbols = [f"T{i}" for i in range(14)]  # 14 tokens like in production
     runaway = "AAVE"
@@ -45,40 +55,49 @@ def test_over_represented_token_is_full_skipped_not_re_enqueued(scheduler):
     _seed_symbols(scheduler, symbols, runaway=runaway, runaway_count=100, others_count=5)
 
     assert scheduler._is_over_represented(runaway), "fixture should make AAVE over-represented"
-
-    # Pre-condition: queue empty
     assert scheduler.queue_size() == 0
     assert runaway not in scheduler._scheduled_symbols
 
-    # Act: schedule a recheck for the runaway token
+    t0 = time.time()
     scheduler.schedule_recheck(runaway, result={'score': 60, 'threshold': 50, 'regime': 'MARKUP'}, has_position=False)
 
-    # Assert: full skip — nothing was enqueued
-    assert scheduler.queue_size() == 0, "over-represented token must NOT be re-enqueued"
-    assert runaway not in scheduler._scheduled_symbols
+    # Token must be queued (delayed, not dropped).
+    assert scheduler.queue_size() == 1, "over-represented token must remain in the queue"
+    assert runaway in scheduler._scheduled_symbols
+    req = scheduler._queue[0]
+    delay = req.scheduled_at - t0
+    # Delayed by ~OVER_REPRESENTED_DELAY_S; allow generous tolerance for clock.
+    assert delay >= scheduler.OVER_REPRESENTED_DELAY_S - 5
+    # Priority is routine (low) so other tokens get popped first.
+    assert req.priority == scheduler.PRIORITY_ROUTINE
 
 
-def test_over_represented_skip_holds_even_with_min_token_interval(scheduler):
-    """MIN_TOKEN_INTERVAL_S must NOT override the over-rep full-skip.
+def test_over_represented_delay_holds_regardless_of_position(scheduler):
+    """An over-represented token must be delayed even if has_position=True.
 
-    Even if the computed interval would be tiny (volatile token, position open),
-    the safety floor must be applied AFTER the over-rep decision, never before.
+    The over-rep decision must be evaluated BEFORE the position-driven tight
+    interval, otherwise a runaway with an open position keeps coming back at
+    the position cadence and re-monopolises the queue.
     """
     symbols = ["A", "B", "C", "D", "E", "F"]
     runaway = "A"
     _seed_symbols(scheduler, symbols, runaway=runaway, runaway_count=50, others_count=2)
     assert scheduler._is_over_represented(runaway)
 
-    # Even with has_position=True (which forces a tighter recheck interval),
-    # the over-rep skip must still win.
+    t0 = time.time()
     scheduler.schedule_recheck(
         runaway,
         result={'score': 80, 'threshold': 50, 'regime': 'MARKUP', 'atr_pct': 0.05},
         has_position=True,
     )
 
-    assert scheduler.queue_size() == 0
-    assert runaway not in scheduler._scheduled_symbols
+    assert scheduler.queue_size() == 1
+    assert runaway in scheduler._scheduled_symbols
+    req = scheduler._queue[0]
+    delay = req.scheduled_at - t0
+    # Even with a position, the runaway is delayed by OVER_REPRESENTED_DELAY_S
+    # (not the tighter position interval).
+    assert delay >= scheduler.OVER_REPRESENTED_DELAY_S - 5
 
 
 def test_non_over_represented_token_is_still_enqueued(scheduler):

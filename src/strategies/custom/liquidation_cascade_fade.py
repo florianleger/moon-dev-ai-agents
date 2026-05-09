@@ -205,22 +205,23 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         Returns cascade info dict or None if no cascade detected.
         """
         if not self._liq_stream:
-            self.logger.debug(f"LiqCascade: liq_stream unavailable for {symbol}")
+            self.logger.info(f"[LiqCascadeFade] liq_stream unavailable for {symbol}")
             return None
 
         binance_symbol = SYMBOL_MAP.get(symbol.upper(), f'{symbol.upper()}USDT')
         if symbol.upper() not in SYMBOL_MAP:
+            # Keep noisy mapping miss at debug level
             self.logger.debug(f"LiqCascade: no Binance symbol mapping for {symbol} (fallback={binance_symbol})")
 
         try:
             df = self._liq_stream.get_recent_liquidations(minutes=lookback_minutes)
         except Exception as e:
-            self.logger.debug(f"LiqCascade: get_recent_liquidations exception for {symbol}: {e}")
+            self.logger.info(f"[LiqCascadeFade] get_recent_liquidations exception for {symbol}: {e}")
             return None
 
         if df is None or df.empty:
-            self.logger.debug(
-                f"LiqCascade: no recent liquidations in deque (period={lookback_minutes}m, df_len=0) for {symbol}"
+            self.logger.info(
+                f"[LiqCascadeFade] no recent liquidations in deque (period={lookback_minutes}m, df_len=0) for {symbol}"
             )
             return None
 
@@ -697,6 +698,7 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         """
         symbols = symbols or self.assets
         self._reset_daily_counters()
+        t0 = _time.time()
 
         result = {
             'closed': [],
@@ -712,10 +714,22 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         # Daily limits check
         if self.daily_trades >= LIQ_CASCADE_MAX_DAILY_TRADES:
             cprint(f"[LiqCascadeFade] Daily trade limit reached ({self.daily_trades})", "yellow")
+            cprint(
+                f"[LiqCascadeFade] Cycle done in {_time.time()-t0:.1f}s | "
+                f"cascades={result['cascades_detected']} | opened={len(result['opened'])} | "
+                f"closed={len(result['closed'])} (daily trade cap)",
+                "yellow",
+            )
             return result
 
         if self.daily_pnl <= -LIQ_CASCADE_MAX_DAILY_LOSS_USD:
             cprint(f"[LiqCascadeFade] Daily loss limit reached (${self.daily_pnl:+,.2f})", "red")
+            cprint(
+                f"[LiqCascadeFade] Cycle done in {_time.time()-t0:.1f}s | "
+                f"cascades={result['cascades_detected']} | opened={len(result['opened'])} | "
+                f"closed={len(result['closed'])} (daily loss cap)",
+                "red",
+            )
             return result
 
         # Step 2: Scan each symbol for cascade events
@@ -777,14 +791,21 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         for s in expired:
             self._pending_cascades.pop(s, None)
 
-        # Summary
-        if result['cascades_detected'] > 0 or result['closed'] or result['opened']:
-            cprint(f"\n[LiqCascadeFade] Cycle summary: "
-                   f"cascades={result['cascades_detected']}, "
-                   f"exhausted={result['exhaustion_signals']}, "
-                   f"opened={len(result['opened'])}, "
-                   f"closed={len(result['closed'])}, "
-                   f"balance=${self.paper_balance:,.2f}", "cyan")
+        # Unconditional cycle summary (visible heartbeat in prod logs).
+        # Green when something happened, white otherwise — matches OteScalp/FundingMR style.
+        had_activity = (
+            result['cascades_detected'] > 0 or result['closed'] or result['opened']
+        )
+        summary_color = "green" if had_activity else "white"
+        cprint(
+            f"[LiqCascadeFade] Cycle done in {_time.time()-t0:.1f}s | "
+            f"cascades={result['cascades_detected']} | "
+            f"exhausted={result['exhaustion_signals']} | "
+            f"opened={len(result['opened'])} | "
+            f"closed={len(result['closed'])} | "
+            f"balance=${self.paper_balance:,.2f}",
+            summary_color,
+        )
 
         return result
 

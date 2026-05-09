@@ -95,43 +95,72 @@ class SmartScheduler:
         """After a full check, compute and enqueue the next recheckAt.
 
         Fairness: if this token is over-represented in recent scans, the recheck
-        is FULLY SKIPPED (no re-enqueue). The token will re-enter the queue on
-        the next enqueue_all_routine() cycle, ensuring all monitored symbols get
-        a turn. Otherwise, MIN_TOKEN_INTERVAL_S is enforced as a hard safety
-        floor on the recheck delay.
+        is delayed by OVER_REPRESENTED_DELAY_S so it re-enters the queue later
+        instead of being permanently dropped. Previously the over-represented
+        path returned without re-enqueueing, but since enqueue_all_routine() is
+        only called once at boot, dropped tokens never came back — that's how
+        we ended up with 6 tokens at priority=null/next_recheck=null after 5
+        days in production.
         """
-        # Fairness FIRST: if this token is over-represented, FULL-SKIP — do not
-        # re-enqueue at all. The token will be picked up again on the next
-        # enqueue_all_routine() cycle. Previously we just delayed by +5min which
-        # let the same token come back and re-monopolise the queue (the bug).
-        with self._lock:
-            over = self._is_over_represented(symbol)
-        if over:
-            cprint(f"  [Scheduler] {symbol} over-represented, SKIPPING recheck (will re-enter on next routine cycle)", "yellow")
-            return
+        try:
+            with self._lock:
+                over = self._is_over_represented(symbol)
+        except Exception:
+            cprint(f"  [Scheduler] schedule_recheck: _is_over_represented raised for {symbol}", "yellow")
+            try:
+                import traceback as _tb
+                _tb.print_exc()
+            except Exception:
+                pass
+            over = False
 
-        interval_min = self._compute_interval_minutes(symbol, result, has_position)
-        delay_s = interval_min * 60
-
-        # Hard safety floor applied AFTER the over-rep decision so it can never
-        # override a fairness skip.
-        delay_s = max(delay_s, self.MIN_TOKEN_INTERVAL_S)
-
-        scheduled_at = time.time() + delay_s
-
-        if has_position:
-            priority = self.PRIORITY_POSITION
-        else:
-            score = result.get('score', 0)
-            threshold = result.get('threshold', 40)
-            proximity = abs(score - threshold) / max(threshold, 1)
-            if proximity < 0.15:
-                priority = self.PRIORITY_NEAR_THRESHOLD
-            else:
+        try:
+            if over:
+                # Delayed re-enqueue (NOT a full skip). The token must always
+                # remain present in the queue otherwise it disappears forever.
+                delay_s = self.OVER_REPRESENTED_DELAY_S
+                scheduled_at = time.time() + delay_s
                 priority = self.PRIORITY_ROUTINE
+                reason = f"recheck (over_represented, {int(delay_s/60)}min)"
+                cprint(f"  [Scheduler] {symbol} over-represented, delaying recheck by {int(delay_s/60)}min (still queued)", "yellow")
+                self._enqueue(symbol, scheduled_at, priority, reason)
+                return
 
-        reason = f"recheck ({self._PRIORITY_LABELS[priority]}, {int(delay_s/60)}min)"
-        self._enqueue(symbol, scheduled_at, priority, reason)
+            interval_min = self._compute_interval_minutes(symbol, result, has_position)
+            delay_s = interval_min * 60
+
+            # Hard safety floor applied AFTER the over-rep decision so it can never
+            # override a fairness skip.
+            delay_s = max(delay_s, self.MIN_TOKEN_INTERVAL_S)
+
+            scheduled_at = time.time() + delay_s
+
+            if has_position:
+                priority = self.PRIORITY_POSITION
+            else:
+                score = result.get('score', 0)
+                threshold = result.get('threshold', 40)
+                proximity = abs(score - threshold) / max(threshold, 1)
+                if proximity < 0.15:
+                    priority = self.PRIORITY_NEAR_THRESHOLD
+                else:
+                    priority = self.PRIORITY_ROUTINE
+
+            reason = f"recheck ({self._PRIORITY_LABELS[priority]}, {int(delay_s/60)}min)"
+            self._enqueue(symbol, scheduled_at, priority, reason)
+        except Exception as e:
+            cprint(f"  [Scheduler] schedule_recheck FAILED for {symbol}: {e} — emergency re-enqueue in 5min", "red")
+            try:
+                import traceback as _tb
+                _tb.print_exc()
+            except Exception:
+                pass
+            # Emergency fallback: ALWAYS re-enqueue so the token cannot fall off
+            # the queue silently. This is the root-cause guard for the freeze.
+            try:
+                self._enqueue(symbol, time.time() + 300, self.PRIORITY_ROUTINE, "recheck (emergency_fallback)")
+            except Exception:
+                pass
 
     def enqueue_spike(self, symbol: str, reason: str):
         """Enqueue a token detected by the light check (highest priority).
@@ -148,30 +177,41 @@ class SmartScheduler:
                 return  # Fairness: this token has had enough scans
             self._enqueue_locked(symbol, now, self.PRIORITY_SPIKE, reason)
 
-    def enqueue_all_routine(self, symbols: list):
+    def enqueue_all_routine(self, symbols: list, reason_label: str = "initial"):
         """Seed the queue with all tokens at startup (staggered by 2s each).
 
         Fairness: guarantees that EVERY monitored symbol has a queue entry scheduled
         within the next ~2 * len(symbols) seconds, even if previous state on disk had
         a symbol scheduled far in the future (or missed entirely). This prevents a
         single token from monopolising the rotation after a restart.
+
+        Also called by the main loop self-heal path when the queue stays empty
+        for too long, with reason_label='self_heal'.
         """
-        now = time.time()
-        with self._lock:
-            self._all_symbols = list(symbols)
-            for i, symbol in enumerate(symbols):
-                scheduled_at = now + i * 2  # Stagger to avoid burst
+        try:
+            now = time.time()
+            with self._lock:
+                self._all_symbols = list(symbols)
+                for i, symbol in enumerate(symbols):
+                    scheduled_at = now + i * 2  # Stagger to avoid burst
 
-                # Force-remove any existing stale entry for this symbol, then
-                # insert a fresh "initial" entry. Without this, a restored queue
-                # entry scheduled far in the future would be kept and the token
-                # would never fire on startup.
-                if symbol in self._scheduled_symbols:
-                    self._queue = [r for r in self._queue if r.symbol != symbol]
-                    heapq.heapify(self._queue)
-                    self._scheduled_symbols.discard(symbol)
+                    # Force-remove any existing stale entry for this symbol, then
+                    # insert a fresh "initial" entry. Without this, a restored queue
+                    # entry scheduled far in the future would be kept and the token
+                    # would never fire on startup.
+                    if symbol in self._scheduled_symbols:
+                        self._queue = [r for r in self._queue if r.symbol != symbol]
+                        heapq.heapify(self._queue)
+                        self._scheduled_symbols.discard(symbol)
 
-                self._enqueue_locked(symbol, scheduled_at, self.PRIORITY_ROUTINE, "initial")
+                    self._enqueue_locked(symbol, scheduled_at, self.PRIORITY_ROUTINE, reason_label)
+        except Exception as e:
+            cprint(f"[Scheduler] enqueue_all_routine FAILED: {e}", "red")
+            try:
+                import traceback as _tb
+                _tb.print_exc()
+            except Exception:
+                pass
 
     def get_due_symbols(self) -> list[FullCheckRequest]:
         """Return all tokens whose recheckAt has passed, respecting cooldown.
@@ -185,43 +225,65 @@ class SmartScheduler:
         seen: set[str] = set()
         requeue: list[FullCheckRequest] = []
 
-        with self._lock:
-            while self._queue and self._queue[0].scheduled_at <= now:
-                req = heapq.heappop(self._queue)
-                self._scheduled_symbols.discard(req.symbol)
+        try:
+            with self._lock:
+                while self._queue and self._queue[0].scheduled_at <= now:
+                    req = heapq.heappop(self._queue)
+                    self._scheduled_symbols.discard(req.symbol)
 
-                if req.symbol in seen:
-                    continue  # Already in this batch, drop duplicate
+                    if req.symbol in seen:
+                        continue  # Already in this batch, drop duplicate
 
-                # Cooldown check — re-enqueue after cooldown expires
-                last = self._last_check.get(req.symbol, 0)
-                if now - last < self._cooldown_s:
-                    req = FullCheckRequest(
-                        scheduled_at=last + self._cooldown_s,
-                        priority=req.priority,
-                        symbol=req.symbol,
-                        reason=req.reason,
-                    )
-                    requeue.append(req)
-                    continue
+                    # Cooldown check — re-enqueue after cooldown expires
+                    last = self._last_check.get(req.symbol, 0)
+                    if now - last < self._cooldown_s:
+                        req = FullCheckRequest(
+                            scheduled_at=last + self._cooldown_s,
+                            priority=req.priority,
+                            symbol=req.symbol,
+                            reason=req.reason,
+                        )
+                        requeue.append(req)
+                        continue
 
-                seen.add(req.symbol)
-                due.append(req)
+                    seen.add(req.symbol)
+                    due.append(req)
 
-            # Re-enqueue cooldown items so they aren't lost
-            for req in requeue:
-                heapq.heappush(self._queue, req)
-                self._scheduled_symbols.add(req.symbol)
+                # Re-enqueue cooldown items so they aren't lost
+                for req in requeue:
+                    heapq.heappush(self._queue, req)
+                    self._scheduled_symbols.add(req.symbol)
+        except Exception as e:
+            cprint(f"[Scheduler] get_due_symbols FAILED: {e} — returning empty list", "red")
+            try:
+                import traceback as _tb
+                _tb.print_exc()
+            except Exception:
+                pass
+            return []
 
         return due
 
+    def get_all_symbols(self) -> list[str]:
+        """Return the list of all monitored symbols (for self-heal re-enqueue)."""
+        with self._lock:
+            return list(self._all_symbols)
+
     def record_result(self, symbol: str, result: dict):
         """Record the result of a full check (updates timestamp, last result, and scan count)."""
-        with self._lock:
-            self._last_check[symbol] = time.time()
-            self._last_result[symbol] = result
-            self._scan_count[symbol] += 1
-        self.save_state()
+        try:
+            with self._lock:
+                self._last_check[symbol] = time.time()
+                self._last_result[symbol] = result
+                self._scan_count[symbol] += 1
+            self.save_state()
+        except Exception as e:
+            cprint(f"[Scheduler] record_result FAILED for {symbol}: {e}", "red")
+            try:
+                import traceback as _tb
+                _tb.print_exc()
+            except Exception:
+                pass
 
     def get_last_result(self, symbol: str) -> dict:
         """Thread-safe accessor for a token's last analysis result."""

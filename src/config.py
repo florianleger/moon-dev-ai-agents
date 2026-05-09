@@ -710,10 +710,11 @@ OTE_SCALP_RR_RATIO = 2.0                # 1:2 risk/reward
 OTE_SCALP_SL_BUFFER_ATR = 0.2           # Extra ATR beyond swing for SL
 OTE_SCALP_RISK_PCT = 0.005              # 0.5% risk per trade (scalping = high freq)
 OTE_SCALP_MAX_HOLD_MINUTES = 60         # Time stop — scalping shouldn't hold longer
-OTE_SCALP_MAX_DAILY_TRADES = 10
+OTE_SCALP_MAX_DAILY_TRADES = 6          # Tightened from 10 — over-trading fix (8.2 trades/day live, PnL -$0.37/trade avg)
 OTE_SCALP_MAX_DAILY_LOSS_USD = 20.0     # Kill-switch
 OTE_SCALP_MAX_POSITIONS = 2
-OTE_SCALP_COOLDOWN_MINUTES = 15         # Between trades on same token
+OTE_SCALP_COOLDOWN_MINUTES = 15         # Between trades on same token (any close)
+OTE_SCALP_LOSS_COOLDOWN_MINUTES = 60    # Extra cooldown after a STOP_LOSS on same token (prevents revenge re-entry)
 OTE_SCALP_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
 OTE_SCALP_VOLUME_MIN = 0.15             # Dead market filter
 OTE_SCALP_AVOID_HOURS_UTC = [1, 2, 3]   # Asia night low liquidity

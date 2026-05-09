@@ -102,6 +102,7 @@ class OteScalperStrategy(BaseStrategy):
         self.max_daily_loss_usd = g('OTE_SCALP_MAX_DAILY_LOSS_USD', 20.0)
         self.max_positions = g('OTE_SCALP_MAX_POSITIONS', 2)
         self.cooldown_minutes = g('OTE_SCALP_COOLDOWN_MINUTES', 15)
+        self.loss_cooldown_minutes = g('OTE_SCALP_LOSS_COOLDOWN_MINUTES', 60)
         self.leverage_map = g('OTE_SCALP_LEVERAGE', {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2})
         self.volume_min = g('OTE_SCALP_VOLUME_MIN', 0.15)
         self.avoid_hours = set(g('OTE_SCALP_AVOID_HOURS_UTC', [1, 2, 3]))
@@ -123,6 +124,7 @@ class OteScalperStrategy(BaseStrategy):
         self.daily_pnl = 0.0
         self.last_reset_date = datetime.utcnow().date()
         self._last_close_time = {}  # symbol -> last exit datetime (cooldowns)
+        self._last_loss_time = {}   # symbol -> last STOP_LOSS exit datetime (longer cooldown)
         self._trend_cache = {}      # symbol -> (trend, cache_datetime) 15min TTL
 
         # Providers / trade memory
@@ -211,9 +213,13 @@ class OteScalperStrategy(BaseStrategy):
             if self.daily_trades >= self.max_daily_trades:
                 break
 
-            # Per-symbol cooldown
+            # Per-symbol cooldown (any close)
             lc = self._last_close_time.get(sym)
             if lc and (datetime.utcnow() - lc).total_seconds() < self.cooldown_minutes * 60:
+                continue
+            # Longer cooldown after a STOP_LOSS on this token (prevents revenge re-entry)
+            ll = self._last_loss_time.get(sym)
+            if ll and (datetime.utcnow() - ll).total_seconds() < self.loss_cooldown_minutes * 60:
                 continue
 
             try:
@@ -457,6 +463,8 @@ class OteScalperStrategy(BaseStrategy):
             self.paper_balance += pnl_net
             self.daily_pnl += pnl_net
             self._last_close_time[sym] = datetime.utcnow()
+            if reason == 'STOP_LOSS' or pnl_net < 0:
+                self._last_loss_time[sym] = datetime.utcnow()
             try:
                 et = datetime.fromisoformat(pos['entry_time'])
                 hold_min = (datetime.utcnow() - et).total_seconds() / 60.0
@@ -736,6 +744,26 @@ class OteScalperStrategy(BaseStrategy):
                     if 'entry_fee' in cdf.columns:
                         cfees = cdf['entry_fee'].fillna(0).sum()
                     self.closed_positions = cdf.to_dict('records')
+                    # Rehydrate per-symbol cooldown state from recent closes so
+                    # a restart can't bypass the loss cooldown.
+                    if {'symbol', 'exit_time'}.issubset(cdf.columns):
+                        for _, r in cdf.iterrows():
+                            sym = r.get('symbol', '')
+                            try:
+                                ts = datetime.fromisoformat(str(r.get('exit_time', '')))
+                            except Exception:
+                                continue
+                            if not sym:
+                                continue
+                            prev = self._last_close_time.get(sym)
+                            if prev is None or ts > prev:
+                                self._last_close_time[sym] = ts
+                            reason = str(r.get('close_reason', ''))
+                            pnl_v = r.get('pnl', 0) or 0
+                            if reason == 'STOP_LOSS' or (isinstance(pnl_v, (int, float)) and pnl_v < 0):
+                                prev_l = self._last_loss_time.get(sym)
+                                if prev_l is None or ts > prev_l:
+                                    self._last_loss_time[sym] = ts
             except Exception as e:
                 cprint(f"[OteScalp] Load closed trades err: {e}", "yellow")
 
