@@ -34,6 +34,10 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+# Module handle on config for getattr-based feature flags (flags may not exist
+# yet in older config versions — getattr with default keeps us order-independent).
+import src.config as _cfg
+
 # Import Light Check for spike detection
 try:
     from src.scheduling.light_check import LightCheck
@@ -44,7 +48,7 @@ except Exception as e:
 
 # Import Smart Scheduler (Phase 2)
 try:
-    from src.scheduling.scheduler import SmartScheduler
+    from src.scheduling.scheduler import SmartScheduler, run_token_check
     SMART_SCHEDULER_AVAILABLE = True
 except Exception as e:
     cprint(f"[Main] SmartScheduler import failed: {e}", "yellow")
@@ -116,43 +120,45 @@ except Exception as e:
     CALIBRATION_AVAILABLE = False
 
 # Import independent strategies (Phase 2)
-# Previous version had an `if ... or True:` outer guard which was always-true
-# dead code. The actual gating happens via INDEPENDENT_STRATEGIES_ENABLED below.
+# Per-strategy enable flags from config are honored here: a disabled strategy
+# is never imported nor instantiated (getattr default=True keeps backward
+# compat with config versions that don't define the flag yet).
 IndependentStrategies = {}
 try:
     from config import INDEPENDENT_STRATEGIES_ENABLED
 except ImportError:
     INDEPENDENT_STRATEGIES_ENABLED = False
 
+# Kill switch + global daily-loss breaker for independent strategies
+try:
+    from src.agents.risk_agent import StrategyKillSwitch, independent_daily_loss_breached
+    KILL_SWITCH_AVAILABLE = True
+except Exception as e:
+    cprint(f"[Main] Kill switch import failed: {e}", "yellow")
+    KILL_SWITCH_AVAILABLE = False
+
+_INDEP_STRATEGY_SPECS = [
+    ('funding_mr', 'FUNDING_MR_ENABLED',
+     'src.strategies.custom.funding_mean_reversion', 'FundingMeanReversionStrategy'),
+    ('vol_breakout', 'VOL_BREAKOUT_ENABLED',
+     'src.strategies.custom.volatility_breakout', 'VolatilityBreakoutStrategy'),
+    ('liq_cascade', 'LIQ_CASCADE_ENABLED',
+     'src.strategies.custom.liquidation_cascade_fade', 'LiquidationCascadeFadeStrategy'),
+    ('ote_scalp', 'OTE_SCALP_ENABLED',
+     'src.strategies.custom.ote_scalper_strategy', 'OteScalperStrategy'),
+]
+
 if INDEPENDENT_STRATEGIES_ENABLED:
-    if True:  # preserves indentation of the import block below
+    import importlib
+    for _key, _flag, _module, _cls in _INDEP_STRATEGY_SPECS:
+        if not getattr(_cfg, _flag, True):
+            cprint(f"[Main] {_key} disabled ({_flag}=False)", "yellow")
+            continue
         try:
-            from src.strategies.custom.funding_mean_reversion import FundingMeanReversionStrategy
-            IndependentStrategies['funding_mr'] = FundingMeanReversionStrategy
-            cprint("[Main] Funding Mean Reversion strategy loaded", "cyan")
+            IndependentStrategies[_key] = getattr(importlib.import_module(_module), _cls)
+            cprint(f"[Main] {_key} strategy loaded", "cyan")
         except Exception as e:
-            cprint(f"[Main] Funding MR import failed: {e}", "yellow")
-
-        try:
-            from src.strategies.custom.volatility_breakout import VolatilityBreakoutStrategy
-            IndependentStrategies['vol_breakout'] = VolatilityBreakoutStrategy
-            cprint("[Main] Volatility Breakout strategy loaded", "cyan")
-        except Exception as e:
-            cprint(f"[Main] Vol Breakout import failed: {e}", "yellow")
-
-        try:
-            from src.strategies.custom.liquidation_cascade_fade import LiquidationCascadeFadeStrategy
-            IndependentStrategies['liq_cascade'] = LiquidationCascadeFadeStrategy
-            cprint("[Main] Liquidation Cascade Fade strategy loaded", "cyan")
-        except Exception as e:
-            cprint(f"[Main] Liq Cascade import failed: {e}", "yellow")
-
-        try:
-            from src.strategies.custom.ote_scalper_strategy import OteScalperStrategy
-            IndependentStrategies['ote_scalp'] = OteScalperStrategy
-            cprint("[Main] OTE Scalper strategy loaded", "cyan")
-        except Exception as e:
-            cprint(f"[Main] OTE Scalper import failed: {e}", "yellow")
+            cprint(f"[Main] {_key} import failed: {e}", "yellow")
 
 def position_monitor_loop(strategy, interval=30):
     """Dedicated thread for monitoring SL/TP every 30 seconds."""
@@ -164,15 +170,69 @@ def position_monitor_loop(strategy, interval=30):
         time.sleep(interval)
 
 
-def independent_strategy_loop(strategy_instance, name, interval_seconds=300):
-    """Dedicated thread for running an independent strategy on its own cycle."""
+def independent_strategy_loop(strategy_instance, name, interval_seconds=300,
+                              all_instances=None, kill_switch=None):
+    """Dedicated thread for running an independent strategy on its own cycle.
+
+    Before each cycle, two breakers are checked:
+      - per-strategy kill switch (rolling PF / account drawdown), persistent;
+      - global daily-loss breaker across all independent strategies
+        (INDEPENDENT_STRATEGIES_MAX_TOTAL_DAILY_LOSS_USD).
+    A blocked strategy stops opening NEW positions but keeps managing its open
+    positions (clean close via _manage_positions).
+    """
     cprint(f"[{name}] Strategy thread started (cycle: {interval_seconds}s)", "cyan")
+    blocked_logged = False
     while True:
         try:
             if not is_strategy_running():
                 time.sleep(30)
                 continue
-            strategy_instance.run_cycle(strategy_instance.tokens)
+
+            blocked_reason = None
+
+            # Per-strategy kill switch (A6)
+            if kill_switch is not None and hasattr(strategy_instance, 'data_dir'):
+                try:
+                    csv_path = os.path.join(strategy_instance.data_dir, 'closed_trades.csv')
+                    verdict = kill_switch.evaluate(name, csv_path)
+                    if verdict.get('paused'):
+                        blocked_reason = f"kill switch: {verdict.get('reason')}"
+                except Exception as e:
+                    cprint(f"[{name}] Kill switch evaluation error: {e}", "yellow")
+
+            # Global daily-loss breaker (A7)
+            if blocked_reason is None and all_instances and KILL_SWITCH_AVAILABLE:
+                # Reset daily counters BEFORE evaluating the breaker. The daily
+                # reset normally lives in run_cycle(), which is skipped while
+                # the breaker is tripped — without this, daily_pnl would latch
+                # the breaker permanently past midnight UTC.
+                for inst in all_instances.values():
+                    reset_fn = (getattr(inst, '_check_daily_reset', None)
+                                or getattr(inst, '_reset_daily_counters', None))
+                    if callable(reset_fn):
+                        try:
+                            reset_fn()
+                        except Exception:
+                            pass
+                max_daily_loss = getattr(_cfg, 'INDEPENDENT_STRATEGIES_MAX_TOTAL_DAILY_LOSS_USD', 50.0)
+                breached, total = independent_daily_loss_breached(all_instances.values(), max_daily_loss)
+                if breached:
+                    blocked_reason = (f"global daily loss breaker "
+                                      f"(${total:+.2f} <= -${abs(max_daily_loss):.2f})")
+
+            if blocked_reason:
+                if not blocked_logged:
+                    cprint(f"[{name}] New entries paused — {blocked_reason}. "
+                           f"Open positions still managed.", "red", attrs=['bold'])
+                    blocked_logged = True
+                if hasattr(strategy_instance, '_manage_positions'):
+                    strategy_instance._manage_positions()
+            else:
+                if blocked_logged:
+                    cprint(f"[{name}] Entries re-enabled", "green")
+                    blocked_logged = False
+                strategy_instance.run_cycle(strategy_instance.tokens)
         except Exception as e:
             cprint(f"[{name}] Error in cycle: {e}", "red")
         time.sleep(interval_seconds)
@@ -274,6 +334,22 @@ def run_agents():
                     monitor_strategy = strategy
                     break
 
+        # Entry gate (A2): block ONLY new position openings at the execution
+        # point. The scan, record_result/schedule_recheck and exits keep
+        # running even when the risk agent blocks entries (e.g. max positions).
+        if risk_agent and strategy_agent:
+            _orig_execute_signals = strategy_agent.execute_strategy_signals
+
+            def _gated_execute_signals(approved_signals, _orig=_orig_execute_signals):
+                if not risk_agent.allows_new_entries():
+                    cprint(f"  [RiskGate] {len(approved_signals)} approved signal(s) NOT executed: "
+                           f"{risk_agent.entries_blocked_reason}", "yellow")
+                    return
+                return _orig(approved_signals)
+
+            strategy_agent.execute_strategy_signals = _gated_execute_signals
+            cprint("[Main] Entry gate installed (blocks new entries only — scan/exits unaffected)", "cyan")
+
         if monitor_strategy and hasattr(monitor_strategy, 'monitor_paper_positions'):
             monitor_thread = threading.Thread(
                 target=position_monitor_loop,
@@ -316,16 +392,26 @@ def run_agents():
         # and prevent siblings from starting. We log the full traceback to make
         # diagnosis trivial in production logs.
         independent_instances = {}
+        strategy_kill_switch = StrategyKillSwitch() if KILL_SWITCH_AVAILABLE else None
+        # Instantiate all strategies first so the global daily-loss breaker
+        # sees the complete set from the first cycle.
         for strat_key, strat_class in IndependentStrategies.items():
             try:
-                instance = strat_class()
-                independent_instances[strat_key] = instance
+                independent_instances[strat_key] = strat_class()
+            except Exception as e:
+                cprint(f"[Main][ERROR] Failed to init {strat_key}: {e}", "red")
+                import traceback
+                traceback.print_exc()
+        for strat_key, instance in independent_instances.items():
+            try:
                 # Determine cycle interval based on strategy type
                 intervals = {'funding_mr': 300, 'vol_breakout': 300, 'liq_cascade': 60, 'ote_scalp': 60}
                 interval = intervals.get(strat_key, 300)
                 t = threading.Thread(
                     target=independent_strategy_loop,
                     args=(instance, strat_key, interval),
+                    kwargs={'all_instances': independent_instances,
+                            'kill_switch': strategy_kill_switch},
                     daemon=True,
                     name=f"Strategy_{strat_key}"
                 )
@@ -399,7 +485,14 @@ def run_agents():
         def _analyze_token(token):
             """Analyze a single token - sequential for thread-safety."""
             try:
-                return strategy_agent.get_signals(token)
+                approved = strategy_agent.get_signals(token)
+                if approved:
+                    return approved
+                # NEUTRAL scans return no approved signals, but the raw score
+                # drives the scheduler's near-threshold priority — surface the
+                # last raw signal so a token at 52/55 is not treated as 0/55.
+                raw = getattr(strategy_agent, 'last_raw_signals', {}).get(token)
+                return [raw] if raw else approved
             except Exception as e:
                 cprint(f"Error analyzing {token}: {e}", "red")
                 return None
@@ -434,17 +527,13 @@ def run_agents():
                 # but the LLM SDK timeouts (30s + retries) will eventually free it.
                 return None, True
 
-        def _extract_result(token, signal):
-            """Extract scheduler-relevant fields from a generate_signals result."""
-            if signal and signal.get('metadata'):
-                meta = signal['metadata']
-                return {
-                    'score': meta.get('score', 0),
-                    'threshold': meta.get('threshold', 40),
-                    'regime': (meta.get('llm_regime') or {}).get('regime', ''),
-                    'atr_pct': meta.get('atr', 0) / max(meta.get('current_price', 1), 1e-9) if meta.get('atr') else 0,
-                }
-            return {'score': 0, 'threshold': 40, 'regime': '', 'atr_pct': 0}
+        def _scheduler_analyze(token):
+            """Analyze a token under the hard watchdog; raise on timeout so
+            run_token_check records a fail result and keeps the token scheduled."""
+            signal, timed_out = _analyze_token_with_watchdog(token)
+            if timed_out:
+                raise TimeoutError(f"watchdog_timeout ({_ANALYZE_TOKEN_TIMEOUT_S}s)")
+            return signal
 
         def _has_position(token):
             """Check if there is an open paper position for this token."""
@@ -489,12 +578,14 @@ def run_agents():
             EMPTY_DUE_STREAK_HEAL_THRESHOLD = 3   # 3 ticks * 30s = 90s starved
             last_record_result_ts = time.time()
             RECORD_RESULT_STALE_S = 600           # 10 min without any record_result
+            ORPHAN_STALE_S = 1800                 # 30 min absent from queue = orphan
+            entries_blocked_logged = False
 
             cprint(
                 f"[Scheduler] Loop started, watchdog active "
                 f"(timeout={_ANALYZE_TOKEN_TIMEOUT_S}s), "
                 f"self-heal armed (empty_streak={EMPTY_DUE_STREAK_HEAL_THRESHOLD} ticks, "
-                f"record_stale={RECORD_RESULT_STALE_S}s), "
+                f"record_stale={RECORD_RESULT_STALE_S}s, orphan_stale={ORPHAN_STALE_S}s), "
                 f"queue size={scheduler.queue_size()}",
                 "green",
             )
@@ -530,17 +621,39 @@ def run_agents():
                         last_risk_run = time.time()
                         _show_paper_status()
 
-                    # --- Strategy paused check ---
+                    # --- Self-heal watchdogs (BEFORE any gate/continue) ------
+                    # Orphan healer: re-enqueue any monitored token absent from
+                    # the queue for > 30 min, even if the queue is non-empty.
+                    scheduler.heal_orphans(ORPHAN_STALE_S)
+
+                    # record_result-stale watchdog: dispatch stuck upstream.
+                    if time.time() - last_record_result_ts > RECORD_RESULT_STALE_S:
+                        _self_heal_reseed(
+                            f"no record_result in {int(time.time() - last_record_result_ts)}s "
+                            f"(threshold {RECORD_RESULT_STALE_S}s)"
+                        )
+                        last_record_result_ts = time.time()  # avoid re-trigger every tick
+
+                    # --- Strategy paused check (dashboard) ---
                     if not is_strategy_running():
                         cprint("  Strategy paused (Start from web dashboard to enable)", "yellow")
+                        # No dispatch expected while paused: keep the stale
+                        # watchdog from re-seeding in a loop.
+                        last_record_result_ts = time.time()
                         time.sleep(30)
                         continue
 
-                    # --- Risk gate ---
-                    if risk_agent and not risk_agent.is_trading_allowed():
-                        cprint(f"  Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
-                        time.sleep(30)
-                        continue
+                    # --- Risk gate (A2): never blocks the scan -------------
+                    # New entries are blocked at the execution point (gated
+                    # execute_strategy_signals). Here we only log transitions.
+                    entries_allowed = (risk_agent is None) or risk_agent.allows_new_entries()
+                    if not entries_allowed and not entries_blocked_logged:
+                        cprint(f"  [RiskGate] New entries blocked ({risk_agent.entries_blocked_reason}) "
+                               f"— scan and exits continue", "yellow")
+                        entries_blocked_logged = True
+                    elif entries_allowed and entries_blocked_logged:
+                        cprint("  [RiskGate] New entries re-enabled", "green")
+                        entries_blocked_logged = False
 
                     # --- Inject spike triggers from LightCheck ---
                     if light_check:
@@ -576,41 +689,15 @@ def run_agents():
                     if due:
                         cprint(f"\n  [Scheduler] {len(due)} token(s) due (queue: {scheduler.queue_size()} remaining)", "cyan")
 
-                        for i, req in enumerate(due):
-                            if risk_agent and not risk_agent.is_trading_allowed():
-                                cprint(f"  Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
-                                # Re-enqueue current + all remaining unprocessed tokens
-                                for remaining in due[i:]:
-                                    scheduler.schedule_recheck(remaining.symbol, scheduler.get_last_result(remaining.symbol), _has_position(remaining.symbol))
-                                break
-
+                        for req in due:
                             cprint(f"  [Scheduler] Analyzing {req.symbol} ({req.reason})", "cyan")
-                            signal, timed_out = _analyze_token_with_watchdog(req.symbol)
-
-                            # Always record_result (even on timeout) so last_check stays
-                            # fresh and the healthcheck reflects scheduler liveness.
-                            result = _extract_result(req.symbol, signal)
-                            if timed_out:
-                                # Mark fail so calling code can distinguish a timeout
-                                # from a normal "no signal" result if needed.
-                                result['status'] = 'fail'
-                                result['fail_reason'] = 'watchdog_timeout'
-                            scheduler.record_result(req.symbol, result)
+                            # run_token_check guarantees record_result +
+                            # schedule_recheck even on exception/timeout, so a
+                            # token can never fall out of the queue (A3).
+                            run_token_check(scheduler, req.symbol, _scheduler_analyze, _has_position)
                             last_record_result_ts = time.time()
-                            scheduler.schedule_recheck(req.symbol, result, _has_position(req.symbol))
 
                         _write_heartbeat(iter_start)
-
-                    # --- Self-heal: record_result-stale watchdog --------------
-                    # Catches the case where the queue holds items but dispatch
-                    # is stuck somewhere upstream of record_result (unlikely
-                    # given the per-token watchdog; defense-in-depth).
-                    if time.time() - last_record_result_ts > RECORD_RESULT_STALE_S:
-                        _self_heal_reseed(
-                            f"no record_result in {int(time.time() - last_record_result_ts)}s "
-                            f"(threshold {RECORD_RESULT_STALE_S}s)"
-                        )
-                        last_record_result_ts = time.time()  # avoid re-trigger every tick
 
                     # --- CopyBot / Sentiment (run after risk agent, same cadence) ---
                     risk_just_ran = (time.time() - last_risk_run < RISK_INTERVAL_S + 30)
@@ -684,8 +771,8 @@ def run_agents():
                     # Only analyze new signals if strategy is running (controlled by dashboard)
                     if is_strategy_running():
                         # Check risk agent before opening new positions
-                        if risk_agent and not risk_agent.is_trading_allowed():
-                            cprint(f"\n  Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
+                        if risk_agent and not risk_agent.allows_new_entries():
+                            cprint(f"\n  New entries blocked by Risk Agent: {risk_agent.entries_blocked_reason}", "red")
                         else:
                             # Check for spike-triggered tokens from LightCheck (priority analysis)
                             spike_tokens = set()
@@ -694,8 +781,8 @@ def run_agents():
                                 if spike_tokens:
                                     cprint(f"\n[LightCheck] Priority analysis for {len(spike_tokens)} spiked token(s): {', '.join(sorted(spike_tokens))}", "yellow", attrs=['bold'])
                                     for spike_token in sorted(spike_tokens):
-                                        if risk_agent and not risk_agent.is_trading_allowed():
-                                            cprint(f"\n  Trading paused by Risk Agent: {risk_agent.pause_reason}", "red")
+                                        if risk_agent and not risk_agent.allows_new_entries():
+                                            cprint(f"\n  New entries blocked by Risk Agent: {risk_agent.entries_blocked_reason}", "red")
                                             break
                                         _analyze_token(spike_token)
 
@@ -717,8 +804,8 @@ def run_agents():
 
                             # Sequential execution: get_signals does trade execution which is not thread-safe
                             for token in tokens_to_analyze:
-                                if risk_agent and not risk_agent.is_trading_allowed():
-                                    cprint(f"\n  Trading paused mid-cycle by Risk Agent: {risk_agent.pause_reason}", "red")
+                                if risk_agent and not risk_agent.allows_new_entries():
+                                    cprint(f"\n  New entries blocked mid-cycle by Risk Agent: {risk_agent.entries_blocked_reason}", "red")
                                     break
                                 _analyze_token(token)
 

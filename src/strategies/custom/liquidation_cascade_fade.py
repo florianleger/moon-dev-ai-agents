@@ -51,13 +51,21 @@ except ImportError:
     PAPER_SLIPPAGE_V2 = {'btc': 0.0003, 'eth': 0.0005, 'mid': 0.0012, 'alt': 0.003}
     PAPER_TAKER_FEE_V2 = 0.00045
 
-# Absolute volume thresholds (USD) for cascade detection per token class
-# Loosened further (was BTC 2.5M / ETH 1M / mid 250k) to detect smaller cascades in current low-vol regime.
+# Absolute volume thresholds (USD) for cascade detection per token class.
+# NOTE: these floors were calibrated for the SAMPLED Binance forceOrder feed
+# (max 1 msg/s/symbol); the Bybit allLiquidation feed is EXHAUSTIVE, so on an
+# ordinary day BTC routinely shows >$1M/15min. The absolute trigger therefore
+# also requires recent volume >= CASCADE_ABS_BASELINE_MULT x the 24h mean
+# window volume, and is DISARMED until the baseline has >= 3 windows.
 CASCADE_VOLUME_THRESHOLDS = {
     'BTC': 1_000_000,
     'ETH': 400_000,
     'SOL': 100_000, 'XRP': 100_000, 'AVAX': 100_000, 'SUI': 100_000,
 }
+
+# The absolute trigger must exceed K x mean(24h window volumes) so routine
+# Bybit flow (exhaustive feed) cannot fire it. K~4-5 keeps it anomaly-only.
+CASCADE_ABS_BASELINE_MULT = 4.0
 
 
 class LiquidationCascadeFadeStrategy(BaseStrategy):
@@ -101,6 +109,8 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         # Liquidation stream
         self._liq_stream = None
         self._market_data = None
+        self._last_feed_restart = 0.0
+        self._empty_feed_logged = False
         self._init_providers()
 
         # Trade memory
@@ -130,13 +140,17 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
     # =========================================================================
 
     def _init_providers(self):
-        """Initialize data providers."""
+        """Initialize data providers.
+
+        Liquidation feed: Bybit allLiquidation WS. The Binance forceOrder WS is
+        blocked from the production server IP and its REST fallback endpoint
+        was removed by Binance (0 trades in 32 days because of this).
+        """
         try:
-            from src.data_providers.binance_futures import get_liquidation_stream
+            from src.data_providers.bybit_liquidations import get_liquidation_stream
             self._liq_stream = get_liquidation_stream()
             if not self._liq_stream.is_connected:
                 self._liq_stream.start_stream()
-                _time.sleep(2)
         except Exception as e:
             cprint(f"[LiqCascadeFade] Liquidation stream unavailable: {e}", "yellow")
 
@@ -145,6 +159,34 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
             self._market_data = MarketDataProvider(start_liquidation_stream=False)
         except Exception as e:
             cprint(f"[LiqCascadeFade] Market data provider unavailable: {e}", "yellow")
+
+    def _feed_watchdog(self):
+        """Restart the liquidation feed if disconnected or silent > 10 min.
+
+        The Bybit feed answers our app-level pings every 20s, so >10 min of
+        total silence means the connection is dead (not just a quiet market).
+        Restarts are rate-limited to one per 10 min to avoid thrashing while
+        a reconnect is already in flight.
+        """
+        if not self._liq_stream:
+            self._init_providers()
+            return
+
+        age = self._liq_stream.last_message_age_s()
+        silent = age is not None and age > 600
+        if self._liq_stream.is_connected and not silent:
+            return
+
+        now = _time.time()
+        if now - self._last_feed_restart < 600:
+            return
+        self._last_feed_restart = now
+
+        msg = (f"Liquidation feed unhealthy (connected={self._liq_stream.is_connected}, "
+               f"last_message_age_s={round(age) if age is not None else None}) -> restart")
+        self.logger.warning(f"[LiqCascadeFade] {msg}")
+        cprint(f"[LiqCascadeFade] {msg}", "yellow")
+        self._liq_stream.restart()
 
     # =========================================================================
     # DATA FETCHING
@@ -200,7 +242,7 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
     # =========================================================================
 
     def _detect_cascade(self, symbol: str, lookback_minutes: int = 15) -> dict:
-        """Detect liquidation cascade from Binance data.
+        """Detect liquidation cascade from the Bybit feed.
 
         Returns cascade info dict or None if no cascade detected.
         """
@@ -208,10 +250,11 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
             self.logger.info(f"[LiqCascadeFade] liq_stream unavailable for {symbol}")
             return None
 
+        # USDT contract symbol (Bybit uses the same names as Binance for our tokens)
         binance_symbol = SYMBOL_MAP.get(symbol.upper(), f'{symbol.upper()}USDT')
         if symbol.upper() not in SYMBOL_MAP:
             # Keep noisy mapping miss at debug level
-            self.logger.debug(f"LiqCascade: no Binance symbol mapping for {symbol} (fallback={binance_symbol})")
+            self.logger.debug(f"LiqCascade: no symbol mapping for {symbol} (fallback={binance_symbol})")
 
         try:
             df = self._liq_stream.get_recent_liquidations(minutes=lookback_minutes)
@@ -220,9 +263,12 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
             return None
 
         if df is None or df.empty:
-            self.logger.info(
-                f"[LiqCascadeFade] no recent liquidations in deque (period={lookback_minutes}m, df_len=0) for {symbol}"
-            )
+            # Log once per cycle, not once per token
+            if not self._empty_feed_logged:
+                self.logger.info(
+                    f"[LiqCascadeFade] no recent liquidations in feed (period={lookback_minutes}m)"
+                )
+                self._empty_feed_logged = True
             return None
 
         # Filter for this symbol
@@ -280,12 +326,23 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
             self.logger.warning(
                 f"LiqCascade: baseline not yet populated for {symbol} "
                 f"(window_volumes={len(window_volumes)}<3, deque+CSV insufficient) "
-                f"-> only absolute trigger active"
+                f"-> absolute trigger disarmed until baseline available"
             )
 
-        # Method 2: Absolute volume threshold
+        # Method 2: Absolute volume threshold, auto-calibrated on the Bybit
+        # feed. The static floors alone (calibrated on the sampled Binance
+        # feed) sit at routine-flow level for the exhaustive Bybit feed; the
+        # trigger additionally requires K x the mean 24h window volume and a
+        # populated baseline (otherwise z-score only).
         abs_threshold = CASCADE_VOLUME_THRESHOLDS.get(symbol, 500_000)
-        absolute_trigger = recent_liq_volume >= abs_threshold
+        if len(window_volumes) >= 3:
+            effective_abs_threshold = max(
+                abs_threshold,
+                CASCADE_ABS_BASELINE_MULT * float(np.mean(window_volumes)),
+            )
+            absolute_trigger = recent_liq_volume >= effective_abs_threshold
+        else:
+            absolute_trigger = False
 
         threshold = LIQ_CASCADE_SIGMA_THRESHOLD
         if zscore < threshold and not absolute_trigger:
@@ -679,8 +736,15 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
     # =========================================================================
 
     def _reset_daily_counters(self):
-        """Reset daily counters at midnight."""
-        today = datetime.now().date()
+        """Reset daily counters at midnight UTC (same date base as the other
+        independent strategies — daily_pnl values are summed by the global
+        daily-loss breaker, so the reset boundaries must be aligned).
+
+        Also called from main.independent_strategy_loop BEFORE the breaker is
+        evaluated: when it trips, run_cycle() is skipped, so without this hook
+        daily_pnl would latch the breaker forever.
+        """
+        today = datetime.utcnow().date()
         if self.last_trade_date != today:
             self.daily_trades = 0
             self.daily_pnl = 0.0
@@ -698,6 +762,8 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         """
         symbols = symbols or self.assets
         self._reset_daily_counters()
+        self._feed_watchdog()
+        self._empty_feed_logged = False
         t0 = _time.time()
 
         result = {
@@ -854,12 +920,15 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         closed_file = os.path.join(self.data_dir, 'closed_trades.csv')
 
         # Reconstruct balance from closed trades
+        # (pnl excludes the entry fee, which was deducted at open -> subtract it)
         realized_pnl = 0.0
         if os.path.exists(closed_file):
             try:
                 df = pd.read_csv(closed_file)
                 if 'pnl' in df.columns:
                     realized_pnl = df['pnl'].sum()
+                    if 'entry_fee' in df.columns:
+                        realized_pnl -= df['entry_fee'].fillna(0).sum()
                     self.closed_positions = df.to_dict('records')
             except Exception as e:
                 cprint(f"[LiqCascadeFade] Error loading closed trades: {e}", "yellow")

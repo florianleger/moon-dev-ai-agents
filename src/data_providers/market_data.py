@@ -3,7 +3,8 @@ Market Data Provider
 
 Unified interface for market data from multiple free sources:
 - HyperLiquid: Funding rates and open interest
-- Binance Futures: Real-time liquidations
+- Bybit: Real-time liquidations (allLiquidation WS — the Binance forceOrder
+  WS is blocked from the production IP and its REST fallback was removed)
 
 This module eliminates the dependency on Moon Dev API.
 """
@@ -14,7 +15,7 @@ from typing import Dict, Optional
 from termcolor import cprint
 from src.utils.alerting import alert_service_down
 
-from .binance_futures import get_liquidation_stream, get_liquidation_ratio
+from .bybit_liquidations import get_liquidation_stream, get_liquidation_ratio
 
 # HyperLiquid API endpoint
 HYPERLIQUID_API_URL = 'https://api.hyperliquid.xyz/info'
@@ -83,7 +84,7 @@ class MarketDataProvider:
                 time.sleep(wait_time)
 
     def _init_liquidation_stream(self):
-        """Initialize the Binance liquidation stream."""
+        """Initialize the Bybit liquidation stream."""
         try:
             self._liquidation_stream = get_liquidation_stream()
             if not self._liquidation_stream.is_connected:

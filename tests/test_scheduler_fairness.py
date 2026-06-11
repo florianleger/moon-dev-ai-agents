@@ -136,3 +136,28 @@ def test_min_token_interval_floor_still_enforced_for_normal_tokens(scheduler):
     assert scheduler.queue_size() == 1
     req = scheduler._queue[0]
     assert req.scheduled_at - t0 >= scheduler.MIN_TOKEN_INTERVAL_S - 1  # -1 for clock fuzz
+
+
+# ---------------------------------------------------------------------------
+# extract_result — NEUTRAL scans must keep their real score for the
+# near-threshold priority (they used to collapse to score=0/threshold=40)
+# ---------------------------------------------------------------------------
+
+def test_extract_result_neutral_raw_signal_keeps_real_score():
+    from src.scheduling.scheduler import extract_result
+    raw = {
+        'token': 'BTC', 'strategy_name': 'adaptive_hybrid',
+        'signal': 0.0, 'direction': 'NEUTRAL',
+        'metadata': {'score': 52.0, 'threshold': 55.0,
+                     'atr': 500.0, 'current_price': 50000.0},
+    }
+    res = extract_result('BTC', [raw])
+    assert res['score'] == 52.0
+    assert res['threshold'] == 55.0
+    assert res['atr_pct'] == pytest.approx(0.01)
+
+
+def test_empty_result_threshold_mirrors_config_base_threshold():
+    from src.scheduling.scheduler import _EMPTY_RESULT
+    from src.config import ADAPTIVE_HYBRID_BASE_THRESHOLD
+    assert _EMPTY_RESULT['threshold'] == ADAPTIVE_HYBRID_BASE_THRESHOLD

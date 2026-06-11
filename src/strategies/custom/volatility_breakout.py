@@ -4,7 +4,7 @@ Volatility Compression Breakout Strategy
 Detects Bollinger Band squeezes followed by volume expansion breakouts.
 Rides the trend with an ATR trailing stop. No fixed TP -- lets winners run.
 
-Entry: BB squeeze (width < 20th pctl) + breakout + volume > 2x avg + ADX > 25 rising + 4H EMA alignment
+Entry: BB squeeze (width < 20th pctl) + breakout + volume > 2x avg + ADX in [22, 32] + 4H EMA alignment
 Exit:  2.5x ATR trailing stop | 24h time stop | ADX < 20 exhaustion
 """
 
@@ -35,21 +35,38 @@ except ImportError:
     CASH_PERCENTAGE = 20
 
 # Strategy config
-VOL_BREAKOUT_SYMBOLS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR', 'AAVE', 'LINK']
+# Universe / daily cap / ADX max come from config.py (single source of truth);
+# the rest are local tuned constants (do NOT touch: edge is fragile, n=29).
+try:
+    from src.config import (
+        VOL_BREAKOUT_TOKENS as _CFG_VB_TOKENS,
+        VOL_BREAKOUT_MAX_DAILY_TRADES as _CFG_VB_MAX_TRADES,
+        VOL_BREAKOUT_ADX_MAX as _CFG_VB_ADX_MAX,
+    )
+except ImportError:
+    _CFG_VB_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR', 'AAVE', 'LINK',
+                      'DOGE', 'ADA', 'LTC', 'ARB', 'OP', 'INJ']
+    _CFG_VB_MAX_TRADES = 4
+    _CFG_VB_ADX_MAX = 32
+
+VOL_BREAKOUT_SYMBOLS = list(_CFG_VB_TOKENS)
 VOL_BREAKOUT_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
 VOL_BREAKOUT_TOKEN_CLASSES = {
     'btc': ['BTC'], 'eth': ['ETH'],
-    'mid': ['SOL', 'XRP', 'AVAX', 'LINK', 'AAVE', 'NEAR', 'SUI', 'TAO'],
+    'mid': ['SOL', 'XRP', 'AVAX', 'LINK', 'AAVE', 'NEAR', 'SUI', 'TAO',
+            'ADA', 'LTC', 'ARB', 'OP', 'INJ'],
+    'alt': ['DOGE'],  # higher slippage class for the meme
 }
 VOL_BREAKOUT_RISK_PCT = 0.015
 VOL_BREAKOUT_TRAILING_ATR_MULT = 2.5
 VOL_BREAKOUT_MAX_HOLD_HOURS = 24
-VOL_BREAKOUT_MAX_DAILY_TRADES = 3
+VOL_BREAKOUT_MAX_DAILY_TRADES = _CFG_VB_MAX_TRADES
 VOL_BREAKOUT_MAX_DAILY_LOSS = 15.0
 VOL_BREAKOUT_SQUEEZE_PERCENTILE = 0.20
 VOL_BREAKOUT_VOLUME_MULT = 2.0
 VOL_BREAKOUT_VOLUME_MIN = 0.15
 VOL_BREAKOUT_ADX_ENTRY = 22
+VOL_BREAKOUT_ADX_MAX = _CFG_VB_ADX_MAX  # Reject late entries (ADX already extended)
 VOL_BREAKOUT_ADX_EXIT = 20
 
 
@@ -170,6 +187,10 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         # Trend-strength gate (ADX > 25). The "ADX rising" check was rejecting
         # ~50% of valid squeezes intra-bar and has been dropped.
         if adx_val < VOL_BREAKOUT_ADX_ENTRY:
+            return None
+        # Late-entry gate: ADX already extended = breakout mostly done
+        # (7 entries with ADX > 30 lost -$10.42 over 32 days)
+        if adx_val > VOL_BREAKOUT_ADX_MAX:
             return None
 
         df4 = self._fetch_candles(symbol, '4h', 30)
@@ -360,11 +381,20 @@ class VolatilityBreakoutStrategy(BaseStrategy):
 
     # -- Main cycle --
 
-    def run_cycle(self, symbols=None):
-        symbols = symbols or VOL_BREAKOUT_SYMBOLS
+    def _check_daily_reset(self):
+        """Reset daily counters at midnight UTC.
+
+        Also called from main.independent_strategy_loop BEFORE the global
+        daily-loss breaker is evaluated: when the breaker trips, run_cycle()
+        is skipped, so without this hook daily_pnl would latch forever.
+        """
         today = datetime.utcnow().date()
         if self._last_trade_date != today:
             self.daily_trades, self.daily_pnl, self._last_trade_date = 0, 0.0, today
+
+    def run_cycle(self, symbols=None):
+        symbols = symbols or VOL_BREAKOUT_SYMBOLS
+        self._check_daily_reset()
 
         cprint(f"\n{'='*60}\n  [VolBreakout] {datetime.now():%Y-%m-%d %H:%M:%S} | "
                f"${self.paper_balance:,.2f} | {len(self.paper_positions)} open | "

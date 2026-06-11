@@ -26,6 +26,71 @@ from src.config import (
     FULL_CHECK_POSITION_INTERVAL_MIN,
 )
 
+# Fallback result when a check yields nothing usable (no signal, error, timeout).
+# The fallback threshold mirrors ADAPTIVE_HYBRID_BASE_THRESHOLD so proximity
+# computations stay meaningful when only the score is missing.
+try:
+    from src.config import ADAPTIVE_HYBRID_BASE_THRESHOLD as _FALLBACK_THRESHOLD
+except ImportError:
+    _FALLBACK_THRESHOLD = 40
+_EMPTY_RESULT = {'score': 0, 'threshold': _FALLBACK_THRESHOLD, 'regime': '', 'atr_pct': 0}
+
+
+def extract_result(token, signal) -> dict:
+    """Extract scheduler-relevant fields from a strategy_agent.get_signals() result.
+
+    get_signals() returns a LIST of approved signal dicts (possibly empty).
+    A bare dict is also accepted for robustness. Anything else falls back to
+    an empty result (score=0).
+    """
+    if isinstance(signal, list):
+        signal = signal[0] if signal else None
+    if isinstance(signal, dict):
+        meta = signal.get('metadata') or {}
+        if meta:
+            regime = meta.get('llm_regime')
+            if isinstance(regime, dict):
+                regime = regime.get('regime', '')
+            return {
+                'score': meta.get('score', 0),
+                'threshold': meta.get('threshold', _FALLBACK_THRESHOLD),
+                'regime': regime or '',
+                'atr_pct': meta.get('atr', 0) / max(meta.get('current_price', 1), 1e-9) if meta.get('atr') else 0,
+            }
+    return dict(_EMPTY_RESULT)
+
+
+def run_token_check(scheduler, symbol: str, analyze_fn, has_position_fn) -> dict:
+    """Analyze one token; record_result + schedule_recheck are ALWAYS called.
+
+    Any exception during analysis (or extraction) is logged and converted to a
+    fail result — the token is then re-scheduled normally so it can never fall
+    out of the queue (root cause of the orphan-tokens freeze in prod).
+    """
+    result = dict(_EMPTY_RESULT)
+    try:
+        signal = analyze_fn(symbol)
+        result = extract_result(symbol, signal)
+    except Exception as e:
+        cprint(f"  [Scheduler] {symbol} check failed: {e} — token stays scheduled", "red")
+        try:
+            import traceback as _tb
+            _tb.print_exc()
+        except Exception:
+            pass
+        result['status'] = 'fail'
+        result['fail_reason'] = str(e)
+
+    try:
+        has_pos = has_position_fn(symbol)
+    except Exception as e:
+        cprint(f"  [Scheduler] has_position check failed for {symbol}: {e}", "yellow")
+        has_pos = False
+
+    scheduler.record_result(symbol, result)
+    scheduler.schedule_recheck(symbol, result, has_pos)
+    return result
+
 
 @dataclass(order=True)
 class FullCheckRequest:
@@ -101,7 +166,16 @@ class SmartScheduler:
         only called once at boot, dropped tokens never came back — that's how
         we ended up with 6 tokens at priority=null/next_recheck=null after 5
         days in production.
+
+        State is persisted at the end (not in record_result) so the on-disk
+        snapshot always includes the freshly re-enqueued token.
         """
+        try:
+            self._schedule_recheck_inner(symbol, result, has_position)
+        finally:
+            self.save_state()
+
+    def _schedule_recheck_inner(self, symbol: str, result: dict, has_position: bool):
         try:
             with self._lock:
                 over = self._is_over_represented(symbol)
@@ -269,14 +343,41 @@ class SmartScheduler:
         with self._lock:
             return list(self._all_symbols)
 
+    def heal_orphans(self, stale_s: float = 1800) -> list[str]:
+        """Re-enqueue monitored symbols absent from the queue for too long.
+
+        A token is an orphan if it has no queue entry AND its last check is
+        older than stale_s (tokens never checked count as infinitely stale).
+        This is the general self-heal: it works even when the queue still
+        holds entries for other tokens (the old qsize==0 condition missed
+        the 6-orphans-with-8-queued state seen in prod).
+        """
+        now = time.time()
+        healed: list[str] = []
+        with self._lock:
+            for symbol in self._all_symbols:
+                if symbol in self._scheduled_symbols:
+                    continue
+                if now - self._last_check.get(symbol, 0) > stale_s:
+                    self._enqueue_locked(symbol, now, self.PRIORITY_ROUTINE, "self_heal_orphan")
+                    healed.append(symbol)
+        if healed:
+            cprint(f"[Scheduler] SELF-HEAL: re-enqueued {len(healed)} orphan token(s): "
+                   f"{', '.join(healed)}", "yellow", attrs=['bold'])
+            self.save_state()
+        return healed
+
     def record_result(self, symbol: str, result: dict):
-        """Record the result of a full check (updates timestamp, last result, and scan count)."""
+        """Record the result of a full check (updates timestamp, last result, and scan count).
+
+        Persistence happens in schedule_recheck() (always called right after)
+        so the disk snapshot includes the re-enqueued token.
+        """
         try:
             with self._lock:
                 self._last_check[symbol] = time.time()
                 self._last_result[symbol] = result
                 self._scan_count[symbol] += 1
-            self.save_state()
         except Exception as e:
             cprint(f"[Scheduler] record_result FAILED for {symbol}: {e}", "red")
             try:

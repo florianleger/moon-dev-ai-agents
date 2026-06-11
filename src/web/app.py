@@ -89,22 +89,48 @@ async def health_check():
     return {"status": "healthy", "service": "moon-dev-trading-dashboard"}
 
 
+LIQ_FEED_STALE_THRESHOLD_S = 3600  # feed dead > 1h => degraded
+
+
+def _attach_liquidation_feed_status(snapshot: dict) -> dict:
+    """Attach Bybit liquidation feed status to the health snapshot.
+
+    Cross-process safe (the web app reads the feed's CSV log). Downgrades an
+    'ok' status to 'degraded' when the feed produced no event for > 1h.
+    """
+    from src.data_providers.bybit_liquidations import get_feed_status
+    feed = get_feed_status()
+    snapshot['liquidation_feed'] = feed
+    age = feed.get('last_event_age_s')
+    if snapshot.get('status') == 'ok' and age is not None and age > LIQ_FEED_STALE_THRESHOLD_S:
+        snapshot['status'] = 'degraded'
+        snapshot['degraded_reason'] = f'liquidation feed silent for {int(age)}s'
+    return snapshot
+
+
 @app.get("/api/health")
 async def api_health():
     """Rich health snapshot for monitoring + alerting integrations.
 
     No auth required so external uptime checks (UptimeRobot, etc.) can hit it.
-    Returns scheduler freshness + active strategy count + uptime so we can
-    detect frozen-bot scenarios externally.
+    Returns scheduler freshness + active strategy count + uptime + liquidation
+    feed status so we can detect frozen-bot scenarios externally.
     """
     try:
         from src.utils.scheduler_healthcheck import get_health_snapshot
-        return get_health_snapshot()
+        snapshot = get_health_snapshot()
     except Exception as e:
         return JSONResponse(
             status_code=500,
             content={"status": "error", "detail": str(e)[:200]},
         )
+
+    try:
+        snapshot = _attach_liquidation_feed_status(snapshot)
+    except Exception as e:
+        snapshot['liquidation_feed'] = {'error': str(e)[:200]}
+
+    return snapshot
 
 
 # Helper to set session cookie on page responses

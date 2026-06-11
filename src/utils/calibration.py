@@ -11,10 +11,12 @@ _CACHE_TTL = 60  # seconds
 _lock = threading.RLock()
 
 # Hard guardrails: absolute min/max and max per-adjustment delta
-# NOTE: ADAPTIVE_HYBRID_BASE_THRESHOLD drift is additionally capped at +10% of the
-# manually configured value inside _get_effective_threshold (adaptive_hybrid_strategy.py).
+# SINGLE SOURCE OF TRUTH: _get_effective_threshold (adaptive_hybrid_strategy.py)
+# clamps the runtime override with THIS max — any value writable here is applied.
+# (Was 65 while runtime clamped at configured*1.10=52.8 -> CalibrationAgent wrote
+# values that were never applied, looping no-op.)
 GUARDRAILS = {
-    'ADAPTIVE_HYBRID_BASE_THRESHOLD': {'min': 35, 'max': 65, 'max_delta_pct': 0.10},
+    'ADAPTIVE_HYBRID_BASE_THRESHOLD': {'min': 35, 'max': 53, 'max_delta_pct': 0.10},
     'ADAPTIVE_HYBRID_VOLUME_FILTER_MIN': {'min': 0.02, 'max': 0.40, 'max_delta_abs': 0.05},
     'ADAPTIVE_HYBRID_4H_TREND_PENALTY': {'min': 0.05, 'max': 0.50, 'max_delta_abs': 0.05},
     # ATR profiles are handled specially inside the agent
@@ -48,18 +50,24 @@ def _load_overrides() -> dict:
 
 
 def apply_guardrail(param_name, new_value, previous_value, default_value):
-    """Clamp value to guardrails. Returns (clamped_value, was_clamped)."""
+    """Clamp value to guardrails. Returns (clamped_value, was_clamped).
+
+    Order matters: the delta clamps run FIRST and the absolute min/max LAST.
+    If min/max ran first, a previous_value outside the bounds (e.g. a stale
+    override at 65 with max=53) would let the delta clamp re-push the result
+    above the max, breaking the "any value writable here is applied" invariant.
+    """
     g = GUARDRAILS.get(param_name)
     if not g:
         return new_value, False
     clamped = new_value
-    if 'min' in g:
-        clamped = max(g['min'], clamped)
-    if 'max' in g:
-        clamped = min(g['max'], clamped)
     if 'max_delta_pct' in g and previous_value:
         max_delta = abs(previous_value * g['max_delta_pct'])
         clamped = max(previous_value - max_delta, min(previous_value + max_delta, clamped))
     if 'max_delta_abs' in g and previous_value is not None:
         clamped = max(previous_value - g['max_delta_abs'], min(previous_value + g['max_delta_abs'], clamped))
+    if 'min' in g:
+        clamped = max(g['min'], clamped)
+    if 'max' in g:
+        clamped = min(g['max'], clamped)
     return clamped, clamped != new_value

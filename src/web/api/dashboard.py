@@ -54,6 +54,31 @@ def _get_leverage() -> int:
         return RAMF_LEVERAGE
 
 
+def _trade_pnl_series(df: pd.DataFrame) -> pd.Series:
+    """Per-trade realized PnL matching the strategies' real paper balance.
+
+    Conventions verified on prod CSVs (2026-06-10):
+    - every strategy logs `pnl` net of exit fee but EXCLUDING the entry fee
+      (the entry fee is deducted from the balance at open)
+    - adaptive_hybrid scale-outs land in `partial_pnl_realized`; its
+      closed_trades.csv also has `total_pnl` = pnl + partial_pnl_realized
+
+    Real PnL = total_pnl (or pnl + partial_pnl_realized) - entry_fee.
+    """
+    if 'total_pnl' in df.columns:
+        pnl = pd.to_numeric(df['total_pnl'], errors='coerce').fillna(0.0)
+    else:
+        if 'pnl' in df.columns:
+            pnl = pd.to_numeric(df['pnl'], errors='coerce').fillna(0.0)
+        else:
+            pnl = pd.Series(0.0, index=df.index)
+        if 'partial_pnl_realized' in df.columns:
+            pnl = pnl + pd.to_numeric(df['partial_pnl_realized'], errors='coerce').fillna(0.0)
+    if 'entry_fee' in df.columns:
+        pnl = pnl - pd.to_numeric(df['entry_fee'], errors='coerce').fillna(0.0)
+    return pnl
+
+
 def _get_stats_from_csv() -> Dict:
     """Calculate stats from paper_trades.csv file with real-time unrealized PnL."""
     leverage = _get_leverage()
@@ -127,21 +152,31 @@ def _get_stats_from_csv() -> Dict:
 
         stats["unrealized_pnl"] = round(unrealized_pnl, 2)
 
-        # Calculate realized PnL from closed positions
-        closed_positions = df[df['status'] != 'OPEN']
+        # Realized PnL: prefer closed_trades.csv (has total_pnl incl. partials);
+        # fall back to closed rows of paper_trades.
         realized_pnl = 0.0
         daily_realized_pnl = 0.0
+        today = datetime.now().strftime('%Y-%m-%d')
 
-        if not closed_positions.empty and 'pnl' in closed_positions.columns:
-            realized_pnl = closed_positions['pnl'].sum()
+        closed_csv = os.path.join(DATA_BASE_PATH, _get_strategy_folder(), 'closed_trades.csv')
+        closed_positions = None
+        if os.path.exists(closed_csv):
+            try:
+                closed_positions = pd.read_csv(closed_csv)
+            except Exception:
+                closed_positions = None
+        if closed_positions is None or closed_positions.empty:
+            closed_positions = df[df['status'] != 'OPEN']
+
+        if not closed_positions.empty:
+            pnl_series = _trade_pnl_series(closed_positions)
+            realized_pnl = float(pnl_series.sum())
 
             # Daily PnL (trades closed today)
-            today = datetime.now().strftime('%Y-%m-%d')
             time_col = 'exit_time' if 'exit_time' in closed_positions.columns else 'close_timestamp' if 'close_timestamp' in closed_positions.columns else None
             if time_col:
-                today_closed = closed_positions[closed_positions[time_col].str.startswith(today, na=False)]
-                if not today_closed.empty:
-                    daily_realized_pnl = today_closed['pnl'].sum()
+                today_mask = closed_positions[time_col].astype(str).str.startswith(today, na=False)
+                daily_realized_pnl = float(pnl_series[today_mask].sum())
 
         stats["realized_pnl"] = round(realized_pnl, 2)
 
@@ -151,8 +186,26 @@ def _get_stats_from_csv() -> Dict:
         # Daily PnL = realized today + current unrealized
         stats["daily_pnl"] = round(daily_realized_pnl + unrealized_pnl, 2)
 
-        # Balance (equity) = initial + realized + unrealized
-        stats["balance"] = round(INITIAL_BALANCE + realized_pnl + unrealized_pnl, 2)
+        # Events invisible to the balance_after ledger (they happen AFTER the
+        # last close): scale-out partials already credited on still-open
+        # positions, and entry fees deducted for positions opened since.
+        open_partial_pnl = 0.0
+        open_entry_fees = 0.0
+        if not open_positions.empty:
+            if 'partial_pnl_realized' in open_positions.columns:
+                open_partial_pnl = float(pd.to_numeric(
+                    open_positions['partial_pnl_realized'], errors='coerce').fillna(0.0).sum())
+            if 'entry_fee' in open_positions.columns:
+                open_entry_fees = float(pd.to_numeric(
+                    open_positions['entry_fee'], errors='coerce').fillna(0.0).sum())
+
+        # Balance (equity): reconstruct the strategy's live paper_balance the
+        # same way AdaptiveHybridStrategy._load_state does — INITIAL + realized
+        # (incl. closed partials, net of all closed-trade entry fees) + partials
+        # realized on open positions - entry fees of open positions. Using the
+        # last balance_after alone ignored everything after the last close.
+        balance_base = INITIAL_BALANCE + realized_pnl + open_partial_pnl - open_entry_fees
+        stats["balance"] = round(balance_base + unrealized_pnl, 2)
         stats["available_margin"] = round(max(0, stats["balance"] - stats["used_margin"]), 2)
 
         # Effective leverage = total notional exposure / equity
@@ -204,17 +257,17 @@ def _aggregate_strategy_stats(strategy_key: str) -> Dict:
             df = pd.read_csv(closed_csv)
             if not df.empty:
                 stats["closed_trades"] = int(len(df))
-                if 'pnl' in df.columns:
-                    stats["total_pnl"] = round(float(df['pnl'].sum()), 2)
-                    wins = int((df['pnl'] > 0).sum())
-                    stats["win_rate"] = round(wins / len(df) * 100, 1)
+                # Real PnL (incl. partials, net of entry fee) — see _trade_pnl_series
+                pnl_series = _trade_pnl_series(df)
+                stats["total_pnl"] = round(float(pnl_series.sum()), 2)
+                wins = int((pnl_series > 0).sum())
+                stats["win_rate"] = round(wins / len(df) * 100, 1)
                 time_col = 'exit_time' if 'exit_time' in df.columns else (
                     'close_timestamp' if 'close_timestamp' in df.columns else None
                 )
                 if time_col:
-                    today_df = df[df[time_col].astype(str).str.startswith(today_str, na=False)]
-                    if not today_df.empty and 'pnl' in today_df.columns:
-                        stats["daily_pnl"] = round(float(today_df['pnl'].sum()), 2)
+                    today_mask = df[time_col].astype(str).str.startswith(today_str, na=False)
+                    stats["daily_pnl"] = round(float(pnl_series[today_mask].sum()), 2)
                     last_ts = df[time_col].astype(str).max()
                     stats["last_trade_at"] = last_ts if last_ts else None
         except Exception:
@@ -377,13 +430,14 @@ async def get_pnl_history(
                 # Try exit_time first, fall back to close_timestamp
                 time_col = 'exit_time' if 'exit_time' in closed.columns else 'close_timestamp' if 'close_timestamp' in closed.columns else None
                 if time_col:
-                    for _, row in closed.iterrows():
+                    pnl_series = _trade_pnl_series(closed)
+                    for idx, row in closed.iterrows():
                         exit_time = str(row.get(time_col, ''))
                         if exit_time and len(exit_time) >= 10:
                             date = exit_time[:10]
                             if date not in pnl_by_date:
                                 pnl_by_date[date] = 0.0
-                            pnl_by_date[date] += float(row.get('pnl', 0))
+                            pnl_by_date[date] += float(pnl_series.loc[idx])
         except Exception:
             pass
 
@@ -396,13 +450,14 @@ async def get_pnl_history(
                 if not df.empty and 'pnl' in df.columns:
                     time_col = 'exit_time' if 'exit_time' in df.columns else 'close_timestamp' if 'close_timestamp' in df.columns else None
                     if time_col:
-                        for _, row in df.iterrows():
+                        pnl_series = _trade_pnl_series(df)
+                        for idx, row in df.iterrows():
                             exit_time = str(row.get(time_col, ''))
                             if exit_time and len(exit_time) >= 10:
                                 date = exit_time[:10]
                                 if date not in pnl_by_date:
                                     pnl_by_date[date] = 0.0
-                                pnl_by_date[date] += float(row.get('pnl', 0))
+                                pnl_by_date[date] += float(pnl_series.loc[idx])
             except Exception:
                 pass
 
@@ -456,14 +511,16 @@ async def get_closed_trades(
                     df = df.sort_values(time_col, ascending=False)
                 df = df.head(limit)
 
-                for _, row in df.iterrows():
+                # Real per-trade PnL (incl. partials, net of entry fee)
+                pnl_series = _trade_pnl_series(df)
+                for idx, row in df.iterrows():
                     trades.append({
                         "symbol": row.get("symbol", ""),
                         "direction": row.get("direction", ""),
                         "entry_price": float(row.get("entry_price", 0) or 0),
                         "close_price": float(row.get("close_price", 0) or 0),
                         "position_size": float(row.get("position_size", 0) or 0),
-                        "pnl": round(float(row.get("pnl", 0) or 0), 2),
+                        "pnl": round(float(pnl_series.loc[idx]), 2),
                         "pnl_pct": round(float(row.get("pnl_pct", 0) or 0), 2),
                         "close_reason": row.get("close_reason", ""),
                         "entry_time": str(row.get("timestamp", row.get("entry_time", ""))),

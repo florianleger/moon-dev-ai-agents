@@ -1,12 +1,16 @@
 """Liquidation Cascade Detector scoring module.
 
-Detects cascading liquidations from Binance Futures WebSocket data.
+Detects cascading liquidations from the Bybit allLiquidation WebSocket feed
+(the Binance forceOrder WS is blocked from the production IP and its REST
+fallback was removed by Binance — the old import left this module permanently
+NEUTRAL in prod).
 Uses as contrarian signal: cascade liquidations = forced exits = potential reversal.
 Also provides a 'suppress' flag to warn strategy that current price action is
 driven by forced liquidations, not organic order flow.
 """
 
-# Symbol mapping from strategy symbols to Binance futures symbols
+# Symbol mapping from strategy symbols to USDT-perp contract symbols
+# (identical naming on Binance and Bybit for these majors)
 SYMBOL_MAP = {
     'BTC': 'BTCUSDT',
     'ETH': 'ETHUSDT',
@@ -28,8 +32,9 @@ SYMBOL_MAP = {
     'UNI': 'UNIUSDT',
     'LTC': 'LTCUSDT',
     'BCH': 'BCHUSDT',
-    'PEPE': 'PEPEUSDT',
+    'PEPE': '1000PEPEUSDT',
     'kPEPE': '1000PEPEUSDT',
+    'KPEPE': '1000PEPEUSDT',
     'ENA': 'ENAUSDT',
     'AAVE': 'AAVEUSDT',
     'TAO': 'TAOUSDT',
@@ -43,6 +48,21 @@ SYMBOL_MAP = {
     'FET': 'FETUSDT',
     'WLD': 'WLDUSDT',
 }
+
+# Typical 5-minute liquidation volume (USD) per symbol on the EXHAUSTIVE Bybit
+# allLiquidation feed (the old single 500k default was calibrated for the
+# sampled Binance forceOrder feed — on Bybit, BTC routine flow alone would
+# read as a permanent 3-4x "cascade"). Estimated from feed measurements on an
+# ordinary day (Jun 2026): BTC ~$1.8M, ETH ~$550k, SOL ~$85k per 5 min.
+TYPICAL_5MIN_VOLUME = {
+    'BTCUSDT': 2_000_000,
+    'ETHUSDT': 600_000,
+    'SOLUSDT': 150_000,
+    'XRPUSDT': 100_000,
+    'AVAXUSDT': 80_000,
+    'SUIUSDT': 80_000,
+}
+DEFAULT_TYPICAL_5MIN_VOLUME = 100_000
 
 
 def score_liquidation_cascade(symbol: str, indicators: dict, config: dict = None) -> dict:
@@ -64,7 +84,7 @@ def score_liquidation_cascade(symbol: str, indicators: dict, config: dict = None
     _neutral = {'score': 0, 'direction': 'NEUTRAL', 'reason': 'API unavailable', 'data_quality': 0.0, 'suppress_breakout': False}
 
     try:
-        from src.data_providers.binance_futures import get_liquidation_stream
+        from src.data_providers.bybit_liquidations import get_liquidation_stream
     except Exception:
         return _neutral
 
@@ -72,14 +92,22 @@ def score_liquidation_cascade(symbol: str, indicators: dict, config: dict = None
     lookback_minutes = cfg.get('cascade_lookback_minutes', 5)
     intensity_threshold = cfg.get('cascade_intensity_threshold', 2.0)
     suppress_threshold = cfg.get('cascade_suppress_threshold', 3.0)
-    # Typical 5-minute liquidation volume in USD (baseline for normalization)
-    typical_5min_volume = cfg.get('cascade_typical_volume', 500_000)
 
-    # Map strategy symbol to Binance symbol
+    # Map strategy symbol to the USDT-perp contract symbol
     binance_symbol = SYMBOL_MAP.get(symbol.upper(), f'{symbol.upper()}USDT')
+
+    # Typical 5-minute liquidation volume in USD (baseline for normalization),
+    # per symbol for the exhaustive Bybit feed
+    typical_5min_volume = cfg.get(
+        'cascade_typical_volume',
+        TYPICAL_5MIN_VOLUME.get(binance_symbol, DEFAULT_TYPICAL_5MIN_VOLUME))
 
     try:
         stream = get_liquidation_stream()
+        # Normally started by LiquidationCascadeFadeStrategy in the same
+        # process; start it non-blocking if that strategy is disabled.
+        if not stream.is_connected and not stream.running:
+            stream.start_stream(timeout=0)
     except Exception:
         return _neutral
 

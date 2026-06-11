@@ -133,7 +133,9 @@ class TestDailyLossLimit:
 # ---------------------------------------------------------------------------
 
 class TestMaxPositions:
-    def test_max_positions_blocks_new_trades(self, risk_agent):
+    def test_max_positions_blocks_new_entries_only(self, risk_agent):
+        """Max positions blocks NEW entries (allows_new_entries) but must NOT
+        flip is_trading_allowed — that froze the whole scan loop in prod."""
         mock_strategy = MagicMock()
         mock_strategy.get_paper_status.return_value = {
             'paper_balance': 500.0,
@@ -141,7 +143,8 @@ class TestMaxPositions:
         }
         risk_agent._strategy = mock_strategy
 
-        assert risk_agent.is_trading_allowed() is False
+        assert risk_agent.is_trading_allowed() is True
+        assert risk_agent.allows_new_entries() is False
 
     def test_under_max_positions_allows_trading(self, risk_agent):
         mock_strategy = MagicMock()
@@ -152,6 +155,7 @@ class TestMaxPositions:
         risk_agent._strategy = mock_strategy
 
         assert risk_agent.is_trading_allowed() is True
+        assert risk_agent.allows_new_entries() is True
 
 
 # ---------------------------------------------------------------------------

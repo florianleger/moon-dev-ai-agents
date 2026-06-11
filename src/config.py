@@ -418,7 +418,12 @@ ADAPTIVE_HYBRID_LEVERAGE = 3             # Default leverage
 ADAPTIVE_HYBRID_ATR_SL_MULT = 3.5       # Stop loss = 3.5x ATR (widened for fewer premature exits)
 ADAPTIVE_HYBRID_ATR_TP_MULT = 3.8       # Take profit = 3.8x ATR (reduced from 4.5 — 60% of trades hit TIME_EXIT before TP)
 ADAPTIVE_HYBRID_SKIP_LLM = True          # Skip LLM re-evaluation (strategy has own filters)
-ADAPTIVE_HYBRID_RISK_PCT = 0.015         # 1.5% risk per trade
+ADAPTIVE_HYBRID_RISK_PCT = 0.012         # Risque FIXE par trade : balance × 1.2% = perte max au SL (sizing simplifié Jun 2026 —
+                                         # le Kelly floor + 6 multiplicateurs empilés écrasaient le notionnel à $25 médian).
+                                         # Le levier ne multiplie PLUS le risque (il ne réduit que la marge immobilisée) :
+                                         # notional = balance × RISK_PCT / sl_fraction, plafonné par marge et MAX_POSITION_PCT.
+                                         # Équivaut aux notionnels de l'ancien 0.4% × levier 3, mais le risque est désormais
+                                         # identique pour toutes les classes de tokens (lev 2 ou 3).
 ADAPTIVE_HYBRID_VOLUME_FILTER_MIN = 0.05 # Minimum volume ratio to accept signal (was 0.15)
 
 # LLM-Enhanced Pipeline Settings
@@ -451,7 +456,12 @@ ADAPTIVE_HYBRID_AVOID_HOURS = [1, 2, 3, 4]  # Low liquidity hours (reduced from 
 
 # Time-based exit
 ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48  # Force close after 48h
-ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 24  # Close if <50% TP after 24h
+ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 12  # Close if <50% TP after 12h (was 24 — TIME_EXIT squattait les slots)
+
+# Stagnation exit: close if after N hours the price is still within X ATR of entry
+# (les positions stagnantes squattaient 28% des slot-heures pour -$2.46)
+ADAPTIVE_HYBRID_STAGNATION_HOURS = 8
+ADAPTIVE_HYBRID_STAGNATION_ATR = 0.3
 
 # Legacy paper trading fees (used by backtester; live paper uses V2 below)
 PAPER_TAKER_FEE = 0.00035  # Deprecated: use PAPER_TAKER_FEE_V2
@@ -531,9 +541,9 @@ ADAPTIVE_HYBRID_REGIME_HYSTERESIS = 3  # Require N consecutive same classificati
 # --- Funding cluster cap ---
 ADAPTIVE_HYBRID_FUNDING_CLUSTER_CAP = 0.10  # Max combined effective weight for funding-based modules
 
-# --- Kelly-adaptive sizing ---
-ADAPTIVE_HYBRID_KELLY_LOOKBACK = 30  # Number of recent trades for rolling Kelly calculation
-ADAPTIVE_HYBRID_KELLY_FRACTION = 0.5  # Half-Kelly for safety
+# --- Kelly-adaptive sizing (DEPRECATED Jun 2026: retiré du sizing, voir ADAPTIVE_HYBRID_RISK_PCT) ---
+ADAPTIVE_HYBRID_KELLY_LOOKBACK = 30  # Deprecated — kept for backward compat
+ADAPTIVE_HYBRID_KELLY_FRACTION = 0.5  # Deprecated — kept for backward compat
 
 # --- Event calendar ---
 ADAPTIVE_HYBRID_EVENT_CALENDAR_FILE = os.path.join(os.path.dirname(__file__), 'data', 'event_calendar.json')
@@ -573,20 +583,23 @@ REGIME_VOL_LOW = 0.8
 # BUGFIX (May 2026): activate_atr levels 2/3 (4.0/5.5) were unreachable before TP
 # (BTC TP=3.5, mid TP=3.8, alt TP=3.5). Lowered to 1.5/3.0/4.5 so progressive
 # trailing actually activates and locks profit before TP fires.
+# R:R FIX (Jun 2026): breakeven 1.5 → 2.5 ATR — le breakeven précoce écrêtait les gains
+# (R:R réalisé 0.56), les winners étaient stoppés à breakeven avant de courir.
 ADAPTIVE_HYBRID_TRAILING_LEVELS = [
-    {'activate_atr': 1.5, 'distance_atr': None, 'breakeven': True},
+    {'activate_atr': 2.5, 'distance_atr': None, 'breakeven': True},
     {'activate_atr': 3.0, 'distance_atr': 1.5},
     {'activate_atr': 4.5, 'distance_atr': 0.8},
 ]
 
 # --- Scale-Out Partial Take Profit (Phase 3) ---
+# R:R FIX (Jun 2026): 1er niveau (40% TP → close 33%) supprimé — le scale-out précoce
+# amputait les gains et contribuait au R:R réalisé de 0.56.
 ADAPTIVE_HYBRID_SCALE_OUT_LEVELS = [
-    {'tp_pct': 0.40, 'close_pct': 0.33},  # 40% of TP path -> close 33%
-    {'tp_pct': 0.70, 'close_pct': 0.50},  # 70% of TP path -> close 50% of remainder
+    {'tp_pct': 0.70, 'close_pct': 0.50},  # 70% of TP path -> close 50%
 ]
 
 # --- Volatility Targeting (Phase 3) ---
-ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT = 1.0  # Target 1% daily vol per position
+ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT = 1.0  # DEPRECATED Jun 2026: retiré du sizing (empilement de multiplicateurs)
 ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD = 10   # Min position size in USD
 
 # --- Monitoring Enhancement (Phase 1) ---
@@ -654,7 +667,10 @@ ADAPTIVE_HYBRID_4H_TREND_REJECT = False  # Reject if 4h opposes 1h
 # ═══════════════════════════════════════════════════════════════
 
 # Strategy 1: Funding Rate Mean Reversion
-FUNDING_MR_ENABLED = True
+# DISABLED (2026-06): signal cassé — le "z-score 7j" est en réalité calculé sur ~14h
+# (deque de 168 échantillons remplie toutes les 5 min) → z-scores absurdes (jusqu'à 12.9)
+# sans pouvoir prédictif. 11 SL = -$61 sur 32j. Refonte du signal requise avant réactivation.
+FUNDING_MR_ENABLED = False
 FUNDING_MR_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR', 'AAVE', 'ENA', 'LINK', 'DOGE', 'kPEPE', 'ADA']
 FUNDING_MR_ZSCORE_ENTRY = 1.3  # LEGACY/UNUSED: actual thresholds live in funding_mean_reversion.py ZSCORE_THRESHOLDS (1.5/1.3/1.0 per tier). Kept for backward compat, value is the weighted avg.
 FUNDING_MR_ZSCORE_EXIT = 0.5   # Exit when funding normalizes
@@ -668,19 +684,26 @@ FUNDING_MR_MAX_DAILY_LOSS_USD = 15.0
 FUNDING_MR_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
 
 # Strategy 2: Volatility Compression Breakout
+# Seule stratégie indépendante rentable sur 32j (PF 1.84). Extension PRUDENTE :
+# univers élargi de 6 mids liquides HyperLiquid + cap journalier 3→4 + borne ADX max.
+# NE PAS toucher RISK_PCT / VOLUME_SPIKE / squeeze / trailing (tunés, edge fragile n=29).
 VOL_BREAKOUT_ENABLED = True
-VOL_BREAKOUT_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR', 'AAVE', 'LINK']
+VOL_BREAKOUT_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR', 'AAVE', 'LINK',
+                       'DOGE', 'ADA', 'LTC', 'ARB', 'OP', 'INJ']  # +6 mids (existence HL vérifiée)
 VOL_BREAKOUT_BB_PERCENTILE = 20  # BB width below Nth percentile = squeeze
 VOL_BREAKOUT_VOLUME_SPIKE = 2.0  # Volume must be Nx average for breakout confirmation
 VOL_BREAKOUT_ADX_THRESHOLD = 25  # ADX must rise above this
+VOL_BREAKOUT_ADX_MAX = 32        # Reject entries when ADX already > 32 (late entries: 7 trades ADX>30 = -$10.42)
 VOL_BREAKOUT_RISK_PCT = 0.015
 VOL_BREAKOUT_TRAILING_ATR = 2.5  # Trailing stop distance
 VOL_BREAKOUT_MAX_HOLD_HOURS = 24
-VOL_BREAKOUT_MAX_DAILY_TRADES = 3
+VOL_BREAKOUT_MAX_DAILY_TRADES = 4  # 3→4 avec l'univers élargi
 VOL_BREAKOUT_MAX_DAILY_LOSS_USD = 15.0
 VOL_BREAKOUT_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
 
 # Strategy 3: Liquidation Cascade Fade
+# Le feed liquidations est désormais Bybit WS (le WS Binance est bloqué depuis l'IP du
+# serveur et le REST fallback allForceOrders a été supprimé par Binance).
 LIQ_CASCADE_ENABLED = True
 LIQ_CASCADE_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI']  # Only liquid enough for cascade fading
 LIQ_CASCADE_SIGMA_THRESHOLD = 2.0  # Liquidation volume > Nx std dev (loosened from 3.0 to detect smaller cascades)
@@ -694,7 +717,9 @@ LIQ_CASCADE_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 2, 'alt': 2}
 LIQ_CASCADE_COOLDOWN_MINUTES = 30  # Min time between cascade trades
 
 # Strategy 4: Fibonacci OTE Scalping (new — inspired by Casper's scalping strategy)
-OTE_SCALP_ENABLED = True
+# DISABLED (2026-06): aucun edge brut (+$0.87 avant friction sur 157 trades, PF réel 0.26,
+# -$119). La friction frais+slippage représente 101% de la perte — aucun retuning possible.
+OTE_SCALP_ENABLED = False
 OTE_SCALP_TOKENS = ['BTC', 'ETH', 'SOL']  # Start with most liquid only (tight spreads critical for scalping)
 OTE_SCALP_TREND_TIMEFRAME = '1h'       # H1 for trend direction
 OTE_SCALP_ENTRY_TIMEFRAME = '5m'       # M5 for entry execution

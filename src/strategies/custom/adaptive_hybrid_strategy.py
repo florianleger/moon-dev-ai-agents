@@ -102,6 +102,8 @@ try:
         SNIPER_ASSETS,
         ADAPTIVE_HYBRID_MAX_HOLD_HOURS,
         ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS,
+        ADAPTIVE_HYBRID_STAGNATION_HOURS,
+        ADAPTIVE_HYBRID_STAGNATION_ATR,
         ADAPTIVE_HYBRID_LEVERAGE_PROFILES,
         RISK_MAX_DRAWDOWN_PCT,
         CASH_PERCENTAGE,
@@ -181,7 +183,9 @@ except ImportError:
     SNIPER_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI', 'TAO', 'NEAR',
                      'AAVE', 'ENA', 'LINK', 'DOGE', 'kPEPE', 'ADA']
     ADAPTIVE_HYBRID_MAX_HOLD_HOURS = 48
-    ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 24
+    ADAPTIVE_HYBRID_HOLD_TP_CHECK_HOURS = 12
+    ADAPTIVE_HYBRID_STAGNATION_HOURS = 8
+    ADAPTIVE_HYBRID_STAGNATION_ATR = 0.3
     ADAPTIVE_HYBRID_LEVERAGE_PROFILES = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
     RISK_MAX_DRAWDOWN_PCT = 15
     CASH_PERCENTAGE = 20
@@ -192,12 +196,11 @@ except ImportError:
     REGIME_VOL_HIGH = 1.2
     REGIME_VOL_LOW = 0.8
     ADAPTIVE_HYBRID_TRAILING_LEVELS = [
-        {'activate_atr': 1.0, 'distance_atr': None, 'breakeven': True},
-        {'activate_atr': 2.0, 'distance_atr': 1.5},
-        {'activate_atr': 3.5, 'distance_atr': 1.0},
+        {'activate_atr': 2.5, 'distance_atr': None, 'breakeven': True},
+        {'activate_atr': 3.0, 'distance_atr': 1.5},
+        {'activate_atr': 4.5, 'distance_atr': 0.8},
     ]
     ADAPTIVE_HYBRID_SCALE_OUT_LEVELS = [
-        {'tp_pct': 0.40, 'close_pct': 0.33},
         {'tp_pct': 0.70, 'close_pct': 0.50},
     ]
     ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT = 1.0
@@ -1244,23 +1247,25 @@ class AdaptiveHybridStrategy(BaseStrategy):
     def _get_effective_threshold(self, symbol: str = None, ind: dict = None, direction: str = None) -> float:
         """Get current threshold adjusted by urgency, regime, direction, choppiness, transitions, and feedback.
 
-        The CALIBRATED BASE (= config + CalibrationAgent override) is clamped so
-        it cannot exceed the manually configured value by more than 10%. Per-scan
-        adjustments (regime, choppiness, transitions, feedback) are still applied
-        on top, but the auto-tuned starting point cannot silently drift away from
-        what the operator sees on the dashboard.
+        The CALIBRATED BASE (= config + CalibrationAgent override) is bounded by
+        the SAME guardrail used at write time (src/utils/calibration.py GUARDRAILS).
+        Single source of truth: a value the CalibrationAgent is allowed to write
+        is always applied; anything above the guardrail max is clamped + warned.
         """
         configured_base = ADAPTIVE_HYBRID_BASE_THRESHOLD  # manual value from config.py
         calibrated_base = get_calibrated_value('ADAPTIVE_HYBRID_BASE_THRESHOLD', ADAPTIVE_HYBRID_BASE_THRESHOLD)
 
-        # Guardrail on calibration drift: the auto-tuned base cannot exceed the
-        # manually configured value by more than 10%. This prevents the
-        # CalibrationAgent from silently pushing the threshold well above what
-        # the UI reports (the dashboard shows `configured_base`, not the override).
-        max_calibrated = configured_base * 1.10
+        # Single source of truth for the max: calibration GUARDRAILS. A stale
+        # override above this bound (e.g. written by an older agent version) is
+        # clamped, with a warning so the operator knows the written value is not applied.
+        try:
+            from src.utils.calibration import GUARDRAILS
+            max_calibrated = GUARDRAILS['ADAPTIVE_HYBRID_BASE_THRESHOLD']['max']
+        except (ImportError, KeyError):
+            max_calibrated = 53
         if calibrated_base > max_calibrated:
-            cprint(f"    [Calibration Cap] Override {calibrated_base:.1f} clamped to {max_calibrated:.1f} "
-                   f"(configured={configured_base}, max drift +10%)", "yellow")
+            cprint(f"    [Calibration Cap] WARNING: override {calibrated_base:.1f} exceeds guardrail max "
+                   f"{max_calibrated} — written value NOT applied (configured={configured_base})", "yellow")
             calibrated_base = max_calibrated
 
         base = calibrated_base
@@ -2018,60 +2023,44 @@ class AdaptiveHybridStrategy(BaseStrategy):
             cash_reserve = self.paper_balance * (CASH_PERCENTAGE / 100)
             available_margin = max(0, self.paper_balance - used_margin - cash_reserve)
 
-            # Score-based exposure factor: stronger signals get larger positions
-            # score 40 -> 1.0x, score 55 -> 1.5x, score 70+ -> 2.0x
-            score_val = metadata.get('score', 40)
-            score_exposure = min(2.0, 1.0 + max(0, score_val - 40) / 30)
-
-            # Position sizing: 2% risk per trade, modulated by signal strength
-            strength = signal.get('signal', 0.7)
-            strength_multiplier = 0.5 + float(strength)  # Range: 0.5x to 1.5x
+            # SIMPLIFIED SIZING (Jun 2026): fixed risk per trade (balance x
+            # ADAPTIVE_HYBRID_RISK_PCT), capped by margin and max-position %.
+            # The previous stack of 6 multipliers (score, strength, Kelly floor,
+            # vol targeting, weekend, event) crushed median notional to $25 with
+            # corr(score, size) ~ 0. Only two modulators remain:
+            # drawdown/recovery scaling + correlation.
+            # NOTE: position_size is a NOTIONAL (loss at SL = notional x
+            # sl_fraction), so leverage must NOT multiply it — leverage only
+            # reduces the margin locked (see max_position_by_margin). The old
+            # `* leverage` made the real risk 2-3x the announced RISK_PCT and
+            # made it depend on the token's leverage class.
             try:
                 from src import config as _cfg
-                risk_pct = getattr(_cfg, 'ADAPTIVE_HYBRID_RISK_PCT', 0.015)
+                risk_pct = getattr(_cfg, 'ADAPTIVE_HYBRID_RISK_PCT', 0.012)
             except (ImportError, AttributeError):
-                risk_pct = 0.015
-            risk_amount = self.paper_balance * risk_pct * strength_multiplier
+                risk_pct = 0.012
+            risk_amount = self.paper_balance * risk_pct
             sl_fraction = max(sl_pct / 100, 0.001)  # Guard against near-zero SL
-            position_size = risk_amount / sl_fraction * leverage
+            position_size = risk_amount / sl_fraction
             max_position_by_margin = available_margin * 0.9 * leverage
-            # Cap on notional exposure, scaled by score
-            max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100) * score_exposure
+            max_position_by_pct = self.paper_balance * (ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100)
             position_size = min(position_size, max_position_by_margin, max_position_by_pct)
 
-            # Volatility targeting: cap position so daily vol contribution stays under target, scaled by score
-            if atr > 0 and price > 0:
-                daily_vol_pct = atr / price  # ATR as % of price ~ daily vol
-                vol_target_usd = self.paper_balance * (ADAPTIVE_HYBRID_VOL_TARGET_DAILY_PCT / 100) * score_exposure
-                if daily_vol_pct > 0:
-                    vol_target_size = vol_target_usd / daily_vol_pct
-                    position_size = min(position_size, vol_target_size)
-
-            # Apply recovery mode size reduction from risk agent
+            # (a) Drawdown/recovery scaling from risk agent (combines recovery
+            # mode and HWM drawdown scaling)
             if self._risk_agent:
                 recovery_factor = self._risk_agent.get_recovery_size_factor()
                 if recovery_factor < 1.0:
                     position_size *= recovery_factor
-                    cprint(f"[AdaptiveHybrid] Recovery mode: position size reduced by {(1-recovery_factor)*100:.0f}%", "yellow")
+                    cprint(f"[AdaptiveHybrid] Drawdown/recovery scaling: position size reduced by {(1-recovery_factor)*100:.0f}%", "yellow")
 
-            # Weekend size reduction
-            if datetime.utcnow().weekday() >= 5:  # Saturday=5, Sunday=6
-                try:
-                    from src.config import ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION
-                except ImportError:
-                    ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION = 0.30
-                position_size *= (1.0 - ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION)
-                cprint(f"  [{symbol}] Weekend reduction: size reduced by {ADAPTIVE_HYBRID_WEEKEND_SIZE_REDUCTION*100:.0f}%", "cyan")
-
-            # Event calendar: reduce size near high-impact macro events
-            try:
-                from src.strategies.modules.event_calendar import check_upcoming_events
-                upcoming = check_upcoming_events()
-                if upcoming:
-                    position_size *= (1.0 - upcoming['size_reduction'])
-                    cprint(f"  [{symbol}] Event reduction: {upcoming['event']} in {upcoming['hours_until']:.1f}h, size -{upcoming['size_reduction']*100:.0f}%", "cyan")
-            except ImportError:
-                pass
+                # (b) Correlation factor: halve size if the new symbol is highly
+                # correlated with an existing position
+                corr_factor = self._risk_agent.get_correlation_sizing_factor(
+                    symbol, list(self.paper_positions.values()))
+                if corr_factor < 1.0:
+                    position_size *= corr_factor
+                    cprint(f"  [{symbol}] Correlation factor: size *= {corr_factor:.2f}", "yellow")
 
             # Post-breaker size reduction (50% for 3 trades after loss breaker)
             if hasattr(self, '_post_breaker_trades') and self._post_breaker_trades > 0:
@@ -2079,46 +2068,9 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 self._post_breaker_trades -= 1
                 cprint(f"  [{symbol}] Post-breaker reduction: size *= 0.5 ({self._post_breaker_trades} trades remaining)", "yellow")
 
-            # Kelly-adaptive sizing from trade memory
-            try:
-                from src.config import ADAPTIVE_HYBRID_KELLY_LOOKBACK, ADAPTIVE_HYBRID_KELLY_FRACTION
-                if self._trade_memory:
-                    import sqlite3
-                    conn = sqlite3.connect(self._trade_memory.db_path)
-                    try:
-                        cursor = conn.execute(
-                            "SELECT outcome_pnl FROM decisions WHERE outcome_pnl IS NOT NULL ORDER BY timestamp DESC LIMIT ?",
-                            (ADAPTIVE_HYBRID_KELLY_LOOKBACK,)
-                        )
-                        recent_pnls = [row[0] for row in cursor.fetchall()]
-                    finally:
-                        conn.close()
-
-                    if len(recent_pnls) >= 10:
-                        wins = [p for p in recent_pnls if p > 0]
-                        losses = [p for p in recent_pnls if p <= 0]
-                        if wins and losses:
-                            win_rate = len(wins) / len(recent_pnls)
-                            avg_win = sum(wins) / len(wins)
-                            avg_loss = abs(sum(losses) / len(losses))
-                            if avg_loss > 0:
-                                payoff_ratio = avg_win / avg_loss
-                                kelly = win_rate - (1 - win_rate) / payoff_ratio
-                                kelly = max(0, kelly)  # Never negative
-                                kelly_size_pct = kelly * ADAPTIVE_HYBRID_KELLY_FRACTION
-
-                                # Only reduce, never increase beyond base
-                                base_risk_pct = ADAPTIVE_HYBRID_MAX_POSITION_PCT / 100
-                                if kelly_size_pct < base_risk_pct:
-                                    reduction = max(0.25, kelly_size_pct / base_risk_pct)  # Floor 25% to avoid deadlock
-                                    position_size *= reduction
-                                    cprint(f"  [{symbol}] Kelly adjustment: {kelly:.1%} optimal, using {kelly_size_pct:.1%} (half-Kelly), size *= {reduction:.2f}", "cyan")
-            except Exception as e:
-                cprint(f"  [{symbol}] Kelly sizing skipped: {e}", "yellow")
-
             if position_size < ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD:
                 cprint(f"[AdaptiveHybrid] Insufficient margin (${position_size:.0f} < ${ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD})", "red")
-                cprint(f"❌ [{symbol}] REJECTED: position_size ${position_size:.2f} < min ${ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD:.2f} (avail_margin=${available_margin:.2f}, risk_amt=${risk_amount:.2f}, lev={leverage}x - check Kelly/recovery/vol caps)", "red")
+                cprint(f"❌ [{symbol}] REJECTED: position_size ${position_size:.2f} < min ${ADAPTIVE_HYBRID_VOL_MIN_POSITION_USD:.2f} (avail_margin=${available_margin:.2f}, risk_amt=${risk_amount:.2f}, lev={leverage}x)", "red")
                 return None
 
             # Use V2 fees (more realistic)
@@ -2798,6 +2750,13 @@ class AdaptiveHybridStrategy(BaseStrategy):
                                 tp_progress = (entry_price - current_price) / tp_dist if tp_dist > 0 else 0
                             if tp_progress < 0.5:
                                 close_reason = 'TIME_EXIT_24H'
+                                close_price = current_price
+                        elif hold_hours >= ADAPTIVE_HYBRID_STAGNATION_HOURS:
+                            # Stagnation exit: position going nowhere after N hours
+                            # (price still within X ATR of entry) -> free the slot.
+                            stag_atr = trade.get('atr', 0) or 0
+                            if stag_atr > 0 and abs(current_price - entry_price) < ADAPTIVE_HYBRID_STAGNATION_ATR * stag_atr:
+                                close_reason = 'STAGNATION_EXIT'
                                 close_price = current_price
 
                 if close_reason:

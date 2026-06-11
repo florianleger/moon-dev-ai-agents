@@ -18,7 +18,9 @@ import anthropic
 from pathlib import Path
 from src import nice_funcs as n
 from src import nice_funcs_hyperliquid as hl
-from src.data_providers.binance_futures import get_liquidation_stream, BinanceLiquidationStream
+# Bybit feed (the Binance forceOrder WS is blocked from the prod IP and its
+# REST fallback was removed) — same stream contract as the old provider.
+from src.data_providers.bybit_liquidations import get_liquidation_stream
 from collections import deque
 from src.agents.base_agent import BaseAgent
 from src.data.signals.signal_pipeline import SignalPipeline

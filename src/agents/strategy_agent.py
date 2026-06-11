@@ -71,6 +71,10 @@ class StrategyAgent:
         """Initialize the Strategy Agent"""
         self.enabled_strategies = []
         self.model = ModelFactory.create_model_with_fallback('anthropic')
+        # Last raw signal per token (incl. NEUTRAL): the scheduler reads this
+        # to get the real score/threshold when get_signals() returns no
+        # approved signal (the majority of scans).
+        self.last_raw_signals = {}
 
         # Import active strategy config
         try:
@@ -257,6 +261,10 @@ class StrategyAgent:
                         'direction': signal['direction'],
                         'metadata': signal.get('metadata', {})
                     })
+
+            # Expose the last raw signal (incl. NEUTRAL) for the scheduler's
+            # near-threshold prioritization (approved_signals drops NEUTRAL).
+            self.last_raw_signals[token] = signals[-1] if signals else None
 
             if not signals:
                 print(f"ℹ️ No strategy signals for {token}")

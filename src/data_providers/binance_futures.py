@@ -14,7 +14,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 import pandas as pd
 from termcolor import cprint
 
@@ -29,9 +29,7 @@ try:
     WEBSOCKET_AVAILABLE = True
 except ImportError:
     WEBSOCKET_AVAILABLE = False
-    cprint("[BinanceFutures] websocket-client not installed, using REST fallback", "yellow")
-
-import requests
+    cprint("[BinanceFutures] websocket-client not installed, liquidation stream disabled", "yellow")
 
 
 class BinanceLiquidationStream:
@@ -43,7 +41,8 @@ class BinanceLiquidationStream:
     """
 
     WS_URL = "wss://fstream.binance.com/ws/!forceOrder@arr"
-    REST_URL = "https://fapi.binance.com/fapi/v1/allForceOrders"
+    # NOTE: the former REST fallback (fapi/v1/allForceOrders) was removed by
+    # Binance (HTTP 400) — the WebSocket is the only source.
 
     def __init__(self, buffer_size: int = 10000):
         """
@@ -136,7 +135,7 @@ class BinanceLiquidationStream:
             bool: True if started successfully
         """
         if not WEBSOCKET_AVAILABLE:
-            cprint("[BinanceFutures] WebSocket not available, will use REST polling", "yellow")
+            cprint("[BinanceFutures] WebSocket not available, liquidation stream disabled", "yellow")
             return False
 
         if self.running:
@@ -299,47 +298,6 @@ class BinanceLiquidationStream:
         except Exception as e:
             cprint(f"[BinanceFutures] Error parsing message: {e}", "yellow")
 
-    def fetch_recent_liquidations_rest(self, limit: int = 1000) -> List[Dict]:
-        """
-        Fetch recent liquidations via REST API (fallback).
-
-        Note: This endpoint may require API key for full access.
-        Without key, returns limited data.
-
-        Args:
-            limit: Number of records to fetch (max 1000)
-
-        Returns:
-            List of liquidation records
-        """
-        try:
-            # Try public endpoint first (limited data)
-            url = f"{self.REST_URL}?limit={min(limit, 1000)}"
-            response = requests.get(url, timeout=10)
-
-            if response.status_code == 200:
-                data = response.json()
-                liquidations = []
-                for item in data:
-                    liquidations.append({
-                        'timestamp': datetime.fromtimestamp(item['time'] / 1000),
-                        'symbol': item['symbol'],
-                        'side': item['side'],
-                        'quantity': float(item['origQty']),
-                        'price': float(item['averagePrice']),
-                        'usd_value': float(item['origQty']) * float(item['averagePrice']),
-                        'status': item['status']
-                    })
-                return liquidations
-            else:
-                # REST API may require symbol parameter or authentication
-                # This is non-critical - WebSocket is the primary method
-                return []
-
-        except Exception as e:
-            cprint(f"[BinanceFutures] REST API error: {e}", "yellow")
-            return []
-
     def get_recent_liquidations(self, minutes: int = 15) -> pd.DataFrame:
         """
         Get liquidations from the last N minutes.
@@ -357,15 +315,6 @@ class BinanceLiquidationStream:
                 liq for liq in self.liquidations
                 if liq['timestamp'] >= cutoff
             ]
-
-        if not recent:
-            # Try REST fallback if WebSocket has no data
-            if not self.connected:
-                recent = self.fetch_recent_liquidations_rest()
-                recent = [
-                    liq for liq in recent
-                    if liq['timestamp'] >= cutoff
-                ]
 
         if not recent:
             return pd.DataFrame(columns=[
@@ -516,6 +465,4 @@ if __name__ == "__main__":
 
         stream.stop_stream()
     else:
-        cprint("Failed to start stream, trying REST fallback...", "yellow")
-        liqs = stream.fetch_recent_liquidations_rest(limit=100)
-        cprint(f"Fetched {len(liqs)} liquidations via REST", "white")
+        cprint("Failed to start stream (WebSocket unavailable or blocked)", "red")

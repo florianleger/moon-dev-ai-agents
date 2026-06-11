@@ -55,6 +55,9 @@ class RiskAgent(BaseAgent):
         # Strategy reference (set externally by main.py)
         self._strategy = None
 
+        # Why new entries are currently blocked (set by allows_new_entries)
+        self.entries_blocked_reason = None
+
         # Load persisted state
         self._load_state()
 
@@ -222,7 +225,12 @@ class RiskAgent(BaseAgent):
         return min(recovery_factor, drawdown_factor)
 
     def is_trading_allowed(self) -> bool:
-        """Check if trading is allowed (used by strategy agent before opening new positions)."""
+        """Hard circuit breakers only: drawdown/balance pause and daily loss pause.
+
+        Max positions does NOT block this anymore — a full book is a normal
+        state that must only prevent NEW entries (see allows_new_entries()),
+        never the scan loop or position monitoring/exits.
+        """
         # Reset daily pause if new day
         today = datetime.now().date()
         if self.daily_pause and self.daily_pause_date != today:
@@ -241,12 +249,23 @@ class RiskAgent(BaseAgent):
         if self.daily_pause:
             return False
 
-        # Check max positions
-        open_count = self.get_open_position_count()
-        if open_count >= RISK_MAX_POSITIONS:
-            cprint(f"[RiskAgent] Max positions reached ({open_count}/{RISK_MAX_POSITIONS})", "yellow")
+        return True
+
+    def allows_new_entries(self) -> bool:
+        """Check if NEW positions may be opened (circuit breakers + max positions).
+
+        Sets self.entries_blocked_reason for logging by the caller.
+        """
+        if not self.is_trading_allowed():
+            self.entries_blocked_reason = self.pause_reason or "risk circuit breaker active"
             return False
 
+        open_count = self.get_open_position_count()
+        if open_count >= RISK_MAX_POSITIONS:
+            self.entries_blocked_reason = f"max positions reached ({open_count}/{RISK_MAX_POSITIONS})"
+            return False
+
+        self.entries_blocked_reason = None
         return True
 
     # Static correlation table for major crypto pairs
@@ -399,7 +418,7 @@ class RiskAgent(BaseAgent):
             self._save_state()
             breach = True
 
-        # Circuit breaker 3: Max positions (informational, enforcement is in is_trading_allowed)
+        # Circuit breaker 3: Max positions (informational, enforcement is in allows_new_entries)
         if open_positions >= RISK_MAX_POSITIONS:
             cprint(f"[RiskAgent] Max positions ({RISK_MAX_POSITIONS}) reached — no new trades allowed", "yellow")
 
@@ -410,6 +429,141 @@ class RiskAgent(BaseAgent):
         self._save_state()
 
         return breach
+
+
+# ---------------------------------------------------------------------------
+# Per-strategy kill switch + global daily-loss breaker (independent strategies)
+# ---------------------------------------------------------------------------
+
+KILL_SWITCH_STATE_FILE = Path("src/data/strategy_kill_switch.json")
+KILL_SWITCH_ROLLING_WINDOW = 40   # trades used for rolling PF
+KILL_SWITCH_MIN_TRADES = 25       # min trades before PF can trigger
+KILL_SWITCH_PF_MIN = 0.7          # pause if rolling PF below this
+KILL_SWITCH_MAX_DD_PCT = 12.0     # pause if account drawdown above this
+
+
+def corrected_trade_pnls(df):
+    """Per-trade corrected PnL series from a closed_trades DataFrame.
+
+    Uses total_pnl when available (includes partial scale-out PnL, e.g.
+    adaptive_hybrid), otherwise pnl. Entry fee is then deducted in both cases:
+    every strategy deducts it from balance at open and never includes it in
+    pnl/total_pnl — same convention as dashboard and calibration_agent.
+    """
+    import pandas as pd
+    if 'total_pnl' in df.columns:
+        pnl = pd.to_numeric(df['total_pnl'], errors='coerce')
+        if 'pnl' in df.columns:
+            pnl = pnl.fillna(pd.to_numeric(df['pnl'], errors='coerce'))
+    else:
+        pnl = pd.to_numeric(df['pnl'], errors='coerce')
+    if 'entry_fee' in df.columns:
+        pnl = pnl - pd.to_numeric(df['entry_fee'], errors='coerce').fillna(0)
+    return pnl.fillna(0)
+
+
+def independent_daily_loss_breached(instances, limit_usd: float):
+    """Global breaker: sum of daily PnL across independent strategy instances.
+
+    Returns (breached: bool, total_daily_pnl: float). Implements
+    INDEPENDENT_STRATEGIES_MAX_TOTAL_DAILY_LOSS_USD (previously dead config).
+    """
+    total = sum(float(getattr(inst, 'daily_pnl', 0.0) or 0.0) for inst in instances)
+    return total <= -abs(limit_usd), total
+
+
+class StrategyKillSwitch:
+    """Auto-pause a strategy when its rolling PF or account drawdown degrades.
+
+    Pause criteria (evaluated on the strategy's closed_trades.csv):
+      - rolling PF over the last KILL_SWITCH_ROLLING_WINDOW trades < KILL_SWITCH_PF_MIN
+        (only with at least KILL_SWITCH_MIN_TRADES trades in the window), or
+      - current account drawdown from peak > KILL_SWITCH_MAX_DD_PCT.
+
+    A paused strategy stays paused (state persisted to JSON) until manually
+    resumed (resume() or deleting its entry in the state file). The caller
+    must keep managing the paused strategy's open positions for a clean close.
+    """
+
+    def __init__(self, state_file=KILL_SWITCH_STATE_FILE, initial_balance=PAPER_TRADING_BALANCE):
+        self.state_file = Path(state_file)
+        self.initial_balance = initial_balance
+        self.state = {}
+        if self.state_file.exists():
+            try:
+                self.state = json.loads(self.state_file.read_text())
+            except Exception as e:
+                cprint(f"[KillSwitch] Could not load state: {e}", "yellow")
+
+    def _save(self):
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps(self.state, indent=2))
+
+    def is_paused(self, name: str) -> bool:
+        return bool(self.state.get(name, {}).get('paused', False))
+
+    def resume(self, name: str):
+        """Manually un-pause a strategy."""
+        if name in self.state:
+            del self.state[name]
+            self._save()
+            cprint(f"[KillSwitch] {name} resumed", "green")
+
+    def evaluate(self, name: str, closed_trades_csv: str) -> dict:
+        """Evaluate kill-switch criteria for a strategy. Returns its state dict."""
+        if self.is_paused(name):
+            return self.state[name]
+
+        import pandas as pd
+        if not os.path.exists(closed_trades_csv):
+            return {'paused': False, 'n_trades': 0}
+        df = pd.read_csv(closed_trades_csv)
+        if df.empty or ('pnl' not in df.columns and 'total_pnl' not in df.columns):
+            return {'paused': False, 'n_trades': 0}
+
+        pnls = corrected_trade_pnls(df)
+
+        # Current account drawdown from all-time peak (full history)
+        equity = self.initial_balance + pnls.cumsum()
+        peak = max(self.initial_balance, float(equity.max()))
+        dd_pct = (peak - float(equity.iloc[-1])) / peak * 100 if peak > 0 else 0.0
+
+        # Rolling profit factor on the last N trades
+        window = pnls.tail(KILL_SWITCH_ROLLING_WINDOW)
+        n = len(window)
+        gains = float(window[window > 0].sum())
+        losses = float(-window[window < 0].sum())
+        pf = gains / losses if losses > 0 else float('inf')
+
+        reasons = []
+        if n >= KILL_SWITCH_MIN_TRADES and pf < KILL_SWITCH_PF_MIN:
+            reasons.append(f"rolling PF {pf:.2f} < {KILL_SWITCH_PF_MIN} (last {n} trades)")
+        if dd_pct > KILL_SWITCH_MAX_DD_PCT:
+            reasons.append(f"account drawdown {dd_pct:.1f}% > {KILL_SWITCH_MAX_DD_PCT}%")
+
+        if reasons:
+            reason = " + ".join(reasons)
+            entry = {
+                'paused': True,
+                'reason': reason,
+                'paused_at': datetime.now().isoformat(),
+                'pf': round(pf, 3) if pf != float('inf') else None,
+                'n_trades': int(n),
+                'dd_pct': round(dd_pct, 2),
+            }
+            self.state[name] = entry
+            self._save()
+            cprint(f"[KillSwitch] STRATEGY PAUSED: {name} — {reason}", "red", attrs=['bold'])
+            try:
+                from src.utils.alerting import get_alert_manager
+                get_alert_manager().circuit_breaker_triggered(
+                    f"Kill switch: {name}", reason)
+            except Exception as e:
+                cprint(f"[KillSwitch] Alert failed: {e}", "yellow")
+            return entry
+
+        return {'paused': False, 'pf': round(pf, 3) if pf != float('inf') else None,
+                'n_trades': int(n), 'dd_pct': round(dd_pct, 2)}
 
 
 def main():

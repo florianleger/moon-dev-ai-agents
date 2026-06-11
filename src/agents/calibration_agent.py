@@ -52,6 +52,9 @@ class CalibrationAgent(BaseAgent):
     MIN_TRADES = 15  # Raised from 5: reduce noise (3 SL streak no longer triggers adjustment)
     # Minimum history span (days) required before any calibration -- guards against early bursts of trades
     MIN_HISTORY_DAYS = 3  # Lowered from 7 to allow earlier convergence given low trade frequency in prod
+    # BAD_HOURS: minimum sample per hour + win-rate cutoff before banning an hour
+    MIN_TRADES_PER_HOUR = 10
+    MAX_WR_BAD_HOUR = 0.35
 
     def __init__(self):
         super().__init__('calibration')
@@ -84,6 +87,32 @@ class CalibrationAgent(BaseAgent):
     # ------------------------------------------------------------------
     # 1. Collect performance data
     # ------------------------------------------------------------------
+    @staticmethod
+    def _corrected_pnl(row) -> float:
+        """True economic PnL of a trade row.
+
+        Uses total_pnl (final leg + scale-out partials) when present, otherwise
+        pnl + partial_pnl_realized. Entry fee is deducted from the balance at
+        open time but NOT included in pnl/total_pnl, so subtract it here.
+        Calibrating on the raw `pnl` column ignored +$37 of realized partials.
+        """
+        def _num(key):
+            val = row.get(key)
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return None
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return None
+
+        total = _num('total_pnl')
+        if total is None:
+            total = (_num('pnl') or 0.0) + (_num('partial_pnl_realized') or 0.0)
+        entry_fee = _num('entry_fee')
+        if entry_fee is not None:
+            total -= entry_fee
+        return total
+
     def _collect_performance_data(self, days: int = 14) -> dict:
         """Read closed trades from CSV and TradeMemory. Returns metrics dict."""
         trades = []
@@ -101,7 +130,7 @@ class CalibrationAgent(BaseAgent):
                         trades.append({
                             'symbol': row.get('symbol', ''),
                             'direction': row.get('direction', ''),
-                            'pnl': float(row.get('pnl', 0) or 0),
+                            'pnl': self._corrected_pnl(row),
                             'pnl_pct': float(row.get('pnl_pct', 0) or 0),
                             'close_reason': str(row.get('close_reason', '')),
                             'entry_time': str(row.get('entry_time', row.get('timestamp', ''))),
@@ -225,18 +254,20 @@ class CalibrationAgent(BaseAgent):
                 'severity': 'HIGH',
             })
 
-        # BAD_HOURS: certain hours with WR < 25% and >= 3 trades
+        # BAD_HOURS: hours with WR < 35% on a meaningful sample (>= 10 trades).
+        # The previous >= 3 trades criterion banned hours on pure noise
+        # (1-4 trades/hour in prod).
         bad_hours = []
         for hour, stats in metrics.get('hour_stats', {}).items():
             total_h = stats['wins'] + stats['losses']
-            if total_h >= 3:
+            if total_h >= self.MIN_TRADES_PER_HOUR:
                 wr = stats['wins'] / total_h
-                if wr < 0.25:
+                if wr < self.MAX_WR_BAD_HOUR:
                     bad_hours.append(hour)
         if bad_hours:
             problems.append({
                 'type': 'BAD_HOURS',
-                'detail': f"Hours with WR < 25%: {bad_hours}",
+                'detail': f"Hours with WR < {self.MAX_WR_BAD_HOUR:.0%} on >= {self.MIN_TRADES_PER_HOUR} trades: {bad_hours}",
                 'severity': 'LOW',
                 'hours': bad_hours,
             })
@@ -325,9 +356,11 @@ class CalibrationAgent(BaseAgent):
         # --- WR_DECLINING: raise threshold by 5 ---
         if 'WR_DECLINING' in problem_types:
             new_val = current_threshold + 5
-            new_val, _ = apply_guardrail(
+            new_val, was_clamped = apply_guardrail(
                 'ADAPTIVE_HYBRID_BASE_THRESHOLD', new_val, current_threshold,
                 ADAPTIVE_HYBRID_BASE_THRESHOLD)
+            if was_clamped:
+                cprint(f"[CalibrationAgent] WARNING: threshold proposal clamped by guardrail to {new_val}", "yellow")
             adjustments['ADAPTIVE_HYBRID_BASE_THRESHOLD'] = {
                 'value': round(new_val, 1),
                 'reason': f'WR_DECLINING: raising threshold from {current_threshold} to {new_val}',
@@ -336,9 +369,11 @@ class CalibrationAgent(BaseAgent):
         # --- THRESHOLD_TOO_LOW: raise threshold by 5 ---
         if 'THRESHOLD_TOO_LOW' in problem_types and 'ADAPTIVE_HYBRID_BASE_THRESHOLD' not in adjustments:
             new_val = current_threshold + 5
-            new_val, _ = apply_guardrail(
+            new_val, was_clamped = apply_guardrail(
                 'ADAPTIVE_HYBRID_BASE_THRESHOLD', new_val, current_threshold,
                 ADAPTIVE_HYBRID_BASE_THRESHOLD)
+            if was_clamped:
+                cprint(f"[CalibrationAgent] WARNING: threshold proposal clamped by guardrail to {new_val}", "yellow")
             adjustments['ADAPTIVE_HYBRID_BASE_THRESHOLD'] = {
                 'value': round(new_val, 1),
                 'reason': f'THRESHOLD_TOO_LOW: raising threshold from {current_threshold} to {new_val}',
@@ -347,23 +382,34 @@ class CalibrationAgent(BaseAgent):
         # --- THRESHOLD_TOO_HIGH: lower threshold by 3 ---
         if 'THRESHOLD_TOO_HIGH' in problem_types and 'ADAPTIVE_HYBRID_BASE_THRESHOLD' not in adjustments:
             new_val = current_threshold - 3
-            new_val, _ = apply_guardrail(
+            new_val, was_clamped = apply_guardrail(
                 'ADAPTIVE_HYBRID_BASE_THRESHOLD', new_val, current_threshold,
                 ADAPTIVE_HYBRID_BASE_THRESHOLD)
+            if was_clamped:
+                cprint(f"[CalibrationAgent] WARNING: threshold proposal clamped by guardrail to {new_val}", "yellow")
             adjustments['ADAPTIVE_HYBRID_BASE_THRESHOLD'] = {
                 'value': round(new_val, 1),
                 'reason': f'THRESHOLD_TOO_HIGH: lowering threshold from {current_threshold} to {new_val}',
             }
 
-        # --- BAD_HOURS: add to avoid list ---
+        # --- BAD_HOURS: RE-DERIVE the avoid list (config base + hours flagged
+        # on the CURRENT window). The previous logic merged with the existing
+        # override (list could only grow), so hours banned under the old
+        # noise-prone criterion (>= 3 trades) persisted forever and the
+        # override REPLACED the manually configured low-liquidity hours.
+        from src.config import ADAPTIVE_HYBRID_AVOID_HOURS as _config_avoid_hours
+        detected_hours = []
         for p in problems:
             if p['type'] == 'BAD_HOURS':
-                existing = current.get('ADAPTIVE_HYBRID_AVOID_HOURS', {}).get('value', [])
-                merged = sorted(set(existing + p['hours']))
-                adjustments['ADAPTIVE_HYBRID_AVOID_HOURS'] = {
-                    'value': merged,
-                    'reason': f'BAD_HOURS: avoiding hours {p["hours"]}',
-                }
+                detected_hours = list(p['hours'])
+        derived = sorted(set(int(h) for h in _config_avoid_hours) | set(int(h) for h in detected_hours))
+        existing = current.get('ADAPTIVE_HYBRID_AVOID_HOURS', {}).get('value')
+        if detected_hours or (existing is not None and sorted(int(h) for h in existing) != derived):
+            adjustments['ADAPTIVE_HYBRID_AVOID_HOURS'] = {
+                'value': derived,
+                'reason': (f'BAD_HOURS: re-derived from config {sorted(set(int(h) for h in _config_avoid_hours))} '
+                           f'+ current-window bad hours {sorted(detected_hours)}'),
+            }
 
         return adjustments
 
