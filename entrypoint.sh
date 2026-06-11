@@ -32,6 +32,15 @@ check_env() {
     return 0
 }
 
+# Seed Python source files into the data volume: /app/src/data is a
+# persistent bind mount that shadows the image content, so the importable
+# modules (trade_memory.py, __init__.py, ...) must be refreshed from the
+# image at every boot or they would go stale after the first deploy.
+if [ -d /app/src/data_seed ]; then
+    mkdir -p /app/src/data
+    cp -f /app/src/data_seed/*.py /app/src/data/
+fi
+
 echo ""
 echo "Checking environment variables..."
 echo ""

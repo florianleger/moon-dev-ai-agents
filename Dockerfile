@@ -54,6 +54,13 @@ COPY --chown=trader:trader src/ ./src/
 COPY --chown=trader:trader entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
+# Pristine copy of the importable src/data modules: /app/src/data is bind-
+# mounted in production (persistent storage), which shadows the image content;
+# entrypoint.sh re-seeds these files into the volume at every boot
+RUN mkdir -p /app/src/data_seed \
+    && cp /app/src/data/*.py /app/src/data_seed/ \
+    && chown -R trader:trader /app/src/data_seed
+
 # Switch to non-root user
 USER trader
 
