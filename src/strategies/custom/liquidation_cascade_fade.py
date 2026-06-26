@@ -368,6 +368,19 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         cascade_side = 'LONG_LIQUIDATED' if long_liqs > short_liqs else 'SHORT_LIQUIDATED'
         fade_direction = 'BUY' if cascade_side == 'LONG_LIQUIDATED' else 'SELL'
 
+        # Restrict to the configured (historically profitable) cascade sides
+        try:
+            from src import config as _cfg
+            allowed_sides = getattr(_cfg, 'LIQ_CASCADE_SIDES', None)
+        except ImportError:
+            allowed_sides = None
+        if allowed_sides and cascade_side not in allowed_sides:
+            self.logger.info(
+                f"LiqCascade: {symbol} {cascade_side} cascade skipped "
+                f"(not in LIQ_CASCADE_SIDES={list(allowed_sides)})"
+            )
+            return None
+
         return {
             'detected': True,
             'zscore': round(zscore, 2),

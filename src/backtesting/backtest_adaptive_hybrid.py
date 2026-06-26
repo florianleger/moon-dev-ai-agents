@@ -34,12 +34,17 @@ from ta.volume import VolumeWeightedAveragePrice
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.backtesting.backtest_engine import BacktestEngine
+from src.strategies.modules.regime_gate import regime_gate, EMA_SLOPE_LOOKBACK
 from src.config import (
     ADAPTIVE_HYBRID_BASE_THRESHOLD,
     ADAPTIVE_HYBRID_ATR_PROFILES,
     PAPER_TAKER_FEE_V2,
     PAPER_SLIPPAGE_V2,
 )
+
+# Regime gate toggle (A/B-testable via env: REGIME_GATE=on|off, REGIME_GATE_HARD=1|0)
+REGIME_GATE_ENABLED = os.environ.get('REGIME_GATE', 'off').lower() in ('on', '1', 'true')
+REGIME_GATE_HARD_BLOCK = os.environ.get('REGIME_GATE_HARD', '1').lower() in ('on', '1', 'true')
 
 # ---------------------------------------------------------------------------
 # Config defaults (read from src/config.py for single-source-of-truth)
@@ -104,11 +109,32 @@ AVOID_HOURS = [0, 1, 2, 3, 4, 5]
 # Data loading
 # ---------------------------------------------------------------------------
 
-def fetch_ohlcv_hyperliquid(symbol: str, interval: str, days: int) -> pd.DataFrame:
-    """Fetch OHLCV data from HyperLiquid API."""
-    from hyperliquid.info import Info
+def _hl_candle_snapshot(symbol: str, interval: str, start_ms: int, end_ms: int) -> list:
+    """Direct HyperLiquid candleSnapshot POST. Avoids the hyperliquid SDK's
+    Info() constructor, which crashes on spot_meta parsing (IndexError) in
+    some SDK versions. Retries transient network errors."""
+    import json as _json
+    import urllib.request
+    body = _json.dumps({
+        "type": "candleSnapshot",
+        "req": {"coin": symbol, "interval": interval,
+                "startTime": start_ms, "endTime": end_ms},
+    }).encode()
+    last_err = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                "https://api.hyperliquid.xyz/info", body,
+                {"Content-Type": "application/json"})
+            return _json.load(urllib.request.urlopen(req, timeout=30)) or []
+        except Exception as e:  # noqa: BLE001 - network retry
+            last_err = e
+            time.sleep(1.5 * (attempt + 1))
+    raise RuntimeError(f"HyperLiquid candleSnapshot failed for {symbol}: {last_err}")
 
-    info = Info(skip_ws=True)
+
+def fetch_ohlcv_hyperliquid(symbol: str, interval: str, days: int) -> pd.DataFrame:
+    """Fetch OHLCV data from HyperLiquid API (direct POST, no SDK)."""
     end_time = int(time.time() * 1000)
 
     interval_map = {
@@ -127,7 +153,7 @@ def fetch_ohlcv_hyperliquid(symbol: str, interval: str, days: int) -> pd.DataFra
     t = start_time
     while t < end_time:
         chunk_end = min(t + chunk_ms, end_time)
-        data = info.candles_snapshot(symbol, interval, t, chunk_end)
+        data = _hl_candle_snapshot(symbol, interval, t, chunk_end)
         if data:
             all_data.extend(data)
         t = chunk_end
@@ -713,10 +739,27 @@ def run_backtest(df: pd.DataFrame, symbol: str, initial_balance: float = 500.0,
         hour = ts.hour if hasattr(ts, 'hour') else 12
         aggregated = aggregate_scores(module_results, ind['adx'], hour)
 
-        if aggregated['direction'] == 'NEUTRAL' or aggregated['score'] < BASE_THRESHOLD:
+        if aggregated['direction'] == 'NEUTRAL':
             continue
 
         direction = aggregated['direction']
+
+        # Mechanical regime/direction gate (same pure function used live)
+        effective_threshold = BASE_THRESHOLD
+        if REGIME_GATE_ENABLED:
+            closes = df['close'].iloc[:idx + 1].values
+            ema_now = ind['ema_200']
+            prev_idx = max(0, idx - EMA_SLOPE_LOOKBACK)
+            ema_prev = float(df['ema_200'].iloc[prev_idx]) if 'ema_200' in df.columns else ema_now
+            gate = regime_gate(closes, ema_now, ema_prev, direction,
+                               hard_block=REGIME_GATE_HARD_BLOCK)
+            if gate['blocked']:
+                continue
+            effective_threshold += gate['threshold_delta']
+
+        if aggregated['score'] < effective_threshold:
+            continue
+
         price = ind['close']
         atr = ind['atr']
 

@@ -59,6 +59,7 @@ from src.strategies.modules.funding_composite import score_funding_composite
 from src.strategies.modules.llm_confirmation import llm_confirm_trade
 from src.strategies.modules.llm_regime import classify_regime, adjust_weights_for_regime
 from src.strategies.modules.trade_learner import analyze_closed_trade
+from src.strategies.modules.regime_gate import regime_gate, EMA_SLOPE_LOOKBACK
 from src.strategies.modules.mtf_confluence import score_mtf_confluence
 
 # New scoring modules (Phase 2)
@@ -1406,9 +1407,11 @@ class AdaptiveHybridStrategy(BaseStrategy):
         if symbol not in self.assets:
             return None
 
-        # Fetch data
+        # Fetch data. 600 bars (not 200) so EMA200 is past warmup AND converged
+        # at the regime-gate slope-lookback bar (EMA200 over exactly 200 rows is
+        # NaN everywhere but the last bar, which silently disabled the gate).
         if df is None:
-            df = self._fetch_candles(symbol, interval='1h', candles=200)
+            df = self._fetch_candles(symbol, interval='1h', candles=600)
 
         if df is None or len(df) < 50:
             return None
@@ -1544,6 +1547,29 @@ class AdaptiveHybridStrategy(BaseStrategy):
         # Get threshold (direction-aware)
         threshold = self._get_effective_threshold(symbol, ind=ind, direction=aggregated.get('direction'))
         urgency = self._get_urgency_multiplier(symbol)
+
+        # Mechanical regime/direction gate — same pure function as the backtest
+        # harness. Blocks counter-trend entries and stiffens the threshold in chop.
+        from src import config as _gate_cfg
+        gate_enabled = getattr(_gate_cfg, 'ADAPTIVE_HYBRID_REGIME_GATE_ENABLED', False)
+        _direction = aggregated.get('direction')
+        _gdf = ind.get('_df')
+        if (gate_enabled and _direction in ('BUY', 'SELL')
+                and _gdf is not None and len(_gdf) > EMA_SLOPE_LOOKBACK):
+            hard_block = getattr(_gate_cfg, 'ADAPTIVE_HYBRID_REGIME_GATE_HARD_BLOCK', True)
+            closes = _gdf['close'].values
+            ema_now = ind.get('ema_200', float(closes[-1]))
+            prev_idx = max(0, len(_gdf) - 1 - EMA_SLOPE_LOOKBACK)
+            ema_prev = float(_gdf['ema_200'].iloc[prev_idx]) if 'ema_200' in _gdf.columns else ema_now
+            gate = regime_gate(closes, ema_now, ema_prev, _direction, hard_block=hard_block)
+            self._current_regime = gate['regime']
+            if gate['blocked']:
+                cprint(f"  [{symbol}] REGIME GATE: {_direction} blocked in "
+                       f"{gate['regime']} (ER={gate['er']})", "red")
+                return self._create_neutral_signal(
+                    symbol, f"Regime gate: {_direction} blocked in {gate['regime']} (ER={gate['er']})")
+            if gate['threshold_delta']:
+                threshold += gate['threshold_delta']
 
         # Log analysis
         fired_modules = {n: r for n, r in available_modules.items() if r['score'] > 0 and r['direction'] != 'NEUTRAL'}

@@ -428,9 +428,19 @@ ADAPTIVE_HYBRID_VOLUME_FILTER_MIN = 0.05 # Minimum volume ratio to accept signal
 
 # LLM-Enhanced Pipeline Settings
 ADAPTIVE_HYBRID_LLM_CONFIRMATION = True   # Enabled: LLM filters low-quality trades before execution
-ADAPTIVE_HYBRID_LLM_REGIME = True         # Enabled: regime detection to avoid counter-trend trades
+ADAPTIVE_HYBRID_LLM_REGIME = False        # DISABLED: the LLM Wyckoff classifier labelled a -6% choppy
+                                          # tape "MARKUP" and skewed BUY thresholds down (45 BUYs WR 27%);
+                                          # replaced by the mechanical regime gate below.
 ADAPTIVE_HYBRID_LLM_LEARNER = True       # Enable post-trade LLM learning
 ADAPTIVE_HYBRID_MTF_CONFLUENCE = True    # Enable multi-timeframe confluence scoring
+
+# Mechanical regime/direction gate (src/strategies/modules/regime_gate.py) — same
+# pure function used by the backtest harness. Blocks counter-trend entries
+# (BUY in downtrend / SELL in uptrend) and raises the threshold in chop (low
+# Kaufman efficiency ratio). Backtest 1h 180d: rescued ETH from -10.3% (PF 0.81)
+# to +3.3% (PF 1.12) and halved max drawdown; reversible via the flag.
+ADAPTIVE_HYBRID_REGIME_GATE_ENABLED = True
+ADAPTIVE_HYBRID_REGIME_GATE_HARD_BLOCK = True
 ADAPTIVE_HYBRID_LLM_PROVIDER = 'anthropic'  # LLM provider — switched from groq (qwen3-32b rate-limited, 100% failures)
 ADAPTIVE_HYBRID_LLM_TIMEOUT_S = 8       # Max seconds to wait for LLM response (raised from 5 for Sonnet latency)
 ADAPTIVE_HYBRID_MAX_POSITION_PCT = 25    # Max position size as % of paper balance
@@ -694,6 +704,8 @@ VOL_BREAKOUT_BB_PERCENTILE = 20  # BB width below Nth percentile = squeeze
 VOL_BREAKOUT_VOLUME_SPIKE = 2.0  # Volume must be Nx average for breakout confirmation
 VOL_BREAKOUT_ADX_THRESHOLD = 25  # ADX must rise above this
 VOL_BREAKOUT_ADX_MAX = 32        # Reject entries when ADX already > 32 (late entries: 7 trades ADX>30 = -$10.42)
+VOL_BREAKOUT_ER_MIN = 0.30       # Kaufman Efficiency Ratio (20 bars) floor: skip breakouts in chop/range,
+                                 # where the trailing-stop edge inverted (collapse was regime-driven). 0 = off.
 VOL_BREAKOUT_RISK_PCT = 0.015
 VOL_BREAKOUT_TRAILING_ATR = 2.5  # Trailing stop distance
 VOL_BREAKOUT_MAX_HOLD_HOURS = 24
@@ -706,7 +718,13 @@ VOL_BREAKOUT_LEVERAGE = {'btc': 3, 'eth': 3, 'mid': 3, 'alt': 2}
 # serveur et le REST fallback allForceOrders a été supprimé par Binance).
 LIQ_CASCADE_ENABLED = True
 LIQ_CASCADE_TOKENS = ['BTC', 'ETH', 'SOL', 'XRP', 'AVAX', 'SUI']  # Only liquid enough for cascade fading
-LIQ_CASCADE_SIGMA_THRESHOLD = 2.0  # Liquidation volume > Nx std dev (loosened from 3.0 to detect smaller cascades)
+LIQ_CASCADE_SIGMA_THRESHOLD = 3.0  # Liquidation volume > Nx std dev. Back to 3.0: at 2.0 the gross
+                                   # edge was ~nil and ~85% of the net loss was fees — require bigger
+                                   # cascades so the snapback covers round-trip costs.
+# Only fade these cascade sides. SHORT_LIQUIDATED = short the pump after shorts get squeezed; it was
+# the only profitable side in paper (n=12, WR 67%, +$2.82) vs LONG_LIQUIDATED (buy the dip, -$6.36) which
+# bleeds in a downtrend. Small sample -> experimental, flag-reversible, kill-switch protected.
+LIQ_CASCADE_SIDES = ['SHORT_LIQUIDATED']
 LIQ_CASCADE_RISK_PCT = 0.01  # 1% risk (smaller, high WR target)
 LIQ_CASCADE_MAX_HOLD_HOURS = 4  # Quick fade, short hold
 LIQ_CASCADE_SL_ATR_MULT = 2.0

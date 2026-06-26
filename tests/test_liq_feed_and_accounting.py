@@ -598,13 +598,25 @@ class TestCascadeAbsoluteTrigger:
         assert s._detect_cascade('BTC') is None
 
     def test_genuine_anomaly_still_triggers(self):
-        """Volume >> K x baseline mean fires the trigger."""
+        """Volume >> K x baseline mean fires the trigger. Detection/classification
+        is independent of the side policy, so allow all sides here."""
         s = _make_cascade_stub(_FakeCascadeStream(
             recent_df=_recent_btc_liqs(9_000_000),
             baseline_df=_baseline_btc_liqs(per_window_usd=1_500_000),
         ))
-        cascade = s._detect_cascade('BTC')
+        with patch('src.config.LIQ_CASCADE_SIDES', None):
+            cascade = s._detect_cascade('BTC')
         assert cascade is not None
         assert cascade['detected'] is True
         assert cascade['cascade_side'] == 'LONG_LIQUIDATED'
         assert cascade['fade_direction'] == 'BUY'
+
+    def test_side_policy_filters_disallowed_side(self):
+        """With the SHORT_LIQUIDATED-only policy, a LONG_LIQUIDATED cascade
+        (SELL-side liquidations) is rejected even when the trigger fires."""
+        s = _make_cascade_stub(_FakeCascadeStream(
+            recent_df=_recent_btc_liqs(9_000_000),
+            baseline_df=_baseline_btc_liqs(per_window_usd=1_500_000),
+        ))
+        with patch('src.config.LIQ_CASCADE_SIDES', ['SHORT_LIQUIDATED']):
+            assert s._detect_cascade('BTC') is None

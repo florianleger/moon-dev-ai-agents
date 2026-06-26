@@ -162,6 +162,19 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         if len(bb_width) < 3 or bb_width.iloc[-3:-1].min() > sq_thresh:
             return None
 
+        # Regime filter: skip breakouts in chop (low Kaufman Efficiency Ratio),
+        # where the trailing-stop edge inverts. Same metric as Adaptive Hybrid's gate.
+        try:
+            from src import config as _cfg
+            er_min = getattr(_cfg, 'VOL_BREAKOUT_ER_MIN', 0.0)
+        except ImportError:
+            er_min = 0.0
+        if er_min > 0:
+            from src.strategies.modules.regime_gate import efficiency_ratio
+            er = efficiency_ratio(close.values, period=20)
+            if er < er_min:
+                return None
+
         vol_avg = volume.rolling(20).mean()
         vol_ratio = volume.iloc[-1] / vol_avg.iloc[-1] if vol_avg.iloc[-1] > 0 else 0
         # Dead market filter
