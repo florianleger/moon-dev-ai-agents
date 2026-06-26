@@ -21,7 +21,10 @@ router = APIRouter()
 DATA_BASE_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
 SCHEDULER_STATE_FILE = os.path.join(DATA_BASE_PATH, 'adaptive_hybrid', 'scheduler_state.json')
 LIGHT_CHECK_STATE_FILE = os.path.join(DATA_BASE_PATH, 'adaptive_hybrid', 'light_check_state.json')
-INITIAL_BALANCE = 500.0
+try:
+    from src.config import PAPER_TRADING_BALANCE as INITIAL_BALANCE
+except ImportError:
+    INITIAL_BALANCE = 1000.0
 
 
 def _get_strategy_folder() -> str:

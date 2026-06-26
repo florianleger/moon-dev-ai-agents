@@ -457,8 +457,11 @@ class CalibrationAgent(BaseAgent):
                 temperature=0.3,
                 max_tokens=1000,
             )
-            # Parse JSON from response
-            text = response.strip()
+            # Parse JSON from response (generate_response returns a ModelResponse
+            # object whose text lives in .content, not a bare string)
+            if response is None:
+                raise ValueError("LLM returned no response")
+            text = (response.content if hasattr(response, 'content') else str(response)).strip()
             # Handle potential markdown code fences
             if text.startswith('```'):
                 text = text.split('\n', 1)[1] if '\n' in text else text[3:]

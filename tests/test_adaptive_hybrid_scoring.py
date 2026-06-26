@@ -205,9 +205,10 @@ class TestBenchmarkTracker:
         assert result == {}
 
     def test_benchmark_alpha_calculates_correctly(self, strategy):
+        from src.config import PAPER_TRADING_BALANCE
         strategy._benchmark_start_prices = {'BTC': 40000.0}
         strategy._benchmark_start_time = datetime.now()
-        strategy.paper_balance = 550.0  # 10% return on 500
+        strategy.paper_balance = PAPER_TRADING_BALANCE * 1.10  # +10% return
 
         mock_df = pd.DataFrame({
             'close': [44000.0, 44000.0, 44000.0, 44000.0, 44000.0],
@@ -219,9 +220,10 @@ class TestBenchmarkTracker:
             assert result['BTC']['alpha'] == pytest.approx(0.0, abs=0.1)
 
     def test_benchmark_positive_alpha(self, strategy):
+        from src.config import PAPER_TRADING_BALANCE
         strategy._benchmark_start_prices = {'BTC': 40000.0}
         strategy._benchmark_start_time = datetime.now()
-        strategy.paper_balance = 600.0  # 20% return
+        strategy.paper_balance = PAPER_TRADING_BALANCE * 1.20  # +20% return
 
         mock_df = pd.DataFrame({
             'close': [42000.0, 42000.0, 42000.0, 42000.0, 42000.0],

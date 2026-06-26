@@ -228,7 +228,7 @@ LIQUIDATION_LOOKBACK_MINUTES = 15    # Default lookback for ratio calculation
 # Recommended: Start with paper trading to validate strategy performance
 
 PAPER_TRADING = True                 # True = simulation mode, False = live trading
-PAPER_TRADING_BALANCE = 500          # Simulated starting balance in USD
+PAPER_TRADING_BALANCE = 1000         # Simulated starting balance (per-strategy paper account)
 
 # ============================================================================
 # Active Strategy Selection

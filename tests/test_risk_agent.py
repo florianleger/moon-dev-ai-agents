@@ -190,7 +190,12 @@ class TestCoolingOff:
 # ---------------------------------------------------------------------------
 
 class TestRecoveryMode:
+    # get_recovery_size_factor() = min(recovery_factor, drawdown_factor). These
+    # tests isolate the recovery branch, so the drawdown factor is pinned to 1.0
+    # (otherwise the shared AdaptiveHybrid singleton state leaks in via
+    # _get_strategy() and makes the result order-dependent).
     def test_recovery_mode_returns_reduced_factor(self, risk_agent):
+        risk_agent.get_drawdown_scaling_factor = lambda: 1.0
         risk_agent.recovery_mode = True
         risk_agent.recovery_start = datetime.now() - timedelta(hours=2)
         factor = risk_agent.get_recovery_size_factor()
@@ -198,6 +203,7 @@ class TestRecoveryMode:
         assert factor == pytest.approx(0.5)
 
     def test_recovery_mode_expires_after_duration(self, risk_agent):
+        risk_agent.get_drawdown_scaling_factor = lambda: 1.0
         risk_agent.recovery_mode = True
         risk_agent.recovery_start = datetime.now() - timedelta(hours=25)  # > 24h
         factor = risk_agent.get_recovery_size_factor()
@@ -205,6 +211,7 @@ class TestRecoveryMode:
         assert risk_agent.recovery_mode is False
 
     def test_no_recovery_mode_returns_full_size(self, risk_agent):
+        risk_agent.get_drawdown_scaling_factor = lambda: 1.0
         risk_agent.recovery_mode = False
         assert risk_agent.get_recovery_size_factor() == 1.0
 

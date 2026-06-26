@@ -262,8 +262,8 @@ class TestStatsFromCsv:
         assert stats['total_pnl'] == pytest.approx(1.28)
         assert stats['daily_pnl'] == pytest.approx(1.28)
         # balance reconstructs the strategy's paper_balance (INITIAL + total_pnl
-        # - entry fees) and matches the ledger's balance_after with no open trades
-        assert stats['balance'] == pytest.approx(501.28)
+        # - entry fees); referenced off the configured initial balance
+        assert stats['balance'] == pytest.approx(dash.INITIAL_BALANCE + 1.28)
 
     def test_balance_includes_open_scale_out_partials_and_entry_fees(self, tmp_path, monkeypatch):
         """Partials credited on a still-open position and the entry fee of a
@@ -305,8 +305,8 @@ class TestStatsFromCsv:
         stats = dash._get_stats_from_csv()
         assert stats['open_positions'] == 1
         assert stats['realized_pnl'] == pytest.approx(1.28)
-        # 500 + 1.28 (closed) + 4.50 (open partials) - 0.07 (open entry fee)
-        assert stats['balance'] == pytest.approx(505.71)
+        # INITIAL + 1.28 (closed) + 4.50 (open partials) - 0.07 (open entry fee)
+        assert stats['balance'] == pytest.approx(dash.INITIAL_BALANCE + 5.71)
 
     def test_fallback_without_closed_trades_csv(self, tmp_path, monkeypatch):
         monkeypatch.setattr(dash, 'DATA_BASE_PATH', str(tmp_path))
@@ -482,6 +482,35 @@ class TestFeedWatchdog:
         s._feed_watchdog()
         s._feed_watchdog()  # within 10-min cooldown
         assert s._liq_stream.restarts == 1
+
+
+# ---------------------------------------------------------------------------
+# Bookkeeping: closing a position flips its paper_trades.csv row to CLOSED
+# (without this, _load_state resurrects closed trades as live phantoms)
+# ---------------------------------------------------------------------------
+
+class TestPaperCsvBookkeeping:
+
+    def test_update_paper_csv_flips_status_to_closed(self, tmp_path):
+        s = _make_watchdog_stub()
+        s.data_dir = str(tmp_path)
+        f = tmp_path / 'paper_trades.csv'
+        pd.DataFrame([
+            {'position_id': 'LC_SOL_1', 'symbol': 'SOL', 'status': 'OPEN'},
+            {'position_id': 'LC_ETH_2', 'symbol': 'ETH', 'status': 'OPEN'},
+        ]).to_csv(f, index=False)
+
+        s._update_paper_csv('LC_SOL_1')
+
+        df = pd.read_csv(f)
+        status = dict(zip(df['position_id'], df['status']))
+        assert status['LC_SOL_1'] == 'CLOSED'
+        assert status['LC_ETH_2'] == 'OPEN'  # untouched
+
+    def test_update_paper_csv_no_file_is_safe(self, tmp_path):
+        s = _make_watchdog_stub()
+        s.data_dir = str(tmp_path)
+        s._update_paper_csv('LC_SOL_1')  # must not raise when csv absent
 
 
 # ---------------------------------------------------------------------------

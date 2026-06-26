@@ -576,8 +576,10 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
         cprint(f"  PnL: ${pnl:+,.2f} ({price_change_pct*100:+.2f}%)", color)
         cprint(f"  Balance: ${self.paper_balance:,.2f}", "white")
 
-        # Log closed trade
+        # Log closed trade + flip the original OPEN row to CLOSED in paper_trades.csv
+        # (without this, a restart reloads closed positions as live phantoms)
         self._log_closed_trade(trade)
+        self._update_paper_csv(position_id)
 
         # Update trade memory
         if 'memory_decision_id' in trade:
@@ -913,6 +915,20 @@ class LiquidationCascadeFadeStrategy(BaseStrategy):
                 df.to_csv(log_file, index=False)
         except Exception as e:
             cprint(f"[LiqCascadeFade] Error logging closed trade: {e}", "yellow")
+
+    def _update_paper_csv(self, closed_pid: str):
+        """Flip a position's row in paper_trades.csv from OPEN to CLOSED so it
+        is not reloaded as a live position after a restart."""
+        try:
+            f = os.path.join(self.data_dir, 'paper_trades.csv')
+            if not os.path.exists(f):
+                return
+            df = pd.read_csv(f)
+            if 'position_id' in df.columns:
+                df.loc[df['position_id'] == closed_pid, 'status'] = 'CLOSED'
+                df.to_csv(f, index=False)
+        except Exception as e:
+            cprint(f"[LiqCascadeFade] Error updating paper csv: {e}", "yellow")
 
     def _load_state(self):
         """Load open positions and balance from CSV."""
