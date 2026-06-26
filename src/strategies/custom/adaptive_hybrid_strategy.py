@@ -1544,16 +1544,17 @@ class AdaptiveHybridStrategy(BaseStrategy):
                 aggregated['score'] = aggregated['score'] / ADAPTIVE_HYBRID_ANOMALY_SCORE_DIVISOR
                 cprint(f"  ⚠️ [{symbol}] ANOMALY detected (score={anom_score:.2f}), score {original_score:.1f} -> {aggregated['score']:.1f}", "red")
 
-        # Get threshold (direction-aware)
-        threshold = self._get_effective_threshold(symbol, ind=ind, direction=aggregated.get('direction'))
-        urgency = self._get_urgency_multiplier(symbol)
-
         # Mechanical regime/direction gate — same pure function as the backtest
-        # harness. Blocks counter-trend entries and stiffens the threshold in chop.
+        # harness. Computed BEFORE the threshold so its mechanical label
+        # (RANGE/TRENDING_*) drives _get_effective_threshold instead of the
+        # Wyckoff label (MARKUP/...), whose REGIME_THRESHOLD_ADJUSTMENTS skew is
+        # exactly what we are replacing. Blocks counter-trend entries; the chop
+        # threshold bump is applied after the threshold is computed.
         from src import config as _gate_cfg
         gate_enabled = getattr(_gate_cfg, 'ADAPTIVE_HYBRID_REGIME_GATE_ENABLED', False)
         _direction = aggregated.get('direction')
         _gdf = ind.get('_df')
+        _gate_delta = 0.0
         if (gate_enabled and _direction in ('BUY', 'SELL')
                 and _gdf is not None and len(_gdf) > EMA_SLOPE_LOOKBACK):
             hard_block = getattr(_gate_cfg, 'ADAPTIVE_HYBRID_REGIME_GATE_HARD_BLOCK', True)
@@ -1562,14 +1563,18 @@ class AdaptiveHybridStrategy(BaseStrategy):
             prev_idx = max(0, len(_gdf) - 1 - EMA_SLOPE_LOOKBACK)
             ema_prev = float(_gdf['ema_200'].iloc[prev_idx]) if 'ema_200' in _gdf.columns else ema_now
             gate = regime_gate(closes, ema_now, ema_prev, _direction, hard_block=hard_block)
-            self._current_regime = gate['regime']
+            self._current_regime = gate['regime']  # replaces the Wyckoff label before threshold calc
             if gate['blocked']:
                 cprint(f"  [{symbol}] REGIME GATE: {_direction} blocked in "
                        f"{gate['regime']} (ER={gate['er']})", "red")
                 return self._create_neutral_signal(
                     symbol, f"Regime gate: {_direction} blocked in {gate['regime']} (ER={gate['er']})")
-            if gate['threshold_delta']:
-                threshold += gate['threshold_delta']
+            _gate_delta = gate['threshold_delta']
+
+        # Get threshold (direction-aware)
+        threshold = self._get_effective_threshold(symbol, ind=ind, direction=aggregated.get('direction'))
+        threshold += _gate_delta
+        urgency = self._get_urgency_multiplier(symbol)
 
         # Log analysis
         fired_modules = {n: r for n, r in available_modules.items() if r['score'] > 0 and r['direction'] != 'NEUTRAL'}
